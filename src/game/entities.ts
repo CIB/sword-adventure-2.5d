@@ -31,6 +31,17 @@ function setEmissive(mats: THREE.MeshToonMaterial[], on: boolean) {
 // ======================================================================= PLAYER
 export type PlayerState = 'idle' | 'walk' | 'swing' | 'spin' | 'hurt' | 'dead';
 const SWING_DUR = 0.2, SPIN_DUR = 0.45, SWING_START = -1.9, SWING_END = 1.15;
+const RECOVER_DUR = 0.14; // blend back to idle after an attack instead of snapping
+const easeOutCubic = (p: number) => 1 - (1 - p) ** 3;
+const smooth = (p: number) => p * p * (3 - 2 * p);
+
+/** Upper-body pose used to blend attack poses back into idle */
+interface Pose { twist: number; lean: number; armX: number; armY: number; armZ: number; wrist: number; armLX: number; armLY: number; armLZ: number }
+const lerpPose = (a: Pose, b: Pose, t: number): Pose => ({
+  twist: lerp(a.twist, b.twist, t), lean: lerp(a.lean, b.lean, t),
+  armX: lerp(a.armX, b.armX, t), armY: lerp(a.armY, b.armY, t), armZ: lerp(a.armZ, b.armZ, t), wrist: lerp(a.wrist, b.wrist, t),
+  armLX: lerp(a.armLX, b.armLX, t), armLY: lerp(a.armLY, b.armLY, t), armLZ: lerp(a.armLZ, b.armLZ, t),
+});
 
 export class Player {
   pos: Vec2;
@@ -55,6 +66,8 @@ export class Player {
   sweepDmg = 1;
   sweepR = 1.05;
   sweepActive = false;
+  recoverT = 0;
+  lastPose: Pose | null = null;
   sparkle: THREE.Mesh;
   readonly HW = 0.3;
   readonly HH = 0.25;
@@ -90,7 +103,7 @@ export class Player {
       const f = Math.max(0, 1 - dt * 7);
       this.knock.x *= f; this.knock.z *= f;
       if (this.stateT <= 0) this.state = 'idle';
-      this.animate(false);
+      this.animate(false, dt);
       this.sync();
       return;
     }
@@ -107,10 +120,11 @@ export class Player {
       const dur = this.state === 'swing' ? SWING_DUR : SPIN_DUR;
       const p = Math.min(1, this.stateT / dur);
       this.sweepPrev = this.sweepCur;
-      this.sweepCur = this.state === 'swing' ? lerp(SWING_START, SWING_END, easeOut(p)) : SWING_END - Math.PI * 2 * p;
+      this.sweepCur = this.state === 'swing' ? lerp(SWING_START, SWING_END, easeOutCubic(p)) : SWING_END - Math.PI * 2 * easeOut(p);
       this.sweepActive = true;
       if (p >= 1) {
         this.state = 'idle';
+        this.recoverT = RECOVER_DUR;
         if (attackDown) { this.holding = true; this.chargeT = 0; this.charged = false; }
       }
     } else {
@@ -142,7 +156,7 @@ export class Player {
     }
     this.sparkle.visible = this.charged;
     if (this.charged) { this.sparkle.rotation.y += dt * 12; const s = 0.16 + Math.sin(this.animT * 3 + this.chargeT * 20) * 0.05; this.sparkle.scale.set(s, s, s); }
-    this.animate(moving);
+    this.animate(moving, dt);
     this.sync();
   }
 
@@ -201,30 +215,71 @@ export class Player {
     if (this.state !== 'hurt' && this.state !== 'dead') { this.state = 'hurt'; this.stateT = 0.12; }
   }
 
-  private animate(moving: boolean) {
+  private animate(moving: boolean, dt: number) {
     const m = this.model;
+    if (!this.attacking) this.recoverT = Math.max(0, this.recoverT - dt);
     const swing = moving ? Math.sin(this.animT) : 0;
     m.legL.rotation.x = swing * 0.7;
     m.legR.rotation.x = -swing * 0.7;
     m.body.position.y = moving ? Math.abs(Math.sin(this.animT)) * 0.04 : 0;
     if (m.ponytail) m.ponytail.rotation.x = (moving ? Math.sin(this.animT) * 0.2 : 0) + 0.15;
-    // arms
+    // upper body ---------------------------------------------------------
+    // The right arm stays roughly horizontal so the blade sweeps a flat arc in front of the
+    // heroine (the oblique camera turns any pitch change into an apparent vertical chop).
+    // Torso twist + wrist cock + a short recovery blend keep the swing from looking rigid.
+    const idlePose: Pose = {
+      twist: 0, lean: 0,
+      armX: -swing * 0.35 + 0.65, armY: -0.15, armZ: 0.1, wrist: 0,
+      armLX: 0.1, armLY: 0, armLZ: -0.1,
+    };
+    let pose: Pose;
     if (this.state === 'swing') {
       const p = Math.min(1, this.stateT / SWING_DUR);
-      m.armR.rotation.set(-Math.PI / 2 + lerp(-0.55, 0.3, p), this.sweepCur, 0);
+      const e = easeOutCubic(p);
+      const twist = lerp(-0.55, 0.45, e);            // shoulders wind up to the right, follow through left
+      pose = {
+        twist, lean: lerp(-0.08, 0.16, e),
+        armX: -Math.PI / 2 + lerp(0.12, 0.38, e),   // slight downward tilt, stays near horizontal
+        armY: this.sweepCur - twist,                 // world-space yaw == hit arc; torso does part of the work
+        armZ: 0,
+        wrist: lerp(-0.75, 0.5, e),                  // blade trails at the start, whips ahead at the end
+        armLX: lerp(0.35, -0.25, e), armLY: lerp(0.3, -0.35, e), armLZ: -0.25,
+      };
     } else if (this.state === 'spin') {
-      m.armR.rotation.set(-Math.PI / 2, this.sweepCur, 0);
+      const p = Math.min(1, this.stateT / SPIN_DUR);
+      pose = {
+        twist: 0, lean: 0.1 + Math.sin(p * Math.PI) * 0.06,
+        armX: -Math.PI / 2 + 0.25, armY: this.sweepCur, armZ: 0, wrist: 0.35,
+        armLX: -0.6, armLY: 0.4, armLZ: -0.3,
+      };
     } else if (this.charged || this.holding) {
-      m.armR.rotation.set(-Math.PI / 2 - 0.5, -1.7, 0);
+      const t = Math.min(1, this.chargeT / 0.25);
+      pose = {
+        twist: -0.35 * t, lean: -0.05 * t,
+        armX: -Math.PI / 2 - 0.2, armY: -1.9 + 0.35 * t, armZ: 0, wrist: -0.6,
+        armLX: 0.2, armLY: 0.2, armLZ: -0.2,
+      };
     } else {
-      m.armR.rotation.set(-swing * 0.35 + 0.65, -0.15, 0.1);
+      pose = idlePose;
     }
+
+    if (this.attacking) {
+      this.lastPose = pose;
+    } else if (this.recoverT > 0 && this.lastPose) {
+      // ease out of the follow-through pose instead of snapping to idle
+      pose = lerpPose(this.lastPose, pose, smooth(1 - this.recoverT / RECOVER_DUR));
+    }
+
+    m.body.rotation.set(pose.lean, pose.twist, 0);
+    m.head.rotation.y = -pose.twist * 0.6; // keep looking roughly where she's facing
+    m.armR.rotation.set(pose.armX, pose.armY, pose.armZ);
+    m.weapon!.rotation.set(0, 0, pose.wrist);
     if (this.blocking) {
       m.armL.rotation.set(-1.25, -0.55, 0);
       m.shield!.position.set(0, -0.02, 0.12);
       m.shield!.rotation.set(1.0, 0.45, 0);
     } else {
-      m.armL.rotation.set(0.1, 0, -0.1);
+      m.armL.rotation.set(pose.armLX, pose.armLY, pose.armLZ);
       m.shield!.position.set(0, -0.04, 0.14);
       m.shield!.rotation.set(0, 0, 0);
     }
@@ -240,6 +295,7 @@ export class Player {
     this.hp = MAX_HP; this.rupees = 0; this.kills = 0;
     this.state = 'idle'; this.stateT = 0; this.invuln = 0; this.deadT = 0; this.facing = 0;
     this.charged = false; this.holding = false; this.chargeT = 0; this.blocking = false;
+    this.recoverT = 0; this.lastPose = null;
     this.model.root.scale.set(1, 1, 1); this.model.root.visible = true;
     this.sync();
   }
