@@ -458,6 +458,15 @@ export function buildHouse(spec: HouseSpec): THREE.Group {
     g.add(grp);
   }
 
+  if (spec.sign === 'inn') {
+    const sg = new THREE.Group();
+    sg.position.set(cx - spec.w / 2 + 0.5, WH - 0.02, fz + 0.3);
+    sg.add(part(UNIT_BOX, timber, [0, 0, -0.15], [0.06, 0.06, 0.34]));
+    sg.add(part(UNIT_BOX, toon('#3a5fd0'), [0, -0.2, 0.02], [0.52, 0.36, 0.05]));
+    sg.add(part(UNIT_CYL, toon('#f7e7b7'), [0, -0.22, 0.06], [0.16, 0.2, 0.08]));   // a mug
+    sg.add(part(UNIT_BOX, toon('#f7e7b7'), [0.1, -0.22, 0.06], [0.05, 0.12, 0.06]));
+    g.add(sg);
+  }
   // shop sign
   if (spec.sign === 'shop') {
     const sg = new THREE.Group();
@@ -720,6 +729,10 @@ export const VILLAGER_LOOKS: Record<string, VillagerLook> = {
   granny: { skin: '#f0c4a0', hair: '#d8d8e0', top: '#2f8f5a', bottom: '#7a4f2a', hat: 'kerchief', hairStyle: 'bun', item: 'broom' },
   bard: { skin: '#f3bd92', hair: '#c8432c', top: '#3a9ad0', bottom: '#7a2a80', accent: '#f2c14e', hat: 'feather', hairStyle: 'long', item: 'lute' },
   farmer: { skin: '#e8a878', hair: '#4a2c14', top: '#8ad34a', bottom: '#6b4a2c', hat: 'straw', hairStyle: 'short', item: 'hoe' },
+  innkeeper: { skin: '#f3bd92', hair: '#7a3a1a', top: '#c8862a', bottom: '#5a3a2c', accent: '#f6f1e6', hat: 'none', hairStyle: 'bun' },
+  smith: { skin: '#d89868', hair: '#2a1a10', top: '#5a5a66', bottom: '#3a3a3a', accent: '#8a5a2b', hat: 'bandana', hairStyle: 'beard' },
+  goodwife: { skin: '#f6c8a0', hair: '#4a2c14', top: '#d05a8a', bottom: '#f0e2c0', hat: 'kerchief', hairStyle: 'long', item: 'basket' },
+  boy: { skin: '#f3bd92', hair: '#3a2214', top: '#3a9ad0', bottom: '#6b4a2c', hat: 'cap', hairStyle: 'short', kid: true },
   woodcutter: { skin: '#e0a070', hair: '#3a2214', top: '#c8442e', bottom: '#3a3a3a', hat: 'none', hairStyle: 'beard', item: 'hoe' },
   miller: { skin: '#f3bd92', hair: '#d8d8e0', top: '#e8e8e8', bottom: '#8a6a3c', hat: 'cap', hairStyle: 'short', item: 'basket' },
   shepherd: { skin: '#e8a878', hair: '#c8432c', top: '#7a9ad0', bottom: '#6b4a2c', hat: 'straw', hairStyle: 'short', item: 'cane' },

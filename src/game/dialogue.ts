@@ -140,6 +140,23 @@ export const NPC_TALK: Record<string, Talker> = {
     pages: ['Turnips, turnips, turnips. The knights don\'t eat them, at least. They don\'t eat anything anymore.', 'The river east of here used to be shallow. Since the Crown went missing it runs high and the old ford drowned. Use the bridges.'],
   }),
 
+  innkeeper: () => ({
+    name: 'ROSAMUND', color: '#f0c890',
+    pages: ['Welcome to the Thistle & Crown! Empty rooms, full kettle. Sit anywhere.', 'Travellers used to come up the east road from the great bridge. Now only the knights walk it. Mind yourself out there, dear.'],
+  }),
+  smith: () => ({
+    name: 'GARRICK THE SMITH', color: '#c8c8d8',
+    pages: ['Hmph. That blade of yours could take an edge. Come back when you\'ve dulled it on a few of those tin soldiers.', 'The knights\' armour is old Royal steel. Strike when they lift their arm - the plates gap under the shoulder.'],
+  }),
+  goodwife: () => ({
+    name: 'HILDA', color: '#f0b0d0',
+    pages: ['Turnips and cabbages, cabbages and turnips. Hollis won\'t grow anything else!', 'My boy keeps sneaking down to the orchard. If you see him, tell him supper\'s on.'],
+  }),
+  boy: () => ({
+    name: 'WILL', color: '#a0d0f0',
+    pages: ['Psst! The smith has a real forge! He let me hold the hammer once. Just once.', 'Don\'t tell Mum, but there\'s a knight who stands by the pond south of the gate every night. Just... standing.'],
+  }),
+
   // ------------------------------------------------------------------ outposts
   woodcutter: () => ({
     name: 'BRAM THE WOODCUTTER', color: '#f0b090',

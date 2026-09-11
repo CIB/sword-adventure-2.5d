@@ -50,13 +50,19 @@ export class World {
     { x: 2, z: 9, w: 4, d: 3, roof: '#8a3fc4', wall: '#f0e2c0', sign: 'none' },       // library-ish
     { x: 15, z: 8, w: 4, d: 3, roof: '#c82828', wall: '#f4ecd8', sign: 'shop' },      // shop
     { x: 14, z: 13, w: 4, d: 3, roof: '#2f8f5a', wall: '#e8d6a8', sign: 'none' },     // granny
+    // east district
+    { x: 23, z: 2, w: 5, d: 3, roof: '#c8862a', wall: '#f0e2c0', sign: 'inn' },       // the inn
+    { x: 26, z: 12, w: 4, d: 3, roof: '#5a5a66', wall: '#d8c8a8', sign: 'none' },     // smithy
+    // south district
+    { x: 13, z: 21, w: 4, d: 3, roof: '#b73c3c', wall: '#e8d6a8', sign: 'none' },     // cottage
+    { x: 23, z: 22, w: 4, d: 3, roof: '#3a5fd0', wall: '#f4ecd8', sign: 'none' },     // cottage
   ];
   props: PropSpec[] = [];
   npcs: NpcSpec[] = [];
   spawns: SpawnSpec[] = [];
   playerStart: Vec2 = { x: 9.5, z: 9.5 };
   /** Village bounds (tiles, inclusive) - enemies stay out */
-  village = { x0: 1, z0: 1, x1: 20, z1: 17 };
+  village = { x0: 1, z0: 1, x1: 32, z1: 29 };
   private rng = new RNG(20240607);
 
   constructor() {
@@ -221,7 +227,7 @@ export class World {
     const waters: { pts: number[][]; w: number }[] = [{ pts: river, w: 3.4 }, { pts: brook, w: 1.9 }, { pts: stream, w: 1.6 }];
     const lakes = [
       { x: 40, z: 126, rx: 13, rz: 8 },   // Mirror Lake
-      { x: 10.5, z: 30.5, rx: 4.3, rz: 3.1 }, // home pond (the kid's rupee bush is nearby)
+      { x: 14.5, z: 44, rx: 4.3, rz: 3.1 }, // home pond (the kid's rupee bush is nearby)
       { x: 24, z: 62, rx: 6, rz: 4 },     // heron pond
       { x: 168, z: 150, rx: 5, rz: 3 }, { x: 182, z: 160, rx: 4, rz: 2.5 }, { x: 156, z: 162, rx: 3.5, rz: 2.2 }, // bog pools
     ];
@@ -244,9 +250,9 @@ export class World {
     // 2. roads ------------------------------------------------------------------------------------------
     const roads = [
       // south gate -> meadow crossroads -> great bridge (bends around the pond and the heron woods)
-      [[9.5, 17], [9.5, 20.5], [24.5, 20.5], [24.5, 30.5], [40.5, 30.5], [40.5, 46.5], [58.5, 46.5], [58.5, 52.5], [82.5, 52.5], [98.5, 46.5], [121.5, 46.5]],
+      [[9.5, 29], [9.5, 34.5], [26.5, 34.5], [26.5, 40.5], [40.5, 40.5], [40.5, 46.5], [58.5, 46.5], [58.5, 52.5], [82.5, 52.5], [98.5, 46.5], [121.5, 46.5]],
       // east gate -> forest trail through Willowmere -> north bridge
-      [[21, 8.5], [34.5, 8.5], [34.5, 14.5], [60.5, 14.5], [60.5, 20.5], [78.5, 20.5], [84.5, 26.5], [98.5, 26.5], [104.5, 20.5], [114.5, 20.5]],
+      [[33, 8.5], [44.5, 8.5], [44.5, 14.5], [60.5, 14.5], [60.5, 20.5], [78.5, 20.5], [84.5, 26.5], [98.5, 26.5], [104.5, 20.5], [114.5, 20.5]],
       // beyond the great bridge: east road, highland climb, moor road to the Crown hollow
       [[125.5, 46.5], [160.5, 46.5], [160.5, 80.5], [190.5, 80.5], [198.5, 90.5]],
       [[160.5, 46.5], [160.5, 30.5], [176.5, 22.5], [188.5, 12.5]],
@@ -357,7 +363,7 @@ export class World {
     }
     // groves: tight clumps that frame roads, ponds and clearings
     const groves = [
-      [21, 23, 5.5, 0.55], [43, 37, 4.5, 0.55], [24, 5, 4, 0.5], [6, 22, 3.5, 0.55], [16, 40, 3, 0.5], [34, 22, 3, 0.4], [52, 34, 4, 0.5], // home meadow (as before)
+      [32, 40, 5.5, 0.55], [48, 34, 4.5, 0.55], [42, 4, 4, 0.5], [4, 38, 3.5, 0.55], [22, 62, 3, 0.5], [40, 24, 3, 0.4], [52, 22, 4, 0.5], [6, 48, 3, 0.5], // home meadow
       [66, 56, 4, 0.5], [78, 44, 4, 0.5], [96, 58, 5, 0.45], [56, 92, 5, 0.5], [40, 98, 3.5, 0.5], [26, 112, 4, 0.5],
       [70, 126, 3, 0.5], [104, 122, 4, 0.5], [110, 140, 4, 0.5], [84, 150, 5, 0.5], [50, 140, 4, 0.5],
       [140, 56, 4, 0.5], [146, 36, 5, 0.5], [170, 48, 3, 0.5], [176, 96, 4, 0.5], [188, 104, 3.5, 0.45], [166, 118, 4, 0.5],
@@ -378,7 +384,10 @@ export class World {
       plant(x, z);
     }
     // village trees: framing corners + a big one by the plaza
-    for (const [x, z] of [[2, 2], [3, 2], [2, 3], [3, 3], [18, 14], [19, 14], [18, 15], [19, 15], [19, 1], [1, 16], [2, 16], [17, 1], [12, 16], [1, 6], [1, 7]]) if (get(x, z) === Tile.Grass && !this.houseCell[this.idx(x, z)]) this.treeCell[this.idx(x, z)] = 1;
+    const villageTrees = [[2, 2], [3, 2], [2, 3], [3, 3], [18, 14], [19, 14], [18, 15], [19, 15], [19, 1], [1, 16], [2, 16], [17, 1], [12, 16], [1, 6], [1, 7],
+      [30, 1], [31, 1], [30, 2], [31, 2], [31, 27], [30, 27], [31, 28], [30, 28], [1, 27], [2, 27], [1, 28], [2, 28], [21, 17], [22, 17], [21, 18], [22, 18], [31, 12], [31, 13], [1, 12], [10, 18]];
+    for (let x = 26; x <= 31; x += 2) for (let z = 19; z <= 21; z += 2) villageTrees.push([x, z]); // orchard behind the smithy
+    for (const [x, z] of villageTrees) if (get(x, z) === Tile.Grass && !this.houseCell[this.idx(x, z)]) this.treeCell[this.idx(x, z)] = 1;
     // group into 2x2 big trees
     const claimed = new Uint8Array(w * h);
     for (let z = 0; z < h; z++) for (let x = 0; x < w; x++) {
@@ -403,7 +412,7 @@ export class World {
     const rockAt = (x: number, z: number) => { if (objFree(x, z) && !inYard(x, z) && !inPad(x, z) && !occupied[this.idx(x, z)]) { this.rocks.push({ tx: x, tz: z }); occupied[this.idx(x, z)] = 1; } };
     const cluster = (x: number, z: number, place: (x: number, z: number) => void) => { for (const [ox, oz] of rng.pick(patterns)) place(x + ox, z + oz); };
     // Granny's bushes around the village and the pond (the kid's rupee bush is by the pond)
-    const homeBushes = [[6, 23], [7, 23], [13, 23], [14, 23], [15, 23], [4, 26], [5, 26], [16, 25], [17, 26], [11, 27], [12, 27], [6, 34], [7, 34], [14, 33], [15, 33], [13, 28], [17, 30], [18, 31], [27, 18], [28, 18], [30, 24], [31, 24], [22, 12], [23, 12]];
+    const homeBushes = [[6, 35], [7, 35], [13, 36], [14, 36], [15, 36], [4, 38], [5, 38], [16, 38], [17, 39], [11, 39], [12, 39], [6, 46], [7, 46], [20, 44], [21, 44], [13, 49], [17, 49], [18, 49], [37, 18], [38, 18], [40, 30], [41, 30], [36, 12], [37, 12], [22, 38], [23, 38]];
     for (const [x, z] of homeBushes) bushAt(x, z);
     const bushClusters = [
       [37, 26], [44, 33], [55, 42], [63, 48], [72, 50], [90, 49], [104, 44], [112, 50],                 // along the east road
@@ -428,7 +437,7 @@ export class World {
       if (Math.hypot((tx - x) / rx, (tz - z) / rz) < 1 && rng.next() < p) rockAt(tx, tz);
     }
     for (let i = 0; i < 90; i++) rockAt(rng.int(3, w - 4), rng.int(3, h - 4));
-    for (const [x, z] of [[27, 19], [40, 21], [27, 35], [15, 33], [37, 8], [6, 19], [30, 25], [22, 12], [44, 29], [12, 24], [33, 5]]) cluster(x, z, bushAt);
+    for (const [x, z] of [[37, 19], [40, 21], [30, 45], [15, 52], [37, 8], [6, 33], [34, 28], [36, 4], [44, 29], [24, 46], [46, 5]]) cluster(x, z, bushAt);
 
     // 9. props: village + outposts -----------------------------------------------------------------------
     this.props.push(
@@ -508,7 +517,7 @@ export class World {
     const S = (x: number, z: number, kind: EnemyKind) => { const p = this.nearestFree(x + 0.5, z + 0.5); if (!inYard(Math.floor(p.x), Math.floor(p.z))) this.spawns.push({ x: p.x, z: p.z, kind }); };
     const sw: EnemyKind = 'sword', sp: EnemyKind = 'spear', jv: EnemyKind = 'javelin', ar: EnemyKind = 'archer';
     // home meadow (as in the original layout)
-    for (const [x, z, k] of [[22, 13, sw], [28, 20, sw], [14, 23, sw], [24, 33, sw], [44, 19, sw], [36, 18, sw], [37, 11, sp], [43, 24, sp], [30, 36, sp], [19, 21, sp], [18, 29, jv], [40, 27, jv], [12, 22, jv], [43, 12, ar], [38, 35, ar], [26, 39, ar], [47, 33, ar], [50, 44, sw], [54, 26, sw]] as [number, number, EnemyKind][]) S(x, z, k);
+    for (const [x, z, k] of [[36, 16, sw], [36, 28, sw], [14, 37, sw], [28, 44, sw], [44, 19, sw], [40, 22, sw], [37, 11, sp], [45, 26, sp], [32, 47, sp], [34, 22, sp], [20, 39, jv], [42, 30, jv], [6, 37, jv], [43, 12, ar], [38, 36, ar], [26, 50, ar], [47, 33, ar], [50, 44, sw], [54, 26, sw]] as [number, number, EnemyKind][]) S(x, z, k);
     // Willowmere Woods trail
     for (const [x, z, k] of [[66, 12, sw], [74, 22, sp], [82, 28, sw], [92, 22, ar], [98, 28, sw], [104, 14, sp], [108, 24, jv], [70, 44, sw], [100, 44, sp], [84, 48, jv], [110, 40, sw]] as [number, number, EnemyKind][]) S(x, z, k);
     // east road + the river banks
@@ -557,11 +566,11 @@ export class World {
     // southern hills and Millbrook's mill knoll
     hill(28, 158, 14, 7, 2); hill(96, 166, 12, 6, 1.5); hill(120, 158, 8, 5, 1.2); hill(86, 127, 5, 3.5, 0.6);
     // western hills: SW hill by the pond (as in the original meadow), orchard hill, heron ridge
-    hill(7, 39, 6, 3.2, 2); hill(18, 46, 7, 4, 1.4); hill(14, 100, 9, 8, 1.6); hill(20, 74, 8, 4, 1.2); hill(70, 70, 10, 7, 1.4); hill(84, 34, 8, 5, 1.2);
+    hill(8, 54, 6, 3.2, 2); hill(22, 56, 7, 4, 1.4); hill(14, 100, 9, 8, 1.6); hill(20, 74, 8, 4, 1.2); hill(70, 70, 10, 7, 1.4); hill(84, 34, 8, 5, 1.2);
     // mid-map mesa with the standing stones on top
     plateau(78, 56, 96, 68, 1.5, 2.2);
     // gentle village rise
-    hill(10, 8, 14, 12, 0.8);
+    hill(16, 14, 22, 20, 0.8);
     // rolling meadow noise
     for (let cz = 0; cz < H; cz++) for (let cx = 0; cx < W; cx++) {
       lvl[cz * W + cx] += 0.22 * Math.sin(cx * 0.31 + 1.3) * Math.cos(cz * 0.27 + 0.4) + 0.12 * Math.sin(cx * 0.9) * Math.cos(cz * 0.8) + (rng.next() - 0.5) * 0.05;
@@ -688,7 +697,20 @@ export class World {
     lane(6, 12, 4, 12); lane(7, 11, 4, 12);
     lane(13, 11, 17, 11); lane(16, 11, 16, 12);
     lane(15, 16, 16, 16);
-    lane(12, 9, 20, 9); lane(13, 8, 20, 8);
+    lane(12, 9, 32, 9); lane(13, 8, 32, 8);
+    // --- east district: inn + smithy
+    lane(25, 5, 25, 7); lane(26, 5, 26, 7);
+    lane(28, 10, 28, 11); lane(27, 10, 27, 11);
+    for (let z = 15; z <= 16; z++) for (let x = 26; x <= 29; x++) set(x, z, Tile.Cobble); // smithy yard
+    lane(28, 12, 28, 14); // (behind the smithy: not visible, keeps the yard joined)
+    // --- south district: lane down to the new south gate, two cottages, fields and an orchard
+    lane(9, 17, 9, 28);
+    lane(14, 24, 10, 24); lane(15, 24, 15, 24);
+    lane(24, 25, 24, 26); lane(24, 26, 10, 26); lane(25, 25, 25, 25);
+    for (let z = 19; z <= 27; z++) for (let x = 2; x <= 7; x++) if (z !== 23) set(x, z, Tile.Bed);   // fields with a path through
+    for (let x = 2; x <= 7; x++) set(x, 23, Tile.Path);
+    for (let z = 18; z <= 20; z++) for (let x = 12; x <= 19; x++) set(x, z, Tile.Bed);            // vegetable patch
+    set(21, 19, Tile.Flowers); set(22, 20, Tile.Flowers); set(30, 20, Tile.Flowers); set(3, 17, Tile.Flowers); set(28, 26, Tile.Flowers);
     // flower beds / vegetable patches
     for (let z = 13; z <= 15; z++) for (let x = 3; x <= 6; x++) set(x, z, Tile.Bed);
     for (let z = 2; z <= 3; z++) for (let x = 9; x <= 10; x++) set(x, z, Tile.Bed);
@@ -699,7 +721,13 @@ export class World {
       { kind: 'weathercock', x: 11.5, z: 6.5 },
       { kind: 'bench', x: 7.5, z: 9.5, rot: Math.PI / 2 }, { kind: 'bench', x: 11.5, z: 9.5, rot: -Math.PI / 2 },
       { kind: 'lamp', x: 7.5, z: 6.5 }, { kind: 'lamp', x: 12.5, z: 11.5 }, { kind: 'lamp', x: 7.5, z: 12.5 },
-      { kind: 'sign', x: 10.5, z: 15.5 }, { kind: 'sign', x: 12.5, z: 5.5 },
+      { kind: 'sign', x: 10.5, z: 27.5 }, { kind: 'sign', x: 12.5, z: 5.5 }, { kind: 'sign', x: 30.5, z: 10.5 },
+      // east district
+      { kind: 'lamp', x: 22.5, z: 10.5 }, { kind: 'lamp', x: 30.5, z: 7.5 }, { kind: 'bench', x: 22.5, z: 5.5, rot: Math.PI / 2 }, { kind: 'barrel', x: 29.5, z: 4.5 }, { kind: 'barrel', x: 29.5, z: 5.5 }, { kind: 'crate', x: 21.5, z: 13.5 },
+      { kind: 'campfire', x: 25.5, z: 16.5 }, { kind: 'barrel', x: 30.5, z: 15.5 }, { kind: 'crate', x: 30.5, z: 16.5 }, { kind: 'log', x: 24.5, z: 14.5, rot: Math.PI / 2 }, { kind: 'flowerpot', x: 22.5, z: 3.5 },
+      // south district
+      { kind: 'lamp', x: 10.5, z: 20.5 }, { kind: 'lamp', x: 8.5, z: 26.5 }, { kind: 'scarecrow', x: 4.5, z: 21.5 }, { kind: 'hay', x: 5.5, z: 28.5 }, { kind: 'hay', x: 3.5, z: 28.5 }, { kind: 'cart', x: 11.5, z: 27.5, rot: 0.2 },
+      { kind: 'bench', x: 20.5, z: 24.5 }, { kind: 'flowerpot', x: 12.5, z: 24.5 }, { kind: 'flowerpot', x: 22.5, z: 25.5 }, { kind: 'barrel', x: 28.5, z: 23.5 },
       { kind: 'stall', x: 17.5, z: 5.5, rot: Math.PI },
       { kind: 'barrel', x: 19.5, z: 6.5 }, { kind: 'barrel', x: 19.5, z: 10.5 }, { kind: 'crate', x: 13.5, z: 14.5 }, { kind: 'crate', x: 2.5, z: 5.5 },
       { kind: 'flowerpot', x: 3.5, z: 12.5 }, { kind: 'flowerpot', x: 18.5, z: 11.5 }, { kind: 'flowerpot', x: 12.5, z: 4.5 },
@@ -712,6 +740,10 @@ export class World {
       { id: 'bard', x: 8.5, z: 11.0, facing: 1, wander: 0 },
       { id: 'farmer', x: 11.5, z: 3.5, facing: 3, wander: 1.5 },
       { id: 'dog', x: 12.5, z: 9.5, facing: 3, wander: 3 },
+      { id: 'innkeeper', x: 25.5, z: 6.6, facing: 0, wander: 0 },
+      { id: 'smith', x: 27.5, z: 16.5, facing: 3, wander: 1 },
+      { id: 'goodwife', x: 15.5, z: 25.5, facing: 0, wander: 2 },
+      { id: 'boy', x: 26.5, z: 19.5, facing: 1, wander: 3 },
     ];
   }
 
