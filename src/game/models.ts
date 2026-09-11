@@ -110,7 +110,7 @@ function makeArm(x: number, sleeve: THREE.Material, skin: THREE.Material): { arm
 export function buildHeroine(): Humanoid {
   const m = {
     skin: toon('#f3bd92'), hair: toon('#f5cf46'), tunic: toon('#3fb04a'), tunicD: toon('#2d8c3a'),
-    belt: toon('#6b4423'), boots: toon('#7b4a22'), tights: toon('#f6ebd8'), eye: toon('#1d2b5a'),
+    belt: toon('#6b4423'), boots: toon('#7b4a22'), eye: toon('#1d2b5a'),
     cap: toon('#2f9038'), steel: toon('#dfe6f4'), hilt: toon('#3557c9'), gold: toon('#f2c14e'),
     shieldBlue: toon('#2f57c4'), shieldRim: toon('#cfd7e6'),
   };
@@ -119,14 +119,16 @@ export function buildHeroine(): Humanoid {
   root.add(body);
   root.add(blobShadow(0.34));
 
-  const legL = makeLeg(0.11, m.tights, m.boots);
-  const legR = makeLeg(-0.11, m.tights, m.boots);
+  // bare legs (skin) with boots
+  const legL = makeLeg(0.11, m.skin, m.boots);
+  const legR = makeLeg(-0.11, m.skin, m.boots);
   root.add(legL, legR);
 
+  // tunic: no belt; the hem hangs one pixel (~0.06) lower at the sides than in the middle
   body.add(part(UNIT_BOX, m.tunic, [0, 0.58, 0], [0.5, 0.42, 0.3]));
   body.add(part(UNIT_BOX, m.tunicD, [0, 0.37, 0], [0.56, 0.12, 0.36]));
-  body.add(part(UNIT_BOX, m.belt, [0, 0.49, 0], [0.52, 0.06, 0.32]));
-  body.add(part(UNIT_BOX, m.gold, [0, 0.49, 0.16], [0.1, 0.06, 0.02]));
+  body.add(part(UNIT_BOX, m.tunicD, [-0.19, 0.34, 0], [0.18, 0.12, 0.36]));
+  body.add(part(UNIT_BOX, m.tunicD, [0.19, 0.34, 0], [0.18, 0.12, 0.36]));
   body.add(part(UNIT_BOX, m.skin, [0, 0.8, 0], [0.16, 0.08, 0.14]));
 
   const { arm: armR, hand: handR } = makeArm(-0.3, m.tunic, m.skin);
