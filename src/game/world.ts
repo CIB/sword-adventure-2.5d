@@ -4,7 +4,9 @@ import { MAP_W, MAP_H, TEX_PX, Tile, RNG, hash2 } from './constants';
 export type EnemyKind = 'sword' | 'spear' | 'javelin' | 'archer';
 export interface TreeSpec { x: number; z: number; scale: number }
 export interface TileObj { tx: number; tz: number }
-export interface HouseSpec { x: number; z: number; w: number; d: number }
+export interface HouseSpec { x: number; z: number; w: number; d: number; roof?: string; wall?: string; door?: 'S' | 'E' | 'W'; sign?: 'shop' | 'inn' | 'none' }
+export interface PropSpec { kind: 'well' | 'sign' | 'stall' | 'bench' | 'weathercock' | 'lamp' | 'barrel' | 'crate' | 'flowerpot' | 'hedge'; x: number; z: number; rot?: number }
+export interface NpcSpec { id: string; x: number; z: number; facing?: 0 | 1 | 2 | 3; wander?: number }
 export interface SpawnSpec { x: number; z: number; kind: EnemyKind }
 export interface Vec2 { x: number; z: number }
 
@@ -36,9 +38,19 @@ export class World {
   bushes: TileObj[] = [];
   rocks: TileObj[] = [];
   fences: TileObj[] = [];
-  houses: HouseSpec[] = [{ x: 7, z: 5, w: 5, d: 3 }];
+  houses: HouseSpec[] = [
+    { x: 4, z: 3, w: 5, d: 3, roof: '#b73c3c', wall: '#e8d6a8', sign: 'none' },       // elder's house
+    { x: 12, z: 2, w: 5, d: 3, roof: '#3a5fd0', wall: '#e8d6a8', sign: 'none' },      // Marin & Tarin style cottage
+    { x: 2, z: 9, w: 4, d: 3, roof: '#8a3fc4', wall: '#f0e2c0', sign: 'none' },       // library-ish
+    { x: 15, z: 8, w: 4, d: 3, roof: '#c82828', wall: '#f4ecd8', sign: 'shop' },      // shop
+    { x: 14, z: 13, w: 4, d: 3, roof: '#2f8f5a', wall: '#e8d6a8', sign: 'none' },     // granny
+  ];
+  props: PropSpec[] = [];
+  npcs: NpcSpec[] = [];
   spawns: SpawnSpec[] = [];
-  playerStart: Vec2 = { x: 9.5, z: 10.5 };
+  playerStart: Vec2 = { x: 9.5, z: 9.5 };
+  /** Village bounds (tiles, inclusive) - enemies stay out */
+  village = { x0: 1, z0: 1, x1: 20, z1: 17 };
   private rng = new RNG(20240607);
 
   constructor() {
@@ -157,15 +169,17 @@ export class World {
     }
     // 2. paths
     const paths = [
-      [[9.5, 8], [9.5, 15.5], [32.5, 15.5]],
+      [[9.5, 17], [9.5, 20.5], [24.5, 20.5], [24.5, 15.5], [32.5, 15.5]],
+      [[21, 8.5], [24.5, 8.5], [24.5, 15.5]],
       [[33, 15.5], [45.5, 15.5], [45.5, 26.5], [40.5, 31.5], [37, 31.5]],
       [[34, 31.5], [20.5, 31.5], [20.5, 38.5]],
-      [[9.5, 15.5], [9.5, 22.5], [15.5, 26.5]],
+      [[9.5, 20.5], [9.5, 22.5], [15.5, 26.5]],
       [[20.5, 31.5], [18.5, 24.5]],
     ];
     for (let z = 0; z < h; z++) for (let x = 0; x < w; x++) {
       if (get(x, z) !== Tile.Grass) continue;
       const cx = x + 0.5, cz = z + 0.5;
+      if (x >= this.village.x0 && x <= this.village.x1 && z >= this.village.z0 && z <= this.village.z1 - 1) continue;
       for (const p of paths) if (polyDist(cx, cz, p) < 1.1) { set(x, z, Tile.Path); break; }
     }
     // 3. bridges
@@ -174,12 +188,14 @@ export class World {
     // 4. cliffs
     const cliffRects = [[40, 2, 10, 5], [46, 7, 4, 4], [2, 36, 12, 6], [22, 40, 6, 2], [39, 40, 5, 2]];
     for (const [rx, rz, rw, rd] of cliffRects) for (let z = rz; z < rz + rd; z++) for (let x = rx; x < rx + rw; x++) set(x, z, Tile.Cliff);
-    // 5. house
+    // 5. village (houses, plaza, beds, paths)
     for (const hs of this.houses) for (let z = hs.z; z < hs.z + hs.d; z++) for (let x = hs.x; x < hs.x + hs.w; x++) {
       set(x, z, Tile.Grass); this.houseCell[this.idx(x, z)] = 1;
     }
+    this.generateVillage(set);
     // 6. trees
-    const inYard = (x: number, z: number) => x >= 4 && x <= 15 && z >= 2 && z <= 13;
+    const v = this.village;
+    const inYard = (x: number, z: number) => x >= v.x0 && x <= v.x1 && z >= v.z0 && z <= v.z1;
     const nearSpawn = (x: number, z: number) => Math.hypot(x + 0.5 - this.playerStart.x, z + 0.5 - this.playerStart.z) < 3;
     const treeOK = (x: number, z: number) => get(x, z) === Tile.Grass && !this.houseCell[this.idx(x, z)] && !inYard(x, z) && !nearSpawn(x, z);
     for (let z = 0; z < h; z++) for (let x = 0; x < w; x++) {
@@ -202,6 +218,8 @@ export class World {
       const x = rng.int(3, w - 4), z = rng.int(3, h - 4);
       if (treeOK(x, z)) this.treeCell[this.idx(x, z)] = 1;
     }
+    // village trees: framing corners + a big one by the plaza
+    for (const [x, z] of [[2, 2], [3, 2], [2, 3], [3, 3], [18, 14], [19, 14], [18, 15], [19, 15], [19, 1], [1, 16], [2, 16], [17, 1], [12, 16], [1, 6], [1, 7]]) if (get(x, z) === Tile.Grass && !this.houseCell[this.idx(x, z)]) this.treeCell[this.idx(x, z)] = 1;
     // group into 2x2 big trees
     const claimed = new Uint8Array(w * h);
     for (let z = 0; z < h; z++) for (let x = 0; x < w; x++) {
@@ -218,7 +236,7 @@ export class World {
       }
     }
     // 7. bushes
-    const bushClusters = [[16, 9], [27, 19], [40, 21], [27, 35], [15, 33], [37, 8], [8, 17], [30, 25], [20, 12], [44, 29], [12, 24], [33, 5]];
+    const bushClusters = [[27, 19], [40, 21], [27, 35], [15, 33], [37, 8], [6, 19], [30, 25], [22, 12], [44, 29], [12, 24], [33, 5]];
     const patterns = [[[0, 0], [1, 0], [2, 0]], [[0, 0], [0, 1], [0, 2]], [[0, 0], [1, 0], [0, 1], [1, 1]], [[0, 0], [1, 0], [2, 0], [0, 1]], [[0, 0], [2, 0], [1, 1]]];
     const objFree = (x: number, z: number) => (get(x, z) === Tile.Grass || get(x, z) === Tile.Flowers) && !this.treeCell[this.idx(x, z)] && !this.houseCell[this.idx(x, z)] && !nearSpawn(x, z);
     const occupied = new Uint8Array(w * h);
@@ -226,7 +244,7 @@ export class World {
       const pat = rng.pick(patterns);
       for (const [ox, oz] of pat) {
         const x = bx + ox, z = bz + oz;
-        if (objFree(x, z) && !occupied[this.idx(x, z)]) { this.bushes.push({ tx: x, tz: z }); occupied[this.idx(x, z)] = 1; }
+        if (objFree(x, z) && !inYard(x, z) && !occupied[this.idx(x, z)]) { this.bushes.push({ tx: x, tz: z }); occupied[this.idx(x, z)] = 1; }
       }
     }
     // 8. rocks
@@ -234,10 +252,17 @@ export class World {
       const x = rng.int(3, w - 4), z = rng.int(3, h - 4);
       if (objFree(x, z) && !occupied[this.idx(x, z)] && !inYard(x, z)) { this.rocks.push({ tx: x, tz: z }); occupied[this.idx(x, z)] = 1; }
     }
-    // 9. fences around the yard
+    // 9. village fence ring with a gate on the south side and hedges
     const fenceAt = (x: number, z: number) => { if (objFree(x, z) && !occupied[this.idx(x, z)]) { this.fences.push({ tx: x, tz: z }); occupied[this.idx(x, z)] = 1; } };
-    for (let x = 5; x <= 14; x++) if (x < 8 || x > 10) fenceAt(x, 12);
-    for (let z = 4; z <= 12; z++) { fenceAt(5, z); fenceAt(14, z); }
+    for (let x = v.x0; x <= v.x1; x++) { if (x < 8 || x > 10) fenceAt(x, v.z1); }
+    for (let z = v.z0 + 1; z <= v.z1; z++) { if (z < 8 || z > 9) fenceAt(v.x1, z); }  // east gate too
+    for (const b of this.beds()) { const i = this.idx(b[0], b[1]); if (!occupied[i]) occupied[i] = 2; } // beds: solid-ish (2 = not for objects, still blocks walking)
+    for (const pr of this.props) {
+      if (pr.kind === 'lamp' || pr.kind === 'sign' || pr.kind === 'flowerpot') continue;
+      const tx = Math.floor(pr.x), tz = Math.floor(pr.z);
+      if (!this.houseCell[this.idx(tx, tz)]) occupied[this.idx(tx, tz)] = 1;
+      if (pr.kind === 'stall') { occupied[this.idx(tx - 1, tz)] = 1; occupied[this.idx(tx + 1, tz)] = 1; }
+    }
     // 10. flowers
     for (let z = 0; z < h; z++) for (let x = 0; x < w; x++) {
       if (get(x, z) === Tile.Grass && !this.treeCell[this.idx(x, z)] && !occupied[this.idx(x, z)] && rng.next() < 0.05) set(x, z, Tile.Flowers);
@@ -246,7 +271,7 @@ export class World {
     for (let z = 0; z < h; z++) for (let x = 0; x < w; x++) {
       const i = this.idx(x, z);
       const t = this.tiles[i];
-      const s = t === Tile.Water || t === Tile.Cliff || this.treeCell[i] === 1 || this.houseCell[i] === 1 || occupied[i] === 1;
+      const s = t === Tile.Water || t === Tile.Cliff || this.treeCell[i] === 1 || this.houseCell[i] === 1 || occupied[i] >= 1;
       this.solid[i] = s ? 1 : 0;
       this.tall[i] = (t === Tile.Cliff || this.treeCell[i] === 1 || this.houseCell[i] === 1 || occupied[i] === 1) ? 1 : 0;
     }
@@ -254,11 +279,60 @@ export class World {
     const raw: SpawnSpec[] = [
       { x: 22.5, z: 13.5, kind: 'sword' }, { x: 28.5, z: 20.5, kind: 'sword' }, { x: 14.5, z: 23.5, kind: 'sword' },
       { x: 24.5, z: 33.5, kind: 'sword' }, { x: 44.5, z: 19.5, kind: 'sword' }, { x: 36.5, z: 18.5, kind: 'sword' },
-      { x: 37.5, z: 11.5, kind: 'spear' }, { x: 43.5, z: 24.5, kind: 'spear' }, { x: 30.5, z: 36.5, kind: 'spear' }, { x: 16.5, z: 20.5, kind: 'spear' },
-      { x: 18.5, z: 29.5, kind: 'javelin' }, { x: 40.5, z: 27.5, kind: 'javelin' }, { x: 13.5, z: 17.5, kind: 'javelin' },
+      { x: 37.5, z: 11.5, kind: 'spear' }, { x: 43.5, z: 24.5, kind: 'spear' }, { x: 30.5, z: 36.5, kind: 'spear' }, { x: 19.5, z: 21.5, kind: 'spear' },
+      { x: 18.5, z: 29.5, kind: 'javelin' }, { x: 40.5, z: 27.5, kind: 'javelin' }, { x: 12.5, z: 22.5, kind: 'javelin' },
       { x: 43.5, z: 12.5, kind: 'archer' }, { x: 38.5, z: 35.5, kind: 'archer' }, { x: 26.5, z: 39.5, kind: 'archer' }, { x: 47.5, z: 33.5, kind: 'archer' },
     ];
     for (const s of raw) { const p = this.nearestFree(s.x, s.z); this.spawns.push({ x: p.x, z: p.z, kind: s.kind }); }
+  }
+
+  private beds(): [number, number][] {
+    const out: [number, number][] = [];
+    for (let z = 0; z < this.h; z++) for (let x = 0; x < this.w; x++) if (this.tile(x, z) === Tile.Bed) out.push([x, z]);
+    return out;
+  }
+
+  private generateVillage(set: (x: number, z: number, t: Tile) => void) {
+    // central cobblestone plaza around the well
+    for (let z = 6; z <= 11; z++) for (let x = 7; x <= 12; x++) set(x, z, Tile.Cobble);
+    // cobbled lanes from plaza to each doorstep and to the south gate
+    const lane = (x0: number, z0: number, x1: number, z1: number) => {
+      let x = x0, z = z0;
+      set(x, z, Tile.Cobble);
+      while (x !== x1) { x += Math.sign(x1 - x); set(x, z, Tile.Cobble); }
+      while (z !== z1) { z += Math.sign(z1 - z); set(x, z, Tile.Cobble); }
+    };
+    lane(9, 12, 9, 16);           // south gate
+    lane(6, 6, 6, 6); lane(7, 7, 6, 6);
+    lane(13, 5, 14, 5); lane(12, 6, 14, 5);
+    lane(6, 12, 4, 12); lane(7, 11, 4, 12);
+    lane(13, 11, 17, 11); lane(16, 11, 16, 12);
+    lane(15, 16, 16, 16);
+    lane(12, 9, 20, 9); lane(13, 8, 20, 8);
+    // flower beds / vegetable patches
+    for (let z = 13; z <= 15; z++) for (let x = 3; x <= 6; x++) set(x, z, Tile.Bed);
+    for (let z = 2; z <= 3; z++) for (let x = 9; x <= 10; x++) set(x, z, Tile.Bed);
+    for (let x = 10; x <= 12; x++) set(x, 13, Tile.Bed);
+    set(3, 7, Tile.Flowers); set(3, 6, Tile.Flowers); set(18, 3, Tile.Flowers); set(19, 4, Tile.Flowers); set(18, 6, Tile.Flowers);
+    this.props = [
+      { kind: 'well', x: 9.5, z: 8.5 },
+      { kind: 'weathercock', x: 11.5, z: 6.5 },
+      { kind: 'bench', x: 7.5, z: 9.5, rot: Math.PI / 2 }, { kind: 'bench', x: 11.5, z: 9.5, rot: -Math.PI / 2 },
+      { kind: 'lamp', x: 7.5, z: 6.5 }, { kind: 'lamp', x: 12.5, z: 11.5 }, { kind: 'lamp', x: 7.5, z: 12.5 },
+      { kind: 'sign', x: 10.5, z: 15.5 }, { kind: 'sign', x: 12.5, z: 5.5 },
+      { kind: 'stall', x: 17.5, z: 5.5, rot: Math.PI },
+      { kind: 'barrel', x: 19.5, z: 6.5 }, { kind: 'barrel', x: 19.5, z: 10.5 }, { kind: 'crate', x: 13.5, z: 14.5 }, { kind: 'crate', x: 2.5, z: 5.5 },
+      { kind: 'flowerpot', x: 3.5, z: 12.5 }, { kind: 'flowerpot', x: 18.5, z: 11.5 }, { kind: 'flowerpot', x: 12.5, z: 4.5 },
+    ];
+    this.npcs = [
+      { id: 'elder', x: 6.5, z: 7.5, facing: 0, wander: 0 },
+      { id: 'shopkeeper', x: 17.5, z: 6.6, facing: 0, wander: 0 },
+      { id: 'kid', x: 10.5, z: 10.5, facing: 1, wander: 2.5 },
+      { id: 'granny', x: 5.5, z: 12.5, facing: 1, wander: 0 },
+      { id: 'bard', x: 8.5, z: 11.0, facing: 1, wander: 0 },
+      { id: 'farmer', x: 11.5, z: 3.5, facing: 3, wander: 1.5 },
+      { id: 'dog', x: 12.5, z: 9.5, facing: 3, wander: 3 },
+    ];
   }
 
   // ---------------------------------------------------------------- textures
@@ -268,6 +342,8 @@ export class World {
     water: '#3f7ad8', waterL: '#8ec0f5', waterD: '#2d5fc2', shore: '#1e3d8c',
     plank: '#b98450', plankD: '#7e5230', plankL: '#dba86e',
     cliff: '#5c3d22',
+    cobble: '#c9b79a', cobbleL: '#e2d4bb', cobbleD: '#a6937a', cobbleE: '#7f6c58',
+    soil: '#7a5230', soilL: '#9a6e46', leaf: '#4cbf4c', leafL: '#8ce070',
   };
 
   private paintGrass(g: CanvasRenderingContext2D, ox: number, oz: number, tx: number, tz: number, flowers: boolean) {
@@ -348,6 +424,27 @@ export class World {
         if (S === Tile.Water) { g.fillStyle = C.plankD; g.fillRect(ox, oz + T - 2, T, 2); g.fillStyle = C.plankL; g.fillRect(ox, oz + T - 3, T, 1); }
       } else if (t === Tile.Cliff) {
         g.fillStyle = C.cliff; g.fillRect(ox, oz, T, T);
+      } else if (t === Tile.Cobble) {
+        // large flagstones with darker grout, LA-style plaza
+        g.fillStyle = C.cobbleE; g.fillRect(ox, oz, T, T);
+        const stones = [[0, 0, 9, 9], [10, 0, 10, 6], [10, 7, 10, 6], [0, 10, 6, 10], [7, 10, 13, 10]];
+        stones.forEach(([sx, sy, sw, sh], i) => {
+          g.fillStyle = hash2(tx, tz, i) < 0.5 ? C.cobble : C.cobbleL; g.fillRect(ox + sx + 1, oz + sy + 1, sw - 1, sh - 1);
+          g.fillStyle = C.cobbleD; g.fillRect(ox + sx + 1, oz + sy + sh - 1, sw - 1, 1); g.fillRect(ox + sx + sw - 1, oz + sy + 1, 1, sh - 1);
+          g.fillStyle = '#f2e8d4'; g.fillRect(ox + sx + 1, oz + sy + 1, sw - 2, 1);
+        });
+        if (hash2(tx, tz, 77) < 0.3) { g.fillStyle = C.grassD; g.fillRect(ox + Math.floor(hash2(tx, tz, 78) * (T - 2)), oz + Math.floor(hash2(tx, tz, 79) * (T - 2)), 1, 2); }
+      } else if (t === Tile.Bed) {
+        // tilled soil rows with little plants
+        g.fillStyle = C.soil; g.fillRect(ox, oz, T, T);
+        for (let y = 2; y < T; y += 5) { g.fillStyle = C.soilL; g.fillRect(ox, oz + y, T, 1); g.fillStyle = '#5a3a1e'; g.fillRect(ox, oz + y + 3, T, 1); }
+        for (let i = 0; i < 4; i++) {
+          const x = ox + 2 + (i * 5) % (T - 3), y = oz + 3 + Math.floor(hash2(tx, tz, i) * 3) * 5;
+          const c = hash2(tx, tz, i + 8) < 0.5 ? C.leaf : C.leafL;
+          g.fillStyle = c; g.fillRect(x - 1, y, 3, 1); g.fillRect(x, y - 1, 1, 3);
+          if (hash2(tx, tz, i + 16) < 0.3) { g.fillStyle = '#ff6a3d'; g.fillRect(x, y, 1, 1); }
+        }
+        g.fillStyle = '#5a3a1e'; g.fillRect(ox, oz, T, 1); g.fillRect(ox, oz, 1, T);
       }
     }
     const tex = new THREE.CanvasTexture(cv);

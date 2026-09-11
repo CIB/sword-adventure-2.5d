@@ -3,10 +3,10 @@ import { FACING_ANGLE, FACING_VEC, MAX_HP, inArc, lerp, normAngle, type Facing }
 import type { AudioEngine } from './audio';
 import type { Input } from './input';
 import { ATTACK_KEYS, SHIELD_KEYS } from './input';
-import type { EnemyKind, Vec2, World } from './world';
+import type { EnemyKind, Vec2, World, NpcSpec } from './world';
 import {
   buildArrow, buildHeart, buildHeroine, buildJavelinProjectile, buildRupee, buildSoldier, part,
-  UNIT_BOX, UNIT_OCTA, UNIT_SPHERE, type Humanoid,
+  UNIT_BOX, UNIT_OCTA, UNIT_SPHERE, type Humanoid, buildVillager, buildDog, VILLAGER_LOOKS,
 } from './models';
 
 export interface GameCtx {
@@ -19,6 +19,8 @@ export interface GameCtx {
   spawnProjectile(kind: 'arrow' | 'javelin', x: number, z: number, dx: number, dz: number, dmg: number): void;
   spawnEffect(e: Effect): void;
   tryHitPlayer(dmg: number, sx: number, sz: number, opts?: { projectile?: boolean }): 'hit' | 'blocked' | 'immune';
+  /** true while a dialogue box is open (player + NPCs freeze) */
+  talking: boolean;
 }
 
 const angleTo = (dx: number, dz: number) => Math.atan2(dx, dz);
@@ -399,6 +401,9 @@ export class Enemy {
     dx /= len; dz /= len;
     const ox = this.pos.x, oz = this.pos.z;
     this.game.world.moveBox(this.pos, dx * speed * dt, dz * speed * dt, this.HW, this.HH, speed * dt);
+    // the village is a safe haven: knights never cross the fence line
+    const v = this.game.world.village;
+    if (this.pos.x > v.x0 - 0.5 && this.pos.x < v.x1 + 1.5 && this.pos.z > v.z0 - 0.5 && this.pos.z < v.z1 + 1.5) { this.pos.x = ox; this.pos.z = oz; return false; }
     this.faceToward(dx, dz, 1.5);
     const moved = Math.hypot(this.pos.x - ox, this.pos.z - oz);
     this.animT += moved * 9;
@@ -635,6 +640,125 @@ export class Enemy {
   dispose() {
     this.alive = false;
     this.game.scene.remove(this.model.root);
+  }
+}
+
+// ======================================================================= NPC
+export class Npc {
+  pos: Vec2;
+  home: Vec2;
+  facing: Facing;
+  model: Humanoid;
+  animT = 0;
+  t = 0;
+  wanderT = 0;
+  dir: Vec2 = { x: 0, z: 0 };
+  bubble: THREE.Group;
+  readonly isDog: boolean;
+  readonly HW = 0.28;
+  readonly HH = 0.24;
+
+  constructor(private game: GameCtx, public spec: NpcSpec) {
+    this.pos = { x: spec.x, z: spec.z };
+    this.home = { x: spec.x, z: spec.z };
+    this.facing = spec.facing ?? 0;
+    this.isDog = spec.id === 'dog';
+    this.model = this.isDog ? buildDog() : buildVillager(VILLAGER_LOOKS[spec.id] ?? VILLAGER_LOOKS.farmer);
+    // "!" / "..." speech bubble shown when the player is close enough to talk
+    this.bubble = new THREE.Group();
+    const bmat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    this.bubble.add(part(UNIT_BOX, bmat, [0, 0, 0], [0.34, 0.3, 0.05]));
+    this.bubble.add(part(UNIT_BOX, bmat, [0, -0.2, 0], [0.1, 0.12, 0.05]));
+    this.bubble.add(part(UNIT_BOX, new THREE.MeshBasicMaterial({ color: 0x1d2b5a }), [0, 0.03, 0.03], [0.06, 0.16, 0.02]));
+    this.bubble.add(part(UNIT_BOX, new THREE.MeshBasicMaterial({ color: 0x1d2b5a }), [0, -0.09, 0.03], [0.06, 0.05, 0.02]));
+    this.bubble.position.set(0, this.isDog ? 1.0 : 1.75, 0);
+    this.bubble.visible = false;
+    this.model.root.add(this.bubble);
+    this.wanderT = 1 + game.rand() * 2;
+    game.scene.add(this.model.root);
+    this.sync();
+  }
+
+  get facingAngle() { return FACING_ANGLE[this.facing]; }
+
+  /** Can the player talk to this NPC right now? (close + roughly facing them) */
+  canTalk(): boolean {
+    const p = this.game.player;
+    const dx = this.pos.x - p.pos.x, dz = this.pos.z - p.pos.z;
+    const d = Math.hypot(dx, dz);
+    if (d > 1.25) return false;
+    const f = FACING_VEC[p.facing];
+    return (f[0] * dx + f[1] * dz) / (d || 1) > 0.3;
+  }
+
+  /** Turn to face the player (used when a conversation starts) */
+  facePlayer() {
+    const p = this.game.player;
+    const dx = p.pos.x - this.pos.x, dz = p.pos.z - this.pos.z;
+    if (Math.abs(dx) > Math.abs(dz)) this.facing = dx > 0 ? 1 : 3; else this.facing = dz > 0 ? 0 : 2;
+  }
+
+  update(dt: number, near: boolean) {
+    this.t += dt;
+    this.bubble.visible = near && !this.game.talking;
+    if (this.bubble.visible) { this.bubble.position.y = (this.isDog ? 1.0 : 1.75) + Math.sin(this.t * 6) * 0.05; this.bubble.rotation.y = -this.facingAngle; }
+    let moving = false;
+    const wander = this.spec.wander ?? 0;
+    if (!this.game.talking && wander > 0) {
+      this.wanderT -= dt;
+      if (this.wanderT <= 0) {
+        if (this.dir.x || this.dir.z) { this.dir = { x: 0, z: 0 }; this.wanderT = 1 + this.game.rand() * 2.5; }
+        else {
+          // pick a direction that keeps us near home
+          const f = Math.floor(this.game.rand() * 4) as Facing;
+          let dx = FACING_VEC[f][0], dz = FACING_VEC[f][1];
+          const hx = this.home.x - this.pos.x, hz = this.home.z - this.pos.z;
+          if (Math.hypot(hx, hz) > wander * 0.7) { if (Math.abs(hx) > Math.abs(hz)) { dx = Math.sign(hx); dz = 0; } else { dx = 0; dz = Math.sign(hz); } }
+          this.dir = { x: dx, z: dz };
+          this.facing = dx !== 0 ? (dx > 0 ? 1 : 3) : dz > 0 ? 0 : 2;
+          this.wanderT = 0.5 + this.game.rand() * 1.2;
+        }
+      }
+      if (this.dir.x || this.dir.z) {
+        const speed = this.isDog ? 2.2 : 1.1;
+        const ox = this.pos.x, oz = this.pos.z;
+        const nx = this.pos.x + this.dir.x * speed * dt, nz = this.pos.z + this.dir.z * speed * dt;
+        // don't walk into the player, and stay within the wander radius
+        const p = this.game.player;
+        const blocked = Math.hypot(nx - p.pos.x, nz - p.pos.z) < 0.7 || Math.hypot(nx - this.home.x, nz - this.home.z) > wander;
+        if (!blocked) this.game.world.moveBox(this.pos, this.dir.x * speed * dt, this.dir.z * speed * dt, this.HW, this.HH);
+        const moved = Math.hypot(this.pos.x - ox, this.pos.z - oz);
+        if (moved < speed * dt * 0.3) this.wanderT = 0; else { moving = true; this.animT += moved * 9; }
+      }
+    }
+    this.animate(moving);
+    this.sync();
+  }
+
+  private animate(moving: boolean) {
+    const m = this.model;
+    const sw = moving ? Math.sin(this.animT) : 0;
+    if (this.isDog) {
+      m.legL.rotation.x = sw * 0.8; m.legR.rotation.x = -sw * 0.8; m.armL.rotation.x = -sw * 0.8; m.armR.rotation.x = sw * 0.8;
+      const tail = m.body.getObjectByName('tail'); if (tail) tail.rotation.z = Math.sin(this.t * 9) * 0.5;
+      m.body.position.y = moving ? Math.abs(Math.sin(this.animT)) * 0.05 : 0;
+      return;
+    }
+    m.legL.rotation.x = sw * 0.6; m.legR.rotation.x = -sw * 0.6;
+    m.body.position.y = moving ? Math.abs(Math.sin(this.animT)) * 0.03 : Math.sin(this.t * 2) * 0.008; // idle breathing
+    const id = this.spec.id;
+    if (id === 'elder') { m.armR.rotation.set(0.35, 0, 0.1); m.armL.rotation.set(0.15, 0, -0.1); m.body.rotation.x = 0.12; }
+    else if (id === 'bard') { m.armL.rotation.set(-0.9, 0.3, -0.5); m.armR.rotation.set(-0.6 + Math.sin(this.t * 7) * 0.12, -0.5, 0.4); m.head.rotation.z = Math.sin(this.t * 2) * 0.12; }
+    else if (id === 'granny') { m.armR.rotation.set(0.5 + Math.sin(this.t * 3) * 0.25, 0, 0.15); m.armL.rotation.set(0.2, 0, -0.1); m.body.rotation.x = 0.18; }
+    else if (id === 'farmer') { m.armR.rotation.set(moving ? -sw * 0.3 : -0.4 + Math.abs(Math.sin(this.t * 2.5)) * 0.8, 0, 0.1); m.armL.rotation.set(sw * 0.3, 0, -0.1); }
+    else if (id === 'kid') { m.armL.rotation.set(-sw * 0.6 - 0.1, 0, -0.35); m.armR.rotation.set(sw * 0.6 - 0.1, 0, 0.35); m.body.position.y += moving ? 0 : Math.abs(Math.sin(this.t * 4)) * 0.03; }
+    else if (id === 'shopkeeper') { m.armL.rotation.set(-1.0, 0, -0.3); m.armR.rotation.set(-1.0 + Math.sin(this.t * 1.5) * 0.1, 0, 0.3); }
+    else { m.armL.rotation.set(sw * 0.4, 0, -0.1); m.armR.rotation.set(-sw * 0.4, 0, 0.1); }
+  }
+
+  private sync() {
+    this.model.root.position.set(this.pos.x, 0, this.pos.z);
+    this.model.root.rotation.y = this.facingAngle;
   }
 }
 

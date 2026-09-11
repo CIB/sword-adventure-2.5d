@@ -1,12 +1,14 @@
 const GAME_KEYS = new Set([
   'KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
-  'KeyJ', 'KeyK', 'KeyZ', 'KeyX', 'Space', 'ShiftLeft', 'ShiftRight', 'Enter', 'KeyM', 'KeyP', 'Escape',
+  'KeyJ', 'KeyK', 'KeyZ', 'KeyX', 'KeyE', 'KeyC', 'Space', 'ShiftLeft', 'ShiftRight', 'Enter', 'KeyM', 'KeyP', 'Escape',
 ]);
 
 export const ATTACK_KEYS = ['KeyJ', 'KeyZ', 'Space'];
 export const SHIELD_KEYS = ['KeyK', 'KeyX', 'ShiftLeft', 'ShiftRight'];
 export const PAUSE_KEYS = ['Enter', 'KeyP', 'Escape'];
 export const MUTE_KEYS = ['KeyM'];
+/** Talk / advance dialogue. The attack keys also work so a Zelda-style "A to talk" feels natural. */
+export const TALK_KEYS = ['KeyE', 'KeyC', 'KeyJ', 'KeyZ', 'Space', 'Enter'];
 
 export class Input {
   private keys = new Set<string>();

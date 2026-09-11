@@ -19,6 +19,8 @@ export enum Tile {
   Bridge = 3,
   Cliff = 4,
   Flowers = 5,
+  Cobble = 6,
+  Bed = 7, // flower bed / crops (village)
 }
 
 export type Facing = 0 | 1 | 2 | 3; // 0 south, 1 east, 2 north, 3 west

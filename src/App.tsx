@@ -65,7 +65,7 @@ export default function App() {
             <div className="text-center px-4">
               <div className="text-[10px] tracking-[0.35em] text-amber-200/90 mb-3">A 2.5D ACTION ADVENTURE</div>
               <h1 className="text-3xl md:text-5xl text-amber-300 drop-shadow-[4px_4px_0_#5a2a00] leading-tight">LEGEND OF ARIA</h1>
-              <div className="text-[10px] md:text-xs text-emerald-200 mt-2">MEADOW OF THE FALLEN KNIGHTS</div>
+              <div className="text-[10px] md:text-xs text-emerald-200 mt-2">THISTLEDOWN &amp; THE MEADOW OF THE FALLEN KNIGHTS</div>
               <div className="mt-8 text-[11px] md:text-sm animate-pulse">PRESS ENTER TO START</div>
               <div className="mt-8 grid grid-cols-2 gap-x-8 gap-y-2 text-[9px] md:text-[11px] text-left text-gray-200">
                 <div className="text-amber-200">LEFT HAND</div>
@@ -74,8 +74,8 @@ export default function App() {
                 <div>J · SWORD (HOLD: SPIN)</div>
                 <div className="text-gray-400">(OR ARROWS + Z / X)</div>
                 <div>K · SHIELD</div>
-                <div className="text-gray-400">ENTER · PAUSE</div>
-                <div className="text-gray-400">M · MUTE</div>
+                <div className="text-gray-400">E · TALK</div>
+                <div className="text-gray-400">ENTER · PAUSE · M · MUTE</div>
               </div>
             </div>
           </div>
@@ -101,7 +101,7 @@ export default function App() {
         {muted && <div className="absolute right-2 bottom-2 text-[9px] text-gray-300 bg-black/50 px-2 py-1">MUTED</div>}
       </div>
       <div className="mt-3 text-[9px] md:text-[10px] text-gray-500 tracking-wider text-center px-2">
-        WASD MOVE · J SWORD (HOLD FOR SPIN ATTACK) · K SHIELD · ENTER PAUSE · M MUTE
+        WASD MOVE · J SWORD (HOLD FOR SPIN ATTACK) · K SHIELD · E TALK · ENTER PAUSE · M MUTE
       </div>
     </div>
   );

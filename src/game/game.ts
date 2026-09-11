@@ -1,14 +1,15 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import {
-  VIEW_W, VIEW_H, VIEW_TILES_X, VIEW_TILES_Y, CAM_HEIGHT, SHEAR, MAP_W, MAP_H, PX_PER_TILE,
+  VIEW_W, VIEW_H, VIEW_TILES_X, VIEW_TILES_Y, CAM_HEIGHT, SHEAR, MAP_W, MAP_H, PX_PER_TILE, MAX_HP,
   Tile, RNG, inArc, FACING_VEC, clamp,
 } from './constants';
 import { World, type EnemyKind, type Vec2 } from './world';
 import { AudioEngine } from './audio';
-import { Input, PAUSE_KEYS, MUTE_KEYS, ATTACK_KEYS } from './input';
-import { Player, Enemy, Projectile, Pickup, Effect, fxSpark, fxPuff, fxLeaves, type GameCtx } from './entities';
-import { buildTrees, buildBush, buildStump, buildRock, buildFence, buildHouse, getGradientMap } from './models';
+import { Input, PAUSE_KEYS, MUTE_KEYS, ATTACK_KEYS, TALK_KEYS } from './input';
+import { Player, Enemy, Npc, Projectile, Pickup, Effect, fxSpark, fxPuff, fxLeaves, type GameCtx } from './entities';
+import { NPC_TALK, newQuestState, type Conversation, type QuestState, type TalkCtx } from './dialogue';
+import { buildTrees, buildBush, buildStump, buildRock, buildFence, buildHouse, buildProp, getGradientMap } from './models';
 import { Hud } from './hud';
 
 export type Phase = 'title' | 'playing' | 'paused' | 'gameover';
@@ -56,6 +57,15 @@ export class Game implements GameCtx {
   effects: Effect[] = [];
   bushes: BushObj[] = [];
   respawns: { kind: EnemyKind; spawn: Vec2; t: number }[] = [];
+  npcs: Npc[] = [];
+  quests: QuestState = newQuestState();
+  talking = false;
+  private convo: Conversation | null = null;
+  private convoPage = 0;
+  private convoChars = 0; // typewriter progress on the current page
+  private toastMsg = '';
+  private toastT = 0;
+  private spinners: THREE.Object3D[] = [];
   phase: Phase = 'title';
   time = 0;
   private lastNow = 0;
@@ -115,6 +125,8 @@ export class Game implements GameCtx {
 
     const ps = this.world.playerStart;
     this.player = new Player(this, ps.x, ps.z);
+    this.player.facing = 2;
+    for (const n of this.world.npcs) this.npcs.push(new Npc(this, n));
     this.spawnAllEnemies();
     this.cam = { x: ps.x, z: ps.z - 1 };
     this.placeCamera(0);
@@ -175,6 +187,12 @@ export class Game implements GameCtx {
       this.scene.add(mesh);
     }
     for (const hs of w.houses) this.scene.add(buildHouse(hs));
+    for (const pr of w.props) {
+      const mesh = buildProp(pr);
+      this.scene.add(mesh);
+      const sp = mesh.getObjectByName('spin');
+      if (sp) this.spinners.push(sp);
+    }
   }
 
   private spawnAllEnemies() {
@@ -213,6 +231,60 @@ export class Game implements GameCtx {
     else if (r < heartP + rupeeP) this.pickups.push(new Pickup(this, this.rand() < 0.2 ? 'rupee5' : 'rupee', { x, z }));
   }
 
+  // ------------------------------------------------------------------ dialogue
+  private talkCtx(): TalkCtx {
+    const p = this.player;
+    return {
+      rupees: p.rupees,
+      spendRupees: (n) => { if (p.rupees < n) return false; p.rupees -= n; this.audio.rupee(); return true; },
+      heal: () => { p.hp = MAX_HP; this.audio.heart(); },
+      reward: (n) => { p.rupees = Math.min(999, p.rupees + n); this.audio.rupee(); this.toast('+' + n + ' RUPEES'); },
+      toast: (m) => this.toast(m),
+    };
+  }
+
+  toast(msg: string) { this.toastMsg = msg; this.toastT = 2.2; }
+
+  private tryTalk() {
+    if (this.player.attacking || this.player.dead) return;
+    let best: Npc | null = null, bd = Infinity;
+    for (const n of this.npcs) {
+      if (!n.canTalk()) continue;
+      const d = Math.hypot(n.pos.x - this.player.pos.x, n.pos.z - this.player.pos.z);
+      if (d < bd) { bd = d; best = n; }
+    }
+    if (!best) return;
+    const talker = NPC_TALK[best.spec.id];
+    if (!talker) return;
+    best.facePlayer();
+    this.convo = talker(this.quests, this.talkCtx());
+    this.convoPage = 0; this.convoChars = 0;
+    this.talking = true;
+    this.quests.talked.add(best.spec.id);
+    this.audio.talk();
+  }
+
+  private updateDialogue(dt: number) {
+    const c = this.convo!;
+    const page = c.pages[this.convoPage];
+    const done = this.convoChars >= page.length;
+    if (!done) {
+      const before = Math.floor(this.convoChars);
+      this.convoChars = Math.min(page.length, this.convoChars + dt * 45);
+      if (Math.floor(this.convoChars) !== before && Math.floor(this.convoChars) % 3 === 0) this.audio.blip();
+    }
+    if (this.input.justPressed(TALK_KEYS)) {
+      if (!done) { this.convoChars = page.length; return; }
+      this.convoPage++;
+      this.convoChars = 0;
+      if (this.convoPage >= c.pages.length) {
+        this.talking = false;
+        this.convo = null;
+        c.onEnd?.(this.quests, this.talkCtx());
+      } else this.audio.blip();
+    }
+  }
+
   // ------------------------------------------------------------------ phases
   setPhase(p: Phase) {
     this.phase = p;
@@ -249,6 +321,8 @@ export class Game implements GameCtx {
     this.spawnAllEnemies();
     this.cam = { x: ps.x, z: ps.z - 1 };
     this.deathTimer = 0;
+    this.talking = false; this.convo = null;
+    this.player.facing = 2;
     this.audio.resume();
     this.audio.startMusic();
     this.setPhase('playing');
@@ -297,6 +371,24 @@ export class Game implements GameCtx {
 
     this.time += dt;
     this.waveTex.offset.set(this.time * 0.05, -this.time * 0.02);
+    for (const sp of this.spinners) sp.rotation.y += dt * 1.5;
+    if (this.toastT > 0) this.toastT -= dt;
+
+    // NPCs (they idle/wander even mid-conversation freeze of the player)
+    const pp = this.player.pos;
+    for (const n of this.npcs) n.update(dt, !this.player.dead && n.canTalk());
+
+    if (this.talking) {
+      this.updateDialogue(dt);
+      this.placeCamera(dt);
+      return;
+    }
+    if (input.justPressed(TALK_KEYS) && !this.player.attacking) {
+      const before = this.talking;
+      this.tryTalk();
+      if (this.talking !== before) { this.player.holding = false; this.player.charged = false; this.player.chargeT = 0; return; }
+    }
+    void pp;
 
     this.player.update(dt, input);
     for (const e of this.enemies) e.update(dt);
@@ -358,6 +450,7 @@ export class Game implements GameCtx {
 
   private onEnemyDied(e: Enemy) {
     this.player.kills++;
+    this.quests.kills++;
     this.audio.enemyDie();
     this.spawnEffect(fxPuff(e.pos.x, e.pos.z));
     this.dropLoot(e.pos.x, e.pos.z, 0.35, 0.4);
@@ -366,6 +459,7 @@ export class Game implements GameCtx {
 
   private cutBush(b: BushObj) {
     b.alive = false;
+    this.quests.bushes++;
     this.scene.remove(b.mesh);
     this.world.setSolid(b.tx, b.tz, false);
     b.stump = buildStump();
@@ -448,6 +542,9 @@ export class Game implements GameCtx {
       hp: p.hp, rupees: p.rupees, kills: p.kills,
       charge: p.charged ? 1 : p.holding ? Math.min(1, p.chargeT / 0.75) : 0,
       charged: p.charged, blocking: p.blocking, attacking: p.attacking, time: this.time,
+      dialogue: this.convo ? { name: this.convo.name, color: this.convo.color, text: this.convo.pages[this.convoPage], chars: Math.floor(this.convoChars), more: this.convoPage < this.convo.pages.length - 1 } : null,
+      toast: this.toastT > 0 ? this.toastMsg : '',
+      canTalk: !this.talking && this.phase === 'playing' && this.npcs.some((n) => n.canTalk()),
     });
   }
 }

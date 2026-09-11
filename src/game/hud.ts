@@ -4,9 +4,21 @@ const FONT: Record<string, string[]> = {
   '0': ['111', '101', '101', '101', '111'], '1': ['010', '110', '010', '010', '111'], '2': ['111', '001', '111', '100', '111'],
   '3': ['111', '001', '111', '001', '111'], '4': ['101', '101', '111', '001', '001'], '5': ['111', '100', '111', '001', '111'],
   '6': ['111', '100', '111', '101', '111'], '7': ['111', '001', '001', '010', '010'], '8': ['111', '101', '111', '101', '111'],
-  '9': ['111', '101', '111', '001', '111'], L: ['100', '100', '100', '100', '111'], I: ['111', '010', '010', '010', '111'],
-  F: ['111', '100', '111', '100', '100'], E: ['111', '100', '111', '100', '111'], J: ['111', '001', '001', '101', '111'],
-  K: ['101', '101', '110', '101', '101'], '-': ['000', '000', '111', '000', '000'], ' ': ['000', '000', '000', '000', '000'],
+  '9': ['111', '101', '111', '001', '111'],
+  A: ['010', '101', '111', '101', '101'], B: ['110', '101', '110', '101', '110'], C: ['011', '100', '100', '100', '011'],
+  D: ['110', '101', '101', '101', '110'], E: ['111', '100', '111', '100', '111'], F: ['111', '100', '111', '100', '100'],
+  G: ['011', '100', '101', '101', '011'], H: ['101', '101', '111', '101', '101'], I: ['111', '010', '010', '010', '111'],
+  J: ['111', '001', '001', '101', '111'], K: ['101', '101', '110', '101', '101'], L: ['100', '100', '100', '100', '111'],
+  M: ['101', '111', '111', '101', '101'], N: ['110', '101', '101', '101', '101'], O: ['010', '101', '101', '101', '010'],
+  P: ['110', '101', '110', '100', '100'], Q: ['010', '101', '101', '011', '001'], R: ['110', '101', '110', '101', '101'],
+  S: ['011', '100', '010', '001', '110'], T: ['111', '010', '010', '010', '010'], U: ['101', '101', '101', '101', '111'],
+  V: ['101', '101', '101', '101', '010'], W: ['101', '101', '111', '111', '101'], X: ['101', '101', '010', '101', '101'],
+  Y: ['101', '101', '010', '010', '010'], Z: ['111', '001', '010', '100', '111'],
+  '-': ['000', '000', '111', '000', '000'], ' ': ['000', '000', '000', '000', '000'], '.': ['000', '000', '000', '000', '010'],
+  ',': ['000', '000', '000', '010', '100'], '!': ['010', '010', '010', '000', '010'], '?': ['110', '001', '010', '000', '010'],
+  "'": ['010', '010', '000', '000', '000'], ':': ['000', '010', '000', '010', '000'], '~': ['000', '010', '101', '000', '000'],
+  '+': ['000', '010', '111', '010', '000'], '(': ['010', '100', '100', '100', '010'], ')': ['010', '001', '001', '001', '010'],
+  '/': ['001', '001', '010', '100', '100'],
 };
 
 const HEART = ['0110110', '1111111', '1111111', '0111110', '0011100', '0001000'];
@@ -20,6 +32,9 @@ export interface HudState {
   blocking: boolean;
   attacking: boolean;
   time: number;
+  dialogue?: { name: string; color: string; text: string; chars: number; more: boolean } | null;
+  toast?: string;
+  canTalk?: boolean;
 }
 
 export class Hud {
@@ -40,6 +55,7 @@ export class Hud {
   }
 
   text(str: string, x: number, y: number, c: string, s = 1, outline = true) {
+    str = str.toUpperCase();
     if (outline) for (const [ox, oy] of [[-1, 0], [1, 0], [0, -1], [0, 1], [1, 1], [-1, -1], [1, -1], [-1, 1]]) {
       let cx = x;
       for (const ch of str) { this.glyph(ch, cx + ox, y + oy, '#000', s); cx += 4 * s; }
@@ -106,9 +122,55 @@ export class Hud {
     this.g.fillRect(x - 1, y + 1, 1, 5); this.g.fillRect(x + 7, y + 1, 1, 5); this.g.fillRect(x + 1, y - 1, 5, 1); this.g.fillRect(x + 1, y + 7, 5, 1);
   }
 
+  private wrap(text: string, maxChars: number): string[] {
+    const words = text.split(' ');
+    const lines: string[] = [];
+    let cur = '';
+    for (const w of words) {
+      if ((cur + (cur ? ' ' : '') + w).length > maxChars) { lines.push(cur); cur = w; } else cur = cur ? cur + ' ' + w : w;
+    }
+    if (cur) lines.push(cur);
+    return lines;
+  }
+
+  /** Link's Awakening-style dialogue box: dark panel with a light double border at the bottom of the screen. */
+  private dialogueBox(d: NonNullable<HudState['dialogue']>, time: number) {
+    const g = this.g;
+    const x = 12, y = VIEW_H - 74, w = VIEW_W - 24, h = 62;
+    g.fillStyle = '#000'; g.fillRect(x - 2, y - 2, w + 4, h + 4);
+    g.fillStyle = '#f8f0d8'; g.fillRect(x, y, w, h);
+    g.fillStyle = '#000'; g.fillRect(x + 2, y + 2, w - 4, h - 4);
+    g.fillStyle = '#f8f0d8'; g.fillRect(x + 3, y + 3, w - 6, h - 6);
+    g.fillStyle = '#101820'; g.fillRect(x + 5, y + 5, w - 10, h - 10);
+    // name tag
+    const tagW = d.name.length * 8 + 10;
+    g.fillStyle = '#000'; g.fillRect(x + 8, y - 8, tagW + 4, 14);
+    g.fillStyle = d.color; g.fillRect(x + 10, y - 6, tagW, 10);
+    this.text(d.name, x + 15, y - 4, '#101820', 1, false);
+    // body text (typewriter)
+    const shown = d.text.slice(0, d.chars);
+    const lines = this.wrap(d.text, 34);
+    let count = 0;
+    lines.forEach((ln, i) => {
+      const remain = shown.length - count;
+      if (remain > 0) this.text(ln.slice(0, remain), x + 12, y + 12 + i * 14, '#f8f8f8', 2, false);
+      count += ln.length + 1;
+    });
+    // continue arrow
+    if (d.chars >= d.text.length && Math.floor(time * 3) % 2 === 0) {
+      const ax = x + w - 18, ay = y + h - 14 + (Math.floor(time * 6) % 2);
+      g.fillStyle = '#f8d848';
+      g.fillRect(ax, ay, 7, 1); g.fillRect(ax + 1, ay + 1, 5, 1); g.fillRect(ax + 2, ay + 2, 3, 1); g.fillRect(ax + 3, ay + 3, 1, 1);
+      if (!d.more) { g.fillStyle = '#f8f8f8'; g.fillRect(ax + 3, ay - 4, 1, 3); }
+    }
+  }
+
   draw(s: HudState) {
     const g = this.g;
     g.clearRect(0, 0, VIEW_W, VIEW_H);
+    if (s.dialogue) this.dialogueBox(s.dialogue, s.time);
+    else if (s.canTalk && Math.floor(s.time * 2) % 2 === 0) this.text('E - TALK', VIEW_W / 2 - 16, VIEW_H - 14, '#f8f8f8');
+    if (s.toast) this.text(s.toast, VIEW_W / 2 - s.toast.length * 4, VIEW_H / 2 - 30, '#f8d848', 2);
     // charge meter (spin attack)
     this.frame(8, 8, 12, 38, '#f0f0f0', '#101820');
     const fillH = Math.round(s.charge * 30);
