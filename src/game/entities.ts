@@ -749,7 +749,7 @@ export class Npc {
     m.body.position.y = moving ? Math.abs(Math.sin(this.animT)) * 0.03 : Math.sin(this.t * 2) * 0.008; // idle breathing
     const id = this.spec.id;
     if (id === 'elder') { m.armR.rotation.set(0.35, 0, 0.1); m.armL.rotation.set(0.15, 0, -0.1); m.body.rotation.x = 0.12; }
-    else if (id === 'bard') { m.armL.rotation.set(-1.15, -0.55, 0.0); m.armR.rotation.set(-1.05 + Math.sin(this.t * 7) * 0.1, 0.6, 0.0); // both hands in front, cradling / plucking the harp
+    else if (id === 'bard') { m.armL.rotation.set(-1.35, -0.45, 0.0); m.armR.rotation.set(-1.25 + Math.sin(this.t * 7) * 0.1, 0.5, 0.0); // both hands in front, cradling / plucking the harp
       m.head.rotation.z = Math.sin(this.t * 2) * 0.1; m.body.position.y += Math.abs(Math.sin(this.t * 2)) * 0.015; }
     else if (id === 'granny') { m.armR.rotation.set(0.5 + Math.sin(this.t * 3) * 0.25, 0, 0.15); m.armL.rotation.set(0.2, 0, -0.1); m.body.rotation.x = 0.18; }
     else if (id === 'farmer') { m.armR.rotation.set(moving ? -sw * 0.3 : -0.4 + Math.abs(Math.sin(this.t * 2.5)) * 0.8, 0, 0.1); m.armL.rotation.set(sw * 0.3, 0, -0.1); }
