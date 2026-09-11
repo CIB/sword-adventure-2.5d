@@ -235,9 +235,12 @@ export class Player {
     // Torso twist + wrist cock + a short recovery blend keep the swing from looking rigid.
     // Sword arm is held forward and slightly out (blade points ahead), pumping a bit with the stride
     // instead of trailing behind like a free-swinging arm.
+    // Facing up/left the blade points away from the camera, so the oblique projection makes a low
+    // tip read as dragging on the ground - raise the arm and straighten the wrist for those facings.
+    const away = this.facing === 2 || this.facing === 3 ? 1 : 0;
     const idlePose: Pose = {
       rootYaw: 0, twist: 0, lean: 0,
-      armX: -0.85 - Math.max(0, -swing) * 0.3 + (moving ? 0.1 : 0), armY: -0.35, armZ: 0.15, wrist: -0.35,
+      armX: -0.85 - away * 0.35 - Math.max(0, -swing) * 0.3 + (moving ? 0.1 : 0), armY: -0.35, armZ: 0.15, wrist: -0.35 + away * 0.25,
       armLX: 0.1 + swing * 0.3, armLY: 0, armLZ: -0.1,
     };
     let pose: Pose;
