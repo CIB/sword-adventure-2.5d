@@ -332,53 +332,126 @@ export function buildFence(): THREE.Group {
   return g;
 }
 
+/** Hipped roof: rectangular eave (W x D) at y=0, short ridge (length rl) at height H, pushed back by rz. Flat-shaded. */
+function hipRoofGeometry(W: number, D: number, H: number, rl: number, rz: number): THREE.BufferGeometry {
+  const hw = W / 2, hd = D / 2, hr = rl / 2;
+  const A = [-hw, 0, hd], B = [hw, 0, hd], C = [hw, 0, -hd], E = [-hw, 0, -hd]; // eave corners (front = +z)
+  const R1 = [-hr, H, rz], R2 = [hr, H, rz];
+  const tris = [
+    [A, B, R2], [A, R2, R1],        // front slope
+    [C, E, R1], [C, R1, R2],        // back slope
+    [B, C, R2],                     // right hip
+    [E, A, R1],                     // left hip
+  ];
+  const pos: number[] = [];
+  for (const t of tris) for (const v of t) pos.push(v[0], v[1], v[2]);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.computeVertexNormals();
+  return g;
+}
+
+/**
+ * SNES-style cottage (A Link to the Past look): a big, dark-trimmed hipped roof dominating the silhouette,
+ * short tan walls with dark timber posts, an oversized arched door with a stone surround, amber windows
+ * and two round vents on the roof slope.
+ */
 export function buildHouse(spec: HouseSpec): THREE.Group {
   const g = new THREE.Group();
   const cx = spec.x + spec.w / 2, cz = spec.z + spec.d / 2;
-  const wallC = new THREE.Color(spec.wall ?? '#e8d6a8'), roofC = new THREE.Color(spec.roof ?? '#b73c3c');
-  const wall = toon(wallC), roof = toon(roofC), roofD = toon(roofC.clone().multiplyScalar(0.62));
-  const door = toon('#3a2214'), frame = toon('#7a4f2a'), win = toon('#7fb6ff'), winL = toon('#e8f4ff'), stone = toon('#8e8e88'), beam = toon('#6b4a2c');
+  const roofC = new THREE.Color(spec.roof ?? '#b73c3c');
+  // muted, slightly dusky roof tones like the SNES palette
+  const roofMid = roofC.clone().lerp(new THREE.Color('#6a3040'), 0.25);
+  const roof = toon(roofMid), roofD = toon(roofMid.clone().multiplyScalar(0.6)), roofL = toon(roofMid.clone().lerp(new THREE.Color('#ffffff'), 0.16));
+  const trim = toon('#3a1e1e');
+  const wall = toon(new THREE.Color(spec.wall ?? '#e8d6a8').lerp(new THREE.Color('#c9a469'), 0.55));
+  const wallD = toon('#a07c48');
+  const timber = toon('#5a3418'), timberL = toon('#7a4a24');
+  const stone = toon('#a8a49a'), stoneD = toon('#6f6b62');
+  const doorM = toon('#4a2a12'), doorD = toon('#2e1a0a');
+  const amber = toon('#f6b83c'); amber.emissive.set('#c07a10'); amber.emissiveIntensity = 0.55;
+  const amberL = toon('#ffe9a0'); amberL.emissive.set('#ffd060'); amberL.emissiveIntensity = 0.6;
+
   const depth = spec.d - 0.8;
-  g.add(part(UNIT_BOX, wall, [cx, 0.65, cz], [spec.w, 1.3, depth]));
-  g.add(part(UNIT_BOX, stone, [cx, 0.12, cz], [spec.w + 0.1, 0.24, depth + 0.1]));
-  const fz = cz + depth / 2;
-  // timber framing on the front
-  for (const bx of [-spec.w / 2 + 0.08, spec.w / 2 - 0.08]) g.add(part(UNIT_BOX, beam, [cx + bx, 0.7, fz + 0.01], [0.1, 1.2, 0.04]));
-  g.add(part(UNIT_BOX, beam, [cx, 1.26, fz + 0.01], [spec.w, 0.08, 0.04]));
-  // door with rounded top + step
-  g.add(part(UNIT_BOX, frame, [cx, 0.62, fz + 0.02], [1.0, 1.2, 0.06]));
-  g.add(part(UNIT_BOX, door, [cx, 0.55, fz + 0.06], [0.72, 1.06, 0.06]));
-  g.add(part(UNIT_CYL, door, [cx, 1.08, fz + 0.06], [0.72, 0.06, 0.4]).rotateX(Math.PI / 2));
-  g.add(part(UNIT_SPHERE, toon('#f2c14e'), [cx + 0.22, 0.55, fz + 0.1], [0.08, 0.08, 0.06]));
-  g.add(part(UNIT_BOX, stone, [cx, 0.05, fz + 0.2], [1.1, 0.1, 0.36]));
-  // windows with shutters + flower boxes
+  const WH = 1.15;                          // wall height (short - the roof is the star)
+  const fz = cz + depth / 2;                // front face z
+  // stone foundation + walls
+  g.add(part(UNIT_BOX, stoneD, [cx, 0.1, cz], [spec.w + 0.14, 0.2, depth + 0.14]));
+  g.add(part(UNIT_BOX, stone, [cx, 0.19, fz + 0.08], [spec.w + 0.14, 0.06, 0.02]));
+  g.add(part(UNIT_BOX, wall, [cx, WH / 2 + 0.1, cz], [spec.w, WH, depth]));
+  // dark timber posts: corners + between openings; a top plate under the eaves
+  const posts = spec.w >= 5 ? [-spec.w / 2 + 0.1, -0.95, 0.95, spec.w / 2 - 0.1] : [-spec.w / 2 + 0.1, spec.w / 2 - 0.1];
+  for (const px of posts) g.add(part(UNIT_BOX, timber, [cx + px, WH / 2 + 0.1, fz + 0.02], [0.14, WH, 0.06]));
+  g.add(part(UNIT_BOX, timber, [cx, WH + 0.08, fz + 0.02], [spec.w, 0.12, 0.06]));
+  for (const sx of [-1, 1]) g.add(part(UNIT_BOX, timber, [cx + sx * spec.w / 2, WH / 2 + 0.1, cz], [0.06, WH, depth]));
+  g.add(part(UNIT_BOX, wallD, [cx, 0.3, fz + 0.01], [spec.w, 0.16, 0.03])); // shadow band at the base of the wall
+
+  // big arched door with a stone surround and a step
+  const dw = 1.1, dh = 1.0;
+  g.add(part(UNIT_BOX, stone, [cx, dh / 2 + 0.1, fz + 0.04], [dw + 0.3, dh, 0.08]));
+  g.add(part(UNIT_CYL, stone, [cx, dh + 0.1, fz + 0.04], [dw + 0.3, 0.08, dw + 0.3]).rotateX(Math.PI / 2));
+  g.add(part(UNIT_BOX, doorM, [cx, dh / 2 + 0.1, fz + 0.09], [dw, dh, 0.06]));
+  g.add(part(UNIT_CYL, doorM, [cx, dh + 0.1, fz + 0.09], [dw, 0.06, dw]).rotateX(Math.PI / 2));
+  g.add(part(UNIT_BOX, doorD, [cx, dh / 2 + 0.1, fz + 0.125], [0.05, dh, 0.02]));       // plank seam
+  g.add(part(UNIT_BOX, doorD, [cx, 0.62, fz + 0.125], [dw - 0.1, 0.06, 0.02]));           // cross brace
+  g.add(part(UNIT_SPHERE, toon('#f2c14e'), [cx + 0.3, 0.6, fz + 0.14], [0.09, 0.09, 0.06]));
+  g.add(part(UNIT_BOX, stoneD, [cx, 0.05, fz + 0.22], [dw + 0.4, 0.1, 0.4]));
+
+  // amber windows with a dark cross frame
   const wxs = spec.w >= 5 ? [-1.6, 1.6] : [-1.2, 1.2];
   for (const sx of wxs) {
-    g.add(part(UNIT_BOX, frame, [cx + sx, 0.82, fz + 0.02], [0.6, 0.56, 0.06]));
-    g.add(part(UNIT_BOX, win, [cx + sx, 0.82, fz + 0.06], [0.44, 0.42, 0.06]));
-    g.add(part(UNIT_BOX, winL, [cx + sx - 0.1, 0.9, fz + 0.09], [0.1, 0.14, 0.02]));
-    g.add(part(UNIT_BOX, frame, [cx + sx, 0.82, fz + 0.1], [0.05, 0.42, 0.02]));
-    g.add(part(UNIT_BOX, frame, [cx + sx, 0.82, fz + 0.1], [0.44, 0.05, 0.02]));
-    g.add(part(UNIT_BOX, roofD, [cx + sx - 0.36, 0.82, fz + 0.04], [0.1, 0.5, 0.05]));
-    g.add(part(UNIT_BOX, roofD, [cx + sx + 0.36, 0.82, fz + 0.04], [0.1, 0.5, 0.05]));
-    g.add(part(UNIT_BOX, beam, [cx + sx, 0.52, fz + 0.12], [0.6, 0.1, 0.16]));
-    for (const fx of [-0.18, 0, 0.18]) g.add(part(UNIT_SPHERE, toon(['#ff5a5a', '#ffd23f', '#ff8ad8'][(Math.abs(fx * 100) | 0) % 3]), [cx + sx + fx, 0.62, fz + 0.14], [0.12, 0.12, 0.12]));
+    g.add(part(UNIT_BOX, timber, [cx + sx, 0.78, fz + 0.03], [0.62, 0.58, 0.06]));
+    g.add(part(UNIT_BOX, amber, [cx + sx, 0.78, fz + 0.07], [0.48, 0.44, 0.04]));
+    g.add(part(UNIT_BOX, amberL, [cx + sx - 0.1, 0.86, fz + 0.09], [0.12, 0.12, 0.02]));
+    g.add(part(UNIT_BOX, timber, [cx + sx, 0.78, fz + 0.1], [0.06, 0.44, 0.02]));
+    g.add(part(UNIT_BOX, timber, [cx + sx, 0.78, fz + 0.1], [0.48, 0.06, 0.02]));
+    g.add(part(UNIT_BOX, timberL, [cx + sx, 0.47, fz + 0.08], [0.7, 0.08, 0.14])); // sill
   }
-  // roof: eaves slab + pyramid with a ridge cap and chimney
-  const W = spec.w + 0.8, D = depth + 0.7;
-  g.add(part(UNIT_BOX, roofD, [cx, 1.34, cz], [W + 0.1, 0.12, D + 0.1]));
-  g.add(part(UNIT_PYRAMID, roof, [cx, 1.4 + 0.55, cz], [W / 0.7071, 1.1, D / 0.7071]));
-  g.add(part(UNIT_BOX, roofD, [cx, 1.45, cz + D / 2 - 0.02], [W, 0.1, 0.06]));
-  g.add(part(UNIT_BOX, stone, [cx + spec.w / 2 - 0.9, 2.05, cz - 0.3], [0.36, 0.8, 0.36]));
-  g.add(part(UNIT_BOX, toon('#5a5a55'), [cx + spec.w / 2 - 0.9, 2.46, cz - 0.3], [0.44, 0.08, 0.44]));
-  // small attic window
-  g.add(part(UNIT_CYL, frame, [cx, 1.85, fz - 0.35 + 0.3], [0.3, 0.06, 0.3]).rotateX(Math.PI / 2));
-  g.add(part(UNIT_CYL, win, [cx, 1.85, fz - 0.35 + 0.33], [0.2, 0.06, 0.2]).rotateX(Math.PI / 2));
+
+  // roof: wide eaves, tall hipped slope facing the camera, dark trim boards and ridge cap
+  const W = spec.w + 1.0, D = depth + 0.9, RH = 1.45;
+  const ridgeLen = Math.max(0.6, W - 2.2), ridgeZ = -D * 0.12; // ridge sits toward the back so the front slope is large
+  const roofY = WH + 0.14;
+  const rg = new THREE.Mesh(hipRoofGeometry(W, D, RH, ridgeLen, ridgeZ), roof);
+  rg.position.set(cx, roofY, cz);
+  g.add(rg);
+  // lighter front slope highlight strip + darker lower band (SNES two-tone shading)
+  const frontN = Math.atan2(RH, D / 2 - ridgeZ); // slope angle of the front face
+  const band = (t0: number, t1: number, mat: THREE.Material, lift: number) => {
+    const z0 = D / 2 - (D / 2 - ridgeZ) * t0, z1 = D / 2 - (D / 2 - ridgeZ) * t1;
+    const y0 = RH * t0, y1 = RH * t1;
+    const len = Math.hypot(z1 - z0, y1 - y0);
+    const wid0 = W - (W - ridgeLen) * t0, wid1 = W - (W - ridgeLen) * t1;
+    const m = part(UNIT_BOX, mat, [0, 0, 0], [(wid0 + wid1) / 2 - 0.2, 0.02, len]);
+    m.position.set(cx, roofY + (y0 + y1) / 2 + lift, cz + (z0 + z1) / 2 + lift * 0.4);
+    m.rotation.x = -frontN;
+    return m;
+  };
+  g.add(band(0.0, 0.16, roofD, 0.015));
+  g.add(band(0.66, 0.8, roofL, 0.015));
+  // eave trim
+  g.add(part(UNIT_BOX, trim, [cx, roofY - 0.02, cz + D / 2 - 0.02], [W + 0.06, 0.12, 0.1]));
+  g.add(part(UNIT_BOX, trim, [cx, roofY - 0.02, cz - D / 2 + 0.02], [W + 0.06, 0.12, 0.1]));
+  for (const sx of [-1, 1]) g.add(part(UNIT_BOX, trim, [cx + sx * (W / 2 - 0.02), roofY - 0.02, cz], [0.1, 0.12, D + 0.06]));
+  // ridge cap + finials
+  g.add(part(UNIT_BOX, trim, [cx, roofY + RH + 0.02, cz + ridgeZ], [ridgeLen + 0.2, 0.1, 0.16]));
+  for (const sx of [-1, 1]) g.add(part(UNIT_SPHERE, trim, [cx + sx * (ridgeLen / 2 + 0.08), roofY + RH + 0.06, cz + ridgeZ], [0.14, 0.14, 0.14]));
+  // two round vents on the front slope
+  const vt = 0.42, vz = D / 2 - (D / 2 - ridgeZ) * vt, vy = RH * vt;
+  for (const sx of (spec.w >= 5 ? [-1.1, 1.1] : [-0.8, 0.8])) {
+    const ring = part(UNIT_CYL, trim, [0, 0, 0], [0.4, 0.06, 0.4]);
+    const hole = part(UNIT_CYL, doorD, [0, 0, 0.02], [0.26, 0.06, 0.26]);
+    const grp = new THREE.Group(); grp.add(ring, hole);
+    grp.position.set(cx + sx, roofY + vy + 0.03, cz + vz + 0.02);
+    grp.rotation.x = Math.PI / 2 - frontN;
+    g.add(grp);
+  }
+
   // shop sign
   if (spec.sign === 'shop') {
     const sg = new THREE.Group();
-    sg.position.set(cx - spec.w / 2 + 0.5, 1.18, fz + 0.3);
-    sg.add(part(UNIT_BOX, beam, [0, 0, -0.15], [0.06, 0.06, 0.34]));
+    sg.position.set(cx - spec.w / 2 + 0.5, WH - 0.02, fz + 0.3);
+    sg.add(part(UNIT_BOX, timber, [0, 0, -0.15], [0.06, 0.06, 0.34]));
     sg.add(part(UNIT_BOX, toon('#f7e7b7'), [0, -0.2, 0.02], [0.52, 0.36, 0.05]));
     sg.add(part(UNIT_BOX, toon('#c82828'), [0, -0.2, 0.05], [0.42, 0.26, 0.02]));
     sg.add(part(UNIT_SPHERE, toon('#f2c14e'), [0, -0.2, 0.07], [0.14, 0.14, 0.04]));
