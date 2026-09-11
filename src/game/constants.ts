@@ -4,6 +4,15 @@ export const VIEW_H = 240;
 export const PX_PER_TILE = 20;
 export const VIEW_TILES_X = VIEW_W / PX_PER_TILE; // 16 tiles wide
 export const VIEW_TILES_Y = VIEW_H / PX_PER_TILE; // 12 tiles tall
+/**
+ * On small windows (handhelds, phones) the 3D view is rendered at `1/zoom` of the window-filling resolution and
+ * magnified by the CSS `pixelated` upscale, instead of growing the internal resolution. These are the two knobs
+ * the app balances: `ZOOM_TARGET_CSS_PX` is how large one world pixel should end up on screen — 4 is what a
+ * 1080p desktop already gets at zoom 1, so desktops keep it bit-identical — and `ZOOM_MIN_TILES_X` is the most
+ * the world may be magnified before the view gets too tight (horizontal tiles that must stay visible).
+ */
+export const ZOOM_TARGET_CSS_PX = 4;
+export const ZOOM_MIN_TILES_X = 12;
 export const CAM_HEIGHT = 40;
 export const SHEAR = 0.85; // oblique projection factor: 1 unit of height = 0.85 tiles of screen space
 export const LEVEL_H = 0.5;   // world units per terrain level

@@ -170,10 +170,14 @@ export class Game implements GameCtx {
   /**
    * Change the internal render resolution (in game pixels). Called by the app whenever the window size changes so
    * the play area fills the whole screen instead of letterboxing; the CSS size is owned by the app.
+   *
+   * `hudW/hudH` size the HUD separately: when the app magnifies the world with an integer CSS upscale (`zoom`), the
+   * world renders below the HUD's resolution, and the HUD's 320x240-derived layout can't shrink to match.
    */
-  resize(w: number, h: number) {
+  resize(w: number, h: number, hudW = w, hudH = h) {
     w = Math.max(1, Math.round(w));
     h = Math.max(1, Math.round(h));
+    this.hud.resize(hudW, hudH); // before the early-return: the HUD size is independent of the world's
     if (w === this.viewW && h === this.viewH) return;
     this.viewW = w;
     this.viewH = h;
@@ -181,7 +185,6 @@ export class Game implements GameCtx {
     this.rt.setSize(w, h); // three re-creates the colour + depth textures on the next render
     (this.postMat.uniforms.texel.value as THREE.Vector2).set(1 / w, 1 / h);
     this.applyProjection();
-    this.hud.resize(w, h);
     this.placeCamera(0); // keep the map-edge clamp right (the title screen never calls placeCamera)
   }
 
