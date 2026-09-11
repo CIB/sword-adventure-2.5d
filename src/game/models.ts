@@ -163,7 +163,7 @@ export function buildHeroine(): Humanoid {
   ponytail.add(part(UNIT_SPHERE, m.hair, [0, -0.56, -0.06], [0.2, 0.16, 0.18]));
   head.add(ponytail);
 
-  root.scale.set(1.08, 0.86, 0.92);
+  root.scale.set(1.0, 1.0, 0.95);
   return { root, body, head, armR, armL, handR, handL, legR, legL, weapon, shield, ponytail, materials: collectMaterials(root) };
 }
 
@@ -248,7 +248,7 @@ export function buildSoldier(kind: EnemyKind): Humanoid {
     handR.add(part(UNIT_BOX, m.wood, [0, -0.1, -0.06], [0.03, 0.3, 0.03]));
   }
 
-  root.scale.set(1.1, 0.86, 0.92);
+  root.scale.set(1.02, 1.0, 0.95);
   return { root, body, head, armR, armL, handR, handL, legR, legL, weapon, shield, materials: collectMaterials(root) };
 }
 
@@ -540,7 +540,7 @@ export function buildVillager(look: VillagerLook): Humanoid {
     case 'basket': handL.add(part(UNIT_CYL, toon('#c48b4f'), [0, -0.08, 0.1], [0.34, 0.24, 0.34])); break;
   }
   const s = look.scale ?? (look.kid ? 0.72 : 1);
-  root.scale.set(1.08 * s, 0.86 * s, 0.92 * s);
+  root.scale.set(1.0 * s, 1.0 * s, 0.95 * s);
   return { root, body, head, armR, armL, handR, handL, legR, legL, materials: collectMaterials(root) };
 }
 
