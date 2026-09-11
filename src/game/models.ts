@@ -803,14 +803,14 @@ export function buildVillager(look: VillagerLook): Humanoid {
   switch (look.item) {
     case 'cane': handR.add(part(UNIT_CYL, m.wood, [0, -0.25, 0.05], [0.05, 0.75, 0.05])); handR.add(part(UNIT_SPHERE, toon('#f2c14e'), [0, 0.1, 0.05], [0.12, 0.12, 0.12])); break;
     case 'lute': { const l = new THREE.Group(); l.position.set(0.3, 0.1, 0.22); l.rotation.set(0.3, 0, -0.9); l.add(part(UNIT_SPHERE, m.wood, [0, -0.1, 0], [0.34, 0.42, 0.12])); l.add(part(UNIT_BOX, toon('#5a3a1e'), [0, 0.28, 0.02], [0.08, 0.5, 0.05])); l.add(part(UNIT_CYL, toon('#2a1a10'), [0, -0.08, 0.06], [0.12, 0.02, 0.12]).rotateX(Math.PI / 2)); handL.add(l); break; }
-    case 'harp': { // small lyre-harp cradled in the left arm
-      const h = new THREE.Group(); h.position.set(0.26, 0.12, 0.2); h.rotation.set(0.2, 0.3, -0.5);
+    case 'harp': { // small lyre-harp held upright in front of the chest (attached to the body so it stays centred)
+      const h = new THREE.Group(); h.position.set(0.04, 0.5, 0.24); h.rotation.set(-0.15, 0.25, 0.12);
       h.add(part(UNIT_BOX, m.wood, [0, -0.22, 0], [0.34, 0.08, 0.06]));                       // base
       h.add(part(UNIT_BOX, m.wood, [-0.15, 0.02, 0], [0.06, 0.5, 0.06]));                       // left post
       h.add(part(UNIT_BOX, m.wood, [0.15, 0.06, 0], [0.06, 0.58, 0.06]).rotateZ(-0.15));        // right post (curved)
       h.add(part(UNIT_BOX, m.wood, [0, 0.28, 0], [0.34, 0.06, 0.06]));                          // yoke
       for (const x of [-0.09, -0.03, 0.03, 0.09]) h.add(part(UNIT_BOX, toon('#f2c14e'), [x, 0.03, 0], [0.012, 0.44, 0.012]));
-      handL.add(h);
+      body.add(h);
       break;
     }
     case 'hoe': handR.add(part(UNIT_CYL, m.wood, [0, 0.2, 0.05], [0.05, 1.3, 0.05])); handR.add(part(UNIT_BOX, toon('#8e8e88'), [0, 0.82, 0.16], [0.06, 0.06, 0.3])); break;
