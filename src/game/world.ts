@@ -472,15 +472,14 @@ export class World {
       const alongX = b.x1 - b.x0 > b.z1 - b.z0;
       const lo = alongX ? b.x0 : b.z0, hi = alongX ? b.x1 + 1 : b.z1 + 1;
       const cLo = alongX ? b.z0 : b.x0, cHi = alongX ? b.z1 + 1 : b.x1 + 1;
-      for (let a = lo - 4; a <= hi + 4; a++) for (let c = cLo - 1; c <= cHi + 1; c++) {
+      for (let a = lo - 4; a <= hi + 4; a++) for (let c = cLo; c <= cHi; c++) {
         const cx = alongX ? a : c, cz = alongX ? c : a;
         if (cx < 0 || cz < 0 || cx > W - 1 || cz > H - 1) continue;
         const i = cz * W + cx;
-        const inner = a > lo + 1 && a < hi - 1; // corners over the water span: leave sunk
-        if (inner) continue;
-        const dist = Math.max(0, lo - a, a - hi);       // tiles away from the abutment
-        const side = Math.max(0, cLo - c, c - cHi);      // beside the causeway: half-height shoulder
-        const lift = -dist * 0.18 - side * 0.3;
+        if (a > lo + 1 && a < hi - 1) continue; // corners over the water span: leave sunk
+        const dist = Math.max(0, lo - a, a - hi);   // tiles away from the abutment (approach ramp)
+        const under = a === lo + 1 || a === hi - 1; // water-edge corner: bank keeps sloping down beneath the deck
+        const lift = under ? -WATER_DEPTH * 0.6 : -dist * 0.18;
         this.hmap[i] = Math.max(this.hmap[i], Math.min(lift, 0));
       }
     }
@@ -652,11 +651,8 @@ export class World {
         g.fillStyle = C.pathD; g.fillRect(ox, oz, T, T);
         for (let i = 0; i < 5; i++) { g.fillStyle = i % 2 ? C.path : C.pathE; g.fillRect(ox + Math.floor(hash2(tx, tz, i) * T), oz + Math.floor(hash2(tx, tz, i + 20) * T), 2, 1); }
       } else if (t === Tile.Bridge) {
-        g.fillStyle = C.plank; g.fillRect(ox, oz, T, T);
-        for (let x = 0; x < T; x += 5) { g.fillStyle = C.plankD; g.fillRect(ox + x, oz, 1, T); g.fillStyle = C.plankL; g.fillRect(ox + x + 1, oz, 1, T); }
-        for (let i = 0; i < 3; i++) { g.fillStyle = C.plankD; g.fillRect(ox + Math.floor(hash2(tx, tz, i) * T), oz + Math.floor(hash2(tx, tz, i + 9) * T), 1, 1); }
-        if (N === Tile.Water) { g.fillStyle = C.plankD; g.fillRect(ox, oz, T, 2); g.fillStyle = C.plankL; g.fillRect(ox, oz + 2, T, 1); }
-        if (S === Tile.Water) { g.fillStyle = C.plankD; g.fillRect(ox, oz + T - 2, T, 2); g.fillStyle = C.plankL; g.fillRect(ox, oz + T - 3, T, 1); }
+        // over water: the deck is a separate mesh, the ground below is river bed
+        g.fillStyle = C.waterD; g.fillRect(ox, oz, T, T);
       } else if (t === Tile.Cliff) {
         // rocky slope face
         g.fillStyle = '#a97a4c'; g.fillRect(ox, oz, T, T);
