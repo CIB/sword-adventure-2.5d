@@ -195,7 +195,8 @@ export class Player {
   /** Arc (world angles) swept by the sword since the last frame */
   getSweep(): { from: number; to: number; r: number; dmg: number; hit: Set<object> } | null {
     if (!this.sweepActive) return null;
-    return { from: normAngle(this.facingAngle + this.sweepPrev), to: normAngle(this.facingAngle + this.sweepCur), r: this.sweepR, dmg: this.sweepDmg, hit: this.sweepHit };
+    // the model is mirrored (left-handed), so the blade's world angle is facing - sweep
+    return { from: normAngle(this.facingAngle - this.sweepPrev), to: normAngle(this.facingAngle - this.sweepCur), r: this.sweepR, dmg: this.sweepDmg, hit: this.sweepHit };
   }
 
   hurt(dmg: number, sx: number, sz: number) {
@@ -318,7 +319,7 @@ export class Player {
 
   private sync() {
     this.model.root.position.set(this.pos.x, this.game.world.heightAt(this.pos.x, this.pos.z), this.pos.z);
-    this.model.root.rotation.y = this.facingAngle + this.rootYaw;
+    this.model.root.rotation.y = this.facingAngle - this.rootYaw; // mirrored model: yaw runs the other way
   }
 
   reset(x: number, z: number) {
@@ -885,7 +886,7 @@ export function fxSpinWave(player: { pos: Vec2; facingAngle: number; sweepCur: n
   // Blade trail: an arc of ~75 degrees behind the sword tip. RingGeometry's theta starts on local +x; after
   // rotateX(-90deg) local +y becomes world -z, so a ring point at theta sits at world angle (atan2(x,z)) = theta + 90deg.
   const TRAIL_ARC = 1.3;
-  const trail = new THREE.Mesh(new THREE.RingGeometry(0.62, 1, 16, 1, 0, TRAIL_ARC).rotateX(-Math.PI / 2), trailMat.clone());
+  const trail = new THREE.Mesh(new THREE.RingGeometry(0.62, 1, 16, 1, -TRAIL_ARC, TRAIL_ARC).rotateX(-Math.PI / 2), trailMat.clone());
   trail.position.y = 0.65;
   const dust: { m: THREE.Mesh; a: number; s: number }[] = [];
   const e = new Effect(dur + 0.25, (_p, t, g) => {
@@ -896,10 +897,10 @@ export function fxSpinWave(player: { pos: Vec2; facingAngle: number; sweepCur: n
     const rr = 0.4 + easeOutCubic(rp) * radius;
     ring.scale.set(rr, 1, rr);
     (ring.material as THREE.MeshBasicMaterial).opacity = 0.55 * (1 - Math.max(0, (t - dur * 0.5) / (dur * 0.5 + 0.25)));
-    // the sword's world angle decreases during the spin, so the trail occupies [tip, tip + TRAIL_ARC]
+    // (mirrored model) the sword's world angle increases during the spin, so the trail occupies [tip - TRAIL_ARC, tip]
     trail.visible = t < dur;
     if (trail.visible) {
-      const tipA = player.facingAngle + player.sweepCur;
+      const tipA = player.facingAngle - player.sweepCur;
       trail.rotation.y = tipA - Math.PI / 2;
       trail.scale.set(player.sweepR, 1, player.sweepR);
       (trail.material as THREE.MeshBasicMaterial).opacity = 0.7 * Math.sin(rp * Math.PI) ** 0.5;

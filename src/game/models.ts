@@ -108,29 +108,59 @@ function makeArm(x: number, sleeve: THREE.Material, skin: THREE.Material): { arm
 }
 
 export function buildHeroine(): Humanoid {
+  // Aria: a knight in closed green plate. Armour tones are kept in the same green family the old
+  // tunic used so she still reads as "the green one" from a distance.
   const m = {
-    skin: toon('#f3bd92'), hair: toon('#f5cf46'), tunic: toon('#3fb04a'), tunicD: toon('#2d8c3a'),
-    belt: toon('#6b4423'), boots: toon('#7b4a22'), tights: toon('#f6ebd8'), eye: toon('#1d2b5a'),
-    cap: toon('#2f9038'), steel: toon('#dfe6f4'), hilt: toon('#3557c9'), gold: toon('#f2c14e'),
-    shieldBlue: toon('#2f57c4'), shieldRim: toon('#cfd7e6'),
+    skin: toon('#f3bd92'), hair: toon('#f5cf46'), plate: toon('#3fb04a'), plateD: toon('#2d8c3a'), plateL: toon('#6fd06a'),
+    belt: toon('#5a3a1e'), boots: toon('#4a3020'), cloth: toon('#f6ebd8'), visor: toon('#141a24'),
+    steel: toon('#dfe6f4'), steelD: toon('#9aa6ba'), hilt: toon('#3557c9'), gold: toon('#f2c14e'),
+    shieldBlue: toon('#2f57c4'), shieldRim: toon('#cfd7e6'), plume: toon('#e84a4a'),
   };
   const root = new THREE.Group();
   const body = new THREE.Group();
   root.add(body);
   root.add(blobShadow(0.34));
 
-  const legL = makeLeg(0.11, m.tights, m.boots);
-  const legR = makeLeg(-0.11, m.tights, m.boots);
+  // legs: cloth thigh, steel greave, dark boot
+  const mkLeg = (x: number) => {
+    const leg = new THREE.Group();
+    leg.position.set(x, 0.34, 0);
+    leg.add(part(UNIT_BOX, m.cloth, [0, -0.08, 0], [0.14, 0.16, 0.15]));
+    leg.add(part(UNIT_BOX, m.plateD, [0, -0.19, 0.01], [0.16, 0.12, 0.17]));
+    leg.add(part(UNIT_BOX, m.boots, [0, -0.28, 0.02], [0.16, 0.12, 0.21]));
+    return leg;
+  };
+  const legL = mkLeg(0.11), legR = mkLeg(-0.11);
   root.add(legL, legR);
 
-  body.add(part(UNIT_BOX, m.tunic, [0, 0.58, 0], [0.5, 0.42, 0.3]));
-  body.add(part(UNIT_BOX, m.tunicD, [0, 0.37, 0], [0.56, 0.12, 0.36]));
-  body.add(part(UNIT_BOX, m.belt, [0, 0.49, 0], [0.52, 0.06, 0.32]));
-  body.add(part(UNIT_BOX, m.gold, [0, 0.49, 0.16], [0.1, 0.06, 0.02]));
-  body.add(part(UNIT_BOX, m.skin, [0, 0.8, 0], [0.16, 0.08, 0.14]));
+  // cuirass with a lighter chest plate, gold trim and a faulds skirt
+  body.add(part(UNIT_BOX, m.plate, [0, 0.6, 0], [0.52, 0.42, 0.32]));
+  body.add(part(UNIT_BOX, m.plateL, [0, 0.66, 0.15], [0.34, 0.24, 0.04]));
+  body.add(part(UNIT_BOX, m.gold, [0, 0.79, 0], [0.54, 0.04, 0.34]));
+  body.add(part(UNIT_BOX, m.plateD, [0, 0.38, 0], [0.58, 0.12, 0.38]));
+  body.add(part(UNIT_BOX, m.plateD, [0, 0.31, 0], [0.62, 0.05, 0.42]));
+  body.add(part(UNIT_BOX, m.belt, [0, 0.47, 0], [0.54, 0.06, 0.34]));
+  body.add(part(UNIT_BOX, m.gold, [0, 0.47, 0.17], [0.1, 0.06, 0.02]));
+  // gorget (covers the neck fully)
+  body.add(part(UNIT_BOX, m.plateD, [0, 0.82, 0], [0.26, 0.1, 0.22]));
 
-  const { arm: armR, hand: handR } = makeArm(-0.3, m.tunic, m.skin);
-  const { arm: armL, hand: handL } = makeArm(0.3, m.tunic, m.skin);
+  // arms: plate sleeve + steel gauntlet (no bare skin)
+  const mkArm = (x: number) => {
+    const arm = new THREE.Group();
+    arm.position.set(x, 0.74, 0);
+    arm.rotation.order = 'YXZ';
+    arm.add(part(UNIT_SPHERE, m.plate, [0, 0.02, 0], [0.24, 0.2, 0.24]));       // pauldron
+    arm.add(part(UNIT_BOX, m.gold, [0, 0.06, 0], [0.2, 0.03, 0.2]));
+    arm.add(part(UNIT_BOX, m.plate, [0, -0.09, 0], [0.13, 0.16, 0.13]));
+    arm.add(part(UNIT_BOX, m.steelD, [0, -0.2, 0], [0.12, 0.12, 0.12]));
+    const hand = new THREE.Group();
+    hand.position.set(0, -0.29, 0);
+    hand.add(part(UNIT_SPHERE, m.steel, [0, 0, 0], [0.14, 0.14, 0.14]));
+    arm.add(hand);
+    return { arm, hand };
+  };
+  const { arm: armR, hand: handR } = mkArm(-0.3);
+  const { arm: armL, hand: handL } = mkArm(0.3);
   body.add(armR, armL);
 
   const weapon = buildSword(m);
@@ -143,31 +173,35 @@ export function buildHeroine(): Humanoid {
   shield.position.set(0, -0.04, 0.2);
   handL.add(shield);
 
+  // closed great helm: rounded dome, cheek guards, dark visor slit with glowing eyes, gold brow band, red plume
   const head = new THREE.Group();
   head.position.set(0, 1.0, 0);
   body.add(head);
-  head.add(part(UNIT_SPHERE, m.skin, [0, 0, 0], [0.64, 0.5, 0.52]));
-  head.add(part(UNIT_BOX, m.eye, [-0.11, -0.04, 0.24], [0.07, 0.1, 0.04]));
-  head.add(part(UNIT_BOX, m.eye, [0.11, -0.04, 0.24], [0.07, 0.1, 0.04]));
-  head.add(part(UNIT_HEMI, m.hair, [0, 0.0, -0.02], [0.68, 0.5, 0.56]));
-  head.add(part(UNIT_BOX, m.hair, [0, 0.12, 0.2], [0.5, 0.12, 0.2]));
-  head.add(part(UNIT_BOX, m.hair, [-0.29, -0.06, 0.04], [0.09, 0.32, 0.26]));
-  head.add(part(UNIT_BOX, m.hair, [0.29, -0.06, 0.04], [0.09, 0.32, 0.26]));
-  const cap = part(UNIT_CONE, m.cap, [0, 0.3, -0.08], [0.6, 0.5, 0.6]);
-  cap.rotation.x = -0.95;
-  head.add(cap);
-  head.add(part(UNIT_CYL, m.cap, [0, 0.14, -0.02], [0.68, 0.08, 0.62]));
+  head.add(part(UNIT_SPHERE, m.plate, [0, 0.02, 0], [0.64, 0.56, 0.6]));
+  head.add(part(UNIT_BOX, m.plate, [0, -0.1, -0.06], [0.6, 0.3, 0.5]));
+  head.add(part(UNIT_BOX, m.plateD, [0, -0.14, 0.2], [0.44, 0.2, 0.14]));      // face guard
+  head.add(part(UNIT_BOX, m.visor, [0, -0.02, 0.25], [0.44, 0.1, 0.08]));      // visor slit
+  const eye = toon('#9fe6ff'); eye.emissive.set('#6fc8ff'); eye.emissiveIntensity = 0.6;
+  head.add(part(UNIT_BOX, eye, [-0.11, -0.02, 0.3], [0.08, 0.05, 0.02]));
+  head.add(part(UNIT_BOX, eye, [0.11, -0.02, 0.3], [0.08, 0.05, 0.02]));
+  head.add(part(UNIT_BOX, m.plateD, [0, -0.12, 0.3], [0.06, 0.16, 0.03]));     // nasal bar
+  head.add(part(UNIT_BOX, m.gold, [0, 0.1, 0], [0.66, 0.06, 0.62]));           // brow band
+  head.add(part(UNIT_BOX, m.gold, [0, 0.22, 0.16], [0.08, 0.2, 0.14]));        // crest
+  const plume = new THREE.Group();
+  plume.position.set(0, 0.16, -0.16);
+  plume.add(part(UNIT_SPHERE, m.plume, [0, 0.1, -0.02], [0.22, 0.24, 0.22]));
+  plume.add(part(UNIT_BOX, m.plume, [0, -0.1, -0.14], [0.16, 0.5, 0.14]));
+  plume.add(part(UNIT_SPHERE, m.plume, [0, -0.36, -0.16], [0.2, 0.18, 0.18]));
+  head.add(plume);
+  // a wisp of blonde hair escaping at the back, so she still reads as "her"
+  head.add(part(UNIT_BOX, m.hair, [0, -0.2, -0.28], [0.22, 0.16, 0.08]));
 
-  const ponytail = new THREE.Group();
-  ponytail.position.set(0, 0.02, -0.28);
-  ponytail.add(part(UNIT_SPHERE, m.hair, [0, 0, -0.04], [0.2, 0.2, 0.2]));
-  ponytail.add(part(UNIT_BOX, m.belt, [0, -0.02, -0.06], [0.2, 0.06, 0.18]));
-  ponytail.add(part(UNIT_BOX, m.hair, [0, -0.3, -0.06], [0.17, 0.52, 0.15]));
-  ponytail.add(part(UNIT_SPHERE, m.hair, [0, -0.56, -0.06], [0.2, 0.16, 0.18]));
-  head.add(ponytail);
-
-  root.scale.set(CHAR_SCALE.x, CHAR_SCALE.y, CHAR_SCALE.z);
-  return { root, body, head, armR, armL, handR, handL, legR, legL, weapon, shield, ponytail, materials: collectMaterials(root) };
+  // Left-handed: mirror the whole figure. Animation code keeps driving armR as the sword arm; the
+  // mirror puts that arm on her left side and flips the swing direction with it.
+  root.scale.set(-CHAR_SCALE.x, CHAR_SCALE.y, CHAR_SCALE.z);
+  const materials = collectMaterials(root);
+  for (const mat of materials) mat.side = THREE.DoubleSide; // negative scale flips winding
+  return { root, body, head, armR, armL, handR, handL, legR, legL, weapon, shield, ponytail: plume, materials };
 }
 
 export const SOLDIER_COLORS: Record<EnemyKind, string> = { sword: '#3c9c44', spear: '#3858c8', javelin: '#c83838', archer: '#7848b8' };
