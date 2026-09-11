@@ -482,6 +482,137 @@ export function buildProp(p: PropSpec): THREE.Group {
       g.add(part(UNIT_BOX, toon('#5fc04a'), [0, 0.6, 0], [0.9, 0.06, 0.55]));
       break;
     }
+    case 'log': {
+      g.add(part(UNIT_CYL, wood, [0, 0.22, 0], [0.44, 1.6, 0.44]).rotateZ(Math.PI / 2));
+      g.add(part(UNIT_CYL, woodL, [0.81, 0.22, 0], [0.4, 0.02, 0.4]).rotateZ(Math.PI / 2));
+      g.add(part(UNIT_CYL, woodL, [-0.81, 0.22, 0], [0.4, 0.02, 0.4]).rotateZ(Math.PI / 2));
+      g.add(part(UNIT_BOX, woodD, [0.2, 0.42, 0.1], [0.3, 0.05, 0.08]));
+      g.add(blobShadow(0.7));
+      break;
+    }
+    case 'menhir': {
+      const moss = toon('#5f9a4a');
+      g.add(part(UNIT_BOX, stone, [0, 0.8, 0], [0.5, 1.6, 0.36]).rotateZ(0.05));
+      g.add(part(UNIT_BOX, stoneD, [0.1, 1.5, 0.05], [0.42, 0.34, 0.3]).rotateZ(-0.2));
+      g.add(part(UNIT_BOX, moss, [-0.12, 0.25, 0.14], [0.26, 0.4, 0.1]));
+      g.add(part(UNIT_BOX, stoneD, [0.08, 0.9, 0.19], [0.14, 0.05, 0.02]));
+      g.add(part(UNIT_BOX, stoneD, [0.08, 1.1, 0.19], [0.14, 0.05, 0.02]));
+      g.add(blobShadow(0.36));
+      break;
+    }
+    case 'cart': {
+      g.add(part(UNIT_BOX, woodL, [0, 0.5, 0], [1.4, 0.1, 0.9]));
+      for (const z of [-0.42, 0.42]) g.add(part(UNIT_BOX, wood, [0, 0.72, z], [1.4, 0.36, 0.06]));
+      g.add(part(UNIT_BOX, wood, [-0.68, 0.72, 0], [0.06, 0.36, 0.9]));
+      for (const x of [-0.35, 0.35]) for (const z of [-0.5, 0.5]) { g.add(part(UNIT_CYL, woodD, [x, 0.34, z], [0.68, 0.08, 0.68]).rotateX(Math.PI / 2)); g.add(part(UNIT_CYL, iron, [x, 0.34, z], [0.72, 0.03, 0.72]).rotateX(Math.PI / 2)); }
+      g.add(part(UNIT_BOX, wood, [1.0, 0.42, 0.2], [0.8, 0.06, 0.06]).rotateZ(0.15));
+      g.add(part(UNIT_BOX, wood, [1.0, 0.42, -0.2], [0.8, 0.06, 0.06]).rotateZ(0.15));
+      for (let i = 0; i < 3; i++) g.add(part(UNIT_SPHERE, toon('#e8c86a'), [-0.3 + i * 0.3, 0.72, (i % 2) * 0.2 - 0.1], [0.34, 0.3, 0.34]));
+      g.add(blobShadow(0.75));
+      break;
+    }
+    case 'hay': {
+      const hay = toon('#e8c86a'), hayD = toon('#c9a247');
+      g.add(part(UNIT_CYL, hay, [0, 0.4, 0], [0.9, 0.8, 0.9]));
+      g.add(part(UNIT_SPHERE, hay, [0, 0.8, 0], [0.9, 0.5, 0.9]));
+      g.add(part(UNIT_BOX, hayD, [0.2, 0.5, 0.42], [0.3, 0.05, 0.06]));
+      g.add(part(UNIT_BOX, hayD, [-0.25, 0.3, 0.42], [0.3, 0.05, 0.06]));
+      g.add(part(UNIT_CYL, wood, [0, 1.15, 0], [0.06, 0.3, 0.06]));
+      g.add(blobShadow(0.5));
+      break;
+    }
+    case 'scarecrow': {
+      g.add(part(UNIT_CYL, wood, [0, 0.7, 0], [0.08, 1.4, 0.08]));
+      g.add(part(UNIT_BOX, wood, [0, 1.15, 0], [1.1, 0.07, 0.07]));
+      g.add(part(UNIT_BOX, toon('#8a5aa8'), [0, 1.0, 0], [0.5, 0.5, 0.3]));
+      g.add(part(UNIT_SPHERE, toon('#e8c86a'), [0, 1.42, 0], [0.34, 0.34, 0.34]));
+      g.add(part(UNIT_CYL, toon('#6b4a2c'), [0, 1.6, 0], [0.7, 0.05, 0.7]));
+      g.add(part(UNIT_CONE, toon('#6b4a2c'), [0, 1.72, 0], [0.4, 0.26, 0.4]));
+      g.add(part(UNIT_BOX, toon('#1d2b5a'), [-0.07, 1.44, 0.17], [0.05, 0.05, 0.02]));
+      g.add(part(UNIT_BOX, toon('#1d2b5a'), [0.07, 1.44, 0.17], [0.05, 0.05, 0.02]));
+      g.add(blobShadow(0.25));
+      break;
+    }
+    case 'campfire': {
+      for (const a of [0, 1.05, 2.1, 3.15, 4.2, 5.25]) g.add(part(UNIT_SPHERE, stoneD, [Math.cos(a) * 0.42, 0.08, Math.sin(a) * 0.42], [0.22, 0.16, 0.22]));
+      g.add(part(UNIT_CYL, woodD, [0, 0.1, 0], [0.1, 0.7, 0.1]).rotateZ(Math.PI / 2).rotateY(0.6));
+      g.add(part(UNIT_CYL, woodD, [0, 0.12, 0], [0.1, 0.7, 0.1]).rotateZ(Math.PI / 2).rotateY(-0.7));
+      const fire = toon('#ff9a2e'); fire.emissive.set('#ff6a00'); fire.emissiveIntensity = 0.9;
+      const fireIn = toon('#ffe066'); fireIn.emissive.set('#ffd040'); fireIn.emissiveIntensity = 1;
+      const f = part(UNIT_CONE, fire, [0, 0.36, 0], [0.4, 0.55, 0.4]); f.name = 'flame'; g.add(f);
+      g.add(part(UNIT_CONE, fireIn, [0.02, 0.3, 0.02], [0.22, 0.34, 0.22]));
+      g.add(part(UNIT_CYL, toon('#2a2a2a'), [0, 0.03, 0], [0.7, 0.04, 0.7]));
+      break;
+    }
+    case 'tent': {
+      const cloth = toon('#4a5a8c'), clothD = toon('#2f3b62');
+      g.add(part(UNIT_PYRAMID, cloth, [0, 0.55, 0], [1.9, 1.1, 1.9]).rotateY(Math.PI / 4));
+      g.add(part(UNIT_BOX, clothD, [0, 0.35, 0.72], [0.5, 0.7, 0.2]));
+      g.add(part(UNIT_CYL, woodD, [0, 1.15, 0], [0.06, 0.3, 0.06]));
+      g.add(part(UNIT_BOX, toon('#c82828'), [0.06, 1.25, 0], [0.14, 0.1, 0.02]));
+      g.add(blobShadow(1.0));
+      break;
+    }
+    case 'banner': {
+      g.add(part(UNIT_CYL, woodD, [0, 1.0, 0], [0.07, 2.0, 0.07]));
+      g.add(part(UNIT_SPHERE, gold, [0, 2.02, 0], [0.12, 0.12, 0.12]));
+      g.add(part(UNIT_BOX, toon('#8c2a2a'), [0.24, 1.55, 0], [0.42, 0.75, 0.03]));
+      g.add(part(UNIT_BOX, toon('#f2c14e'), [0.24, 1.6, 0.02], [0.14, 0.14, 0.02]));
+      g.add(part(UNIT_BOX, toon('#5a1a1a'), [0.24, 1.14, 0], [0.42, 0.08, 0.03]));
+      g.add(part(UNIT_CYL, stoneD, [0, 0.04, 0], [0.34, 0.08, 0.34]));
+      break;
+    }
+    case 'tower': {
+      const moss = toon('#5f9a4a');
+      g.add(part(UNIT_CYL, stone, [0, 1.2, 0], [2.4, 2.4, 2.4]));
+      g.add(part(UNIT_CYL, stoneD, [0, 0.15, 0], [2.6, 0.3, 2.6]));
+      // broken crenellated top
+      for (const a of [0, 0.9, 1.8, 3.4, 4.3, 5.4]) g.add(part(UNIT_BOX, stone, [Math.cos(a) * 1.1, 2.55 + ((a * 7) % 3) * 0.1, Math.sin(a) * 1.1], [0.36, 0.5 + ((a * 5) % 2) * 0.3, 0.36]).rotateY(-a));
+      g.add(part(UNIT_BOX, stoneD, [0, 1.1, 1.21], [0.5, 0.9, 0.08]));   // doorway
+      g.add(part(UNIT_BOX, toon('#1a1a22'), [0, 1.0, 1.24], [0.34, 0.7, 0.04]));
+      g.add(part(UNIT_BOX, toon('#1a1a22'), [0.9, 1.9, 0.8], [0.18, 0.3, 0.04]).rotateY(-0.7));
+      g.add(part(UNIT_BOX, moss, [-0.9, 0.6, 0.7], [0.4, 0.8, 0.14]).rotateY(0.9));
+      g.add(part(UNIT_BOX, moss, [0.7, 0.4, -0.9], [0.5, 0.5, 0.14]).rotateY(2.4));
+      // fallen stones
+      g.add(part(UNIT_BOX, stone, [1.7, 0.18, 0.9], [0.4, 0.36, 0.34]).rotateY(0.4));
+      g.add(part(UNIT_BOX, stoneD, [-1.5, 0.15, 1.2], [0.36, 0.3, 0.3]).rotateY(0.9));
+      g.add(blobShadow(1.35));
+      break;
+    }
+    case 'ruinwall': {
+      const moss = toon('#5f9a4a');
+      g.add(part(UNIT_BOX, stone, [0, 0.4, 0], [1.9, 0.8, 0.4]));
+      g.add(part(UNIT_BOX, stone, [-0.55, 0.95, 0], [0.8, 0.4, 0.4]));
+      g.add(part(UNIT_BOX, stoneD, [0.5, 0.85, 0], [0.5, 0.2, 0.4]));
+      g.add(part(UNIT_BOX, stoneD, [0, 0.3, 0.21], [1.9, 0.04, 0.02]));
+      g.add(part(UNIT_BOX, stoneD, [0, 0.55, 0.21], [1.9, 0.04, 0.02]));
+      g.add(part(UNIT_BOX, moss, [0.5, 0.25, 0.2], [0.5, 0.4, 0.04]));
+      g.add(part(UNIT_BOX, stone, [1.2, 0.14, 0.4], [0.3, 0.28, 0.28]).rotateY(0.5));
+      g.add(blobShadow(0.8));
+      break;
+    }
+    case 'pillar': {
+      g.add(part(UNIT_BOX, stoneD, [0, 0.12, 0], [0.7, 0.24, 0.7]));
+      g.add(part(UNIT_CYL, stone, [0, 1.0, 0], [0.46, 1.6, 0.46]));
+      g.add(part(UNIT_BOX, stoneD, [0, 1.86, 0], [0.62, 0.14, 0.62]));
+      g.add(part(UNIT_BOX, toon('#5f9a4a'), [0.1, 0.5, 0.22], [0.2, 0.5, 0.04]));
+      g.add(blobShadow(0.36));
+      break;
+    }
+    case 'crown': {
+      // the Amber Crown on a mossy stone ledge, glowing
+      g.add(part(UNIT_BOX, stone, [0, 0.3, 0], [1.4, 0.6, 1.0]));
+      g.add(part(UNIT_BOX, toon('#5f9a4a'), [0, 0.61, 0], [1.3, 0.04, 0.9]));
+      const amber = toon('#ffb52e'); amber.emissive.set('#ff9a00'); amber.emissiveIntensity = 0.8;
+      const c = new THREE.Group(); c.name = 'spin'; c.position.y = 0.95;
+      c.add(part(UNIT_CYL, gold, [0, 0, 0], [0.6, 0.18, 0.6]));
+      for (const a of [0, 1.05, 2.1, 3.15, 4.2, 5.25]) { c.add(part(UNIT_BOX, gold, [Math.cos(a) * 0.27, 0.2, Math.sin(a) * 0.27], [0.1, 0.24, 0.1])); }
+      c.add(part(UNIT_OCTA, amber, [0, 0.16, 0.3], [0.2, 0.26, 0.2]));
+      g.add(c);
+      const glow = new THREE.Mesh(UNIT_CIRCLE, new THREE.MeshBasicMaterial({ color: 0xffb040, transparent: true, opacity: 0.25, depthWrite: false }));
+      glow.scale.set(3, 1, 3); glow.position.y = 0.64; g.add(glow);
+      break;
+    }
   }
   g.position.set(p.x, 0, p.z);
   if (p.rot) g.rotation.y = p.rot;
@@ -503,6 +634,12 @@ export const VILLAGER_LOOKS: Record<string, VillagerLook> = {
   granny: { skin: '#f0c4a0', hair: '#d8d8e0', top: '#2f8f5a', bottom: '#7a4f2a', hat: 'kerchief', hairStyle: 'bun', item: 'broom' },
   bard: { skin: '#f3bd92', hair: '#c8432c', top: '#3a9ad0', bottom: '#7a2a80', accent: '#f2c14e', hat: 'feather', hairStyle: 'long', item: 'lute' },
   farmer: { skin: '#e8a878', hair: '#4a2c14', top: '#8ad34a', bottom: '#6b4a2c', hat: 'straw', hairStyle: 'short', item: 'hoe' },
+  woodcutter: { skin: '#e0a070', hair: '#3a2214', top: '#c8442e', bottom: '#3a3a3a', hat: 'none', hairStyle: 'beard', item: 'hoe' },
+  miller: { skin: '#f3bd92', hair: '#d8d8e0', top: '#e8e8e8', bottom: '#8a6a3c', hat: 'cap', hairStyle: 'short', item: 'basket' },
+  shepherd: { skin: '#e8a878', hair: '#c8432c', top: '#7a9ad0', bottom: '#6b4a2c', hat: 'straw', hairStyle: 'short', item: 'cane' },
+  fisher: { skin: '#e8b890', hair: '#4a2c14', top: '#3a8fa0', bottom: '#2d3a60', hat: 'bandana', hairStyle: 'short', item: 'basket' },
+  hermit: { skin: '#f0c4a0', hair: '#e8e8e8', top: '#6b4a2c', bottom: '#4a3a2c', hat: 'none', hairStyle: 'beard', item: 'cane' },
+  squire: { skin: '#f6c8a0', hair: '#f5cf46', top: '#8c8c96', bottom: '#5a2a2a', accent: '#c82828', hat: 'cap', hairStyle: 'short' },
 };
 
 export function buildVillager(look: VillagerLook): Humanoid {

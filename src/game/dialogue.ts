@@ -140,6 +140,32 @@ export const NPC_TALK: Record<string, Talker> = {
     pages: ['Turnips, turnips, turnips. The knights don\'t eat them, at least. They don\'t eat anything anymore.', 'The river east of here used to be shallow. Since the Crown went missing it runs high and the old ford drowned. Use the bridges.'],
   }),
 
+  // ------------------------------------------------------------------ outposts
+  woodcutter: () => ({
+    name: 'BRAM THE WOODCUTTER', color: '#f0b090',
+    pages: ['Willowmere\'s quiet, if you keep off the trail. The knights march it in twos.', 'North bridge is past the big oaks. Beyond the river the land climbs - the Amber Highland. Their archers hold every terrace up there.'],
+  }),
+  miller: () => ({
+    name: 'ODA THE MILLER', color: '#f0e8d0',
+    pages: ['Welcome to Millbrook, such as it is. Three houses and a wheel that hasn\'t turned since the brook rose.', 'South bridge takes you over to the Drowned Field. Don\'t. Whatever the Queen\'s army lost there, it\'s still standing guard.'],
+  }),
+  shepherd: () => ({
+    name: 'PIP THE SHEPHERD', color: '#c8e0ff',
+    pages: ['Lost the whole flock to the knights. They don\'t even eat them. They just... march them off.', 'If you ever cross the great river, there\'s a camp on the moor. Blue tents. That\'s where their captain sits.'],
+  }),
+  fisher: () => ({
+    name: 'NELL THE FISHER', color: '#a0e0e8',
+    pages: ['Mirror Lake. Flat as a plate, deep as a well. Nothing bites anymore.', 'The old hermit up the orchard hill says the lake used to glow amber at night. Before the Crown was taken. Old men say all sorts.'],
+  }),
+  hermit: () => ({
+    name: 'THE HERMIT', color: '#d8d0b0',
+    pages: ['Hm? Apples. Take one. Take two. The trees still give, even if no one comes.', 'You have the look of someone going east. There is a hollow at the very edge of the moor, ringed with old pillars. What burns there should be carried home, not worn.'],
+  }),
+  squire: () => ({
+    name: 'TOBBIN THE SQUIRE', color: '#e0c8c8',
+    pages: ['I was squire to Sir Aldous. Then the Crown went, and his eyes went grey, and he walked into the river without a word.', 'They came out the other side, all of them. That\'s the great bridge. I keep it. Someone should.'],
+  }),
+
   // ------------------------------------------------------------------ dog
   dog: () => ({ name: 'BOWWOW', color: '#f0e0b0', pages: ['Woof! Woof woof! ...(He sniffs your boots and wags his tail furiously.)'] }),
 };

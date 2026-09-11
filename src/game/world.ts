@@ -6,10 +6,12 @@ export type EnemyKind = 'sword' | 'spear' | 'javelin' | 'archer';
 export interface TreeSpec { x: number; z: number; scale: number; y?: number }
 export interface TileObj { tx: number; tz: number }
 export interface HouseSpec { x: number; z: number; w: number; d: number; roof?: string; wall?: string; door?: 'S' | 'E' | 'W'; sign?: 'shop' | 'inn' | 'none' }
-export interface PropSpec { kind: 'well' | 'sign' | 'stall' | 'bench' | 'weathercock' | 'lamp' | 'barrel' | 'crate' | 'flowerpot' | 'hedge'; x: number; z: number; rot?: number }
+export type PropKind = 'well' | 'sign' | 'stall' | 'bench' | 'weathercock' | 'lamp' | 'barrel' | 'crate' | 'flowerpot' | 'hedge'
+  | 'log' | 'menhir' | 'cart' | 'hay' | 'scarecrow' | 'campfire' | 'tent' | 'banner' | 'tower' | 'ruinwall' | 'pillar' | 'crown';
+export interface PropSpec { kind: PropKind; x: number; z: number; rot?: number }
 export interface NpcSpec { id: string; x: number; z: number; facing?: 0 | 1 | 2 | 3; wander?: number }
 export interface SpawnSpec { x: number; z: number; kind: EnemyKind }
-export interface BridgeSpec { x0: number; z0: number; x1: number; z1: number; y: number } // tile-inclusive rect + deck height
+export interface BridgeSpec { x0: number; z0: number; x1: number; z1: number; y: number; deadEnd?: boolean } // tile-inclusive rect + deck height; deadEnd = jetty (far end over water)
 export interface Vec2 { x: number; z: number }
 
 function distToSeg(px: number, pz: number, ax: number, az: number, bx: number, bz: number): number {
@@ -190,62 +192,79 @@ export class World {
   private riverDist = new Float32Array(MAP_W * MAP_H).fill(1e9);
   private riverHalfW = new Float32Array(MAP_W * MAP_H);
 
+  /** Hand-designed points of interest (flattened terrain pads) */
+  private pads: { x0: number; z0: number; x1: number; z1: number }[] = [];
+
   private generate() {
     const { w, h, rng } = this;
     const set = (x: number, z: number, t: Tile) => { if (x >= 0 && z >= 0 && x < w && z < h) this.tiles[z * w + x] = t; };
     const get = (x: number, z: number) => this.tile(x, z);
+    const v = this.village;
+
+    // ---------------------------------------------------------------------------------------------------
+    // REGIONS (208 x 176)
+    //  NW  Thistledown & the home meadow      (x 0-60,   z 0-50)   village, pond, first knights
+    //  N   Willowmere Woods                   (x 60-115, z 0-50)   forest trail to the north bridge, woodcutter
+    //  |   The Great River                     (x ~118-140, N -> S) three bridges
+    //  NE  Amber Highland                     (x 150+,   z 0-60)   terraces, ruined watchtower, archers
+    //  E   Grey Moor & the Knights' camp      (x 140+,   z 60-120) stream, camp, the Crown hollow at the east edge
+    //  C   Standing Stones mesa               (x 76-96,  z 56-68)
+    //  SW  Mirror Lake & the orchard          (x 0-60,   z 50-176) hermit, fisher, second pond
+    //  S   Millbrook hamlet                   (x 66-105, z 118-150) farms, mill, brook bridge
+    //  SE  The Drowned Field                  (x 140+,   z 120-176) bog pools, old battlefield, ridge
+    // ---------------------------------------------------------------------------------------------------
 
     // 1. water ------------------------------------------------------------------------------------------
-    // main river: enters at the top around x=120, wanders south, exits at the bottom around x=140
     const river = [[118, -6], [116, 22], [124, 44], [122, 68], [130, 92], [128, 118], [136, 142], [134, 160], [140, 182]];
-    // tributary from the western lake into the river
-    const brook = [[48, 122], [70, 118], [92, 112], [110, 100], [124, 96]];
-    // eastern stream from the highland
+    const brook = [[50, 124], [70, 118], [92, 112], [110, 100], [124, 96]];
     const stream = [[206, 40], [186, 48], [170, 58], [150, 66], [128, 72]];
     const waters: { pts: number[][]; w: number }[] = [{ pts: river, w: 3.4 }, { pts: brook, w: 1.9 }, { pts: stream, w: 1.6 }];
-    const lake = { x: 40, z: 126, rx: 13, rz: 8 };
-    const pond = { x: 24, z: 62, rx: 6, rz: 4 };
+    const lakes = [
+      { x: 40, z: 126, rx: 13, rz: 8 },   // Mirror Lake
+      { x: 10.5, z: 30.5, rx: 4.3, rz: 3.1 }, // home pond (the kid's rupee bush is nearby)
+      { x: 24, z: 62, rx: 6, rz: 4 },     // heron pond
+      { x: 168, z: 150, rx: 5, rz: 3 }, { x: 182, z: 160, rx: 4, rz: 2.5 }, { x: 156, z: 162, rx: 3.5, rz: 2.2 }, // bog pools
+    ];
     for (let z = 0; z < h; z++) for (let x = 0; x < w; x++) {
       const cx = x + 0.5, cz = z + 0.5;
       const i = this.idx(x, z);
       let best = 1e9, bw = 0;
       for (const wt of waters) { const d = polyDist(cx, cz, wt.pts); if (d - wt.w < best - bw) { best = d; bw = wt.w; } }
-      for (const el of [lake, pond]) {
+      for (const el of lakes) {
         const ex = (cx - el.x) / el.rx, ez = (cz - el.z) / el.rz;
-        const r = Math.hypot(ex, ez); // 1 at the shore
-        const d = (r - 1) * Math.min(el.rx, el.rz); // approx distance to shore (negative inside)
-        if (d + 0 < best - bw) { best = d + 0; bw = 0; }
+        const d = (Math.hypot(ex, ez) - 1) * Math.min(el.rx, el.rz);
+        if (d < best - bw) { best = d; bw = 0; }
       }
       const wobble = (hash2(x, z, 3) - 0.5) * 0.6;
-      this.riverDist[i] = best - bw + wobble; // <0 = water, 0..~3 = bank
+      this.riverDist[i] = best - bw + wobble;
       this.riverHalfW[i] = bw;
       if (this.riverDist[i] < 0) set(x, z, Tile.Water);
     }
 
     // 2. roads ------------------------------------------------------------------------------------------
     const roads = [
-      // from the village south gate down to the crossroads, then east to the great bridge
-      [[9.5, 17], [9.5, 30.5], [40.5, 30.5], [40.5, 46.5], [96.5, 46.5], [121.5, 46.5]],
-      // east gate road to the north bridge
-      [[21, 8.5], [60.5, 8.5], [60.5, 20.5], [114.5, 20.5]],
-      // beyond the great bridge to the highland ramp and the far east
-      [[125.5, 46.5], [160.5, 46.5], [160.5, 80.5], [190.5, 80.5]],
-      // south road: crossroads -> lake -> brook bridge -> southern bridge
-      [[40.5, 46.5], [40.5, 100.5], [62.5, 100.5], [62.5, 140.5], [100.5, 140.5], [100.5, 128.5], [132.5, 128.5]],
-      // east bank south
-      [[140.5, 128.5], [170.5, 128.5], [170.5, 150.5]],
-      [[160.5, 80.5], [160.5, 110.5], [140.5, 110.5]],
+      // south gate -> meadow crossroads -> great bridge (bends around the pond and the heron woods)
+      [[9.5, 17], [9.5, 20.5], [24.5, 20.5], [24.5, 30.5], [40.5, 30.5], [40.5, 46.5], [58.5, 46.5], [58.5, 52.5], [82.5, 52.5], [98.5, 46.5], [121.5, 46.5]],
+      // east gate -> forest trail through Willowmere -> north bridge
+      [[21, 8.5], [34.5, 8.5], [34.5, 14.5], [60.5, 14.5], [60.5, 20.5], [78.5, 20.5], [84.5, 26.5], [98.5, 26.5], [104.5, 20.5], [114.5, 20.5]],
+      // beyond the great bridge: east road, highland climb, moor road to the Crown hollow
+      [[125.5, 46.5], [160.5, 46.5], [160.5, 80.5], [190.5, 80.5], [198.5, 90.5]],
+      [[160.5, 46.5], [160.5, 30.5], [176.5, 22.5], [188.5, 12.5]],
+      // north bridge -> highland foot (joins the climb road)
+      [[122.5, 20.5], [140.5, 20.5], [146.5, 30.5], [160.5, 30.5]],
+      // south road: crossroads -> heron pond -> Mirror Lake -> brook bridge -> Millbrook -> south bridge
+      [[40.5, 46.5], [40.5, 74.5], [34.5, 84.5], [34.5, 100.5], [48.5, 108.5], [62.5, 108.5], [62.5, 134.5], [78.5, 134.5], [100.5, 134.5], [100.5, 128.5], [132.5, 128.5]],
+      // east bank south -> the Drowned Field; camp track
+      [[140.5, 128.5], [162.5, 128.5], [170.5, 140.5]],
+      [[160.5, 80.5], [160.5, 104.5], [146.5, 110.5]],
+      // orchard lane (hermit hill)
+      [[34.5, 84.5], [20.5, 84.5], [14.5, 96.5]],
     ];
-    for (let z = 0; z < h; z++) for (let x = 0; x < w; x++) {
-      if (get(x, z) !== Tile.Grass) continue;
-      const cx = x + 0.5, cz = z + 0.5;
-      if (x >= this.village.x0 && x <= this.village.x1 && z >= this.village.z0 && z <= this.village.z1 - 1) continue;
-      for (const p of roads) if (polyDist(cx, cz, p) < 1.1) { set(x, z, Tile.Path); break; }
-    }
+    const onRoad = (x: number, z: number) => x >= v.x0 && x <= v.x1 && z >= v.z0 && z <= v.z1 - 1 ? false : roads.some((p) => polyDist(x + 0.5, z + 0.5, p) < 1.1);
+    for (let z = 0; z < h; z++) for (let x = 0; x < w; x++) if (get(x, z) === Tile.Grass && onRoad(x, z)) set(x, z, Tile.Path);
 
     // 3. bridges (raised wooden decks; the terrain underneath stays sunk) --------------------------------
     const bridgeAt = (x: number, z: number, along: 'x' | 'z') => {
-      // find the water crossing on this row/column nearest to (x,z), then span it with 1 tile of abutment each side
       const isW = (k: number) => along === 'x' ? get(k, z) === Tile.Water : get(x, k) === Tile.Water;
       let start = along === 'x' ? x : z;
       if (!isW(start)) { let f = -1; for (let d = 1; d < 30 && f < 0; d++) { if (isW(start + d)) f = start + d; else if (isW(start - d)) f = start - d; } if (f < 0) return; start = f; }
@@ -260,57 +279,103 @@ export class World {
     bridgeAt(122, 46, 'x');  // great bridge (east road)
     bridgeAt(116, 20, 'x');  // north bridge
     bridgeAt(134, 128, 'x'); // south bridge
-    bridgeAt(62, 118, 'z');  // brook bridge (south road)
+    bridgeAt(62, 120, 'z');  // brook bridge (south road)
     bridgeAt(160, 62, 'z');  // eastern stream bridge
+    // the fisher's jetty on Mirror Lake: a 1-wide dead-end deck running south into the water
+    { const j: BridgeSpec = { x0: 45, z0: 117, x1: 45, z1: 121, y: 0.12, deadEnd: true }; this.bridges.push(j); for (let z = j.z0; z <= j.z1; z++) set(j.x0, z, Tile.Bridge); }
 
-    // 4. terrain heights ------------------------------------------------------------------------------
+    // 4. outposts: houses outside the village, terrain pads for points of interest ------------------------
+    this.houses.push(
+      { x: 88, z: 30, w: 4, d: 3, roof: '#6b4a2c', wall: '#c9b088', sign: 'none' },      // woodcutter's lodge (Willowmere)
+      { x: 74, z: 138, w: 5, d: 3, roof: '#b73c3c', wall: '#e8d6a8', sign: 'none' },     // Millbrook farmhouse
+      { x: 84, z: 126, w: 4, d: 3, roof: '#3a5fd0', wall: '#f0e2c0', sign: 'none' },     // the mill
+      { x: 92, z: 140, w: 4, d: 3, roof: '#2f8f5a', wall: '#e8d6a8', sign: 'none' },     // shepherd's cottage
+      { x: 12, z: 100, w: 4, d: 3, roof: '#8a3fc4', wall: '#c9b088', sign: 'none' },     // hermit's hut (orchard hill)
+      { x: 46, z: 112, w: 4, d: 3, roof: '#c82828', wall: '#f4ecd8', sign: 'none' },     // fisher's house (Mirror Lake)
+    );
+    for (const hs of this.houses) if (hs.x > v.x1) this.pads.push({ x0: hs.x - 1, z0: hs.z - 1, x1: hs.x + hs.w, z1: hs.z + hs.d + 1 });
+    this.pads.push(
+      { x0: 84, z0: 58, x1: 90, z1: 64 },     // standing stones (mesa top)
+      { x0: 150, z0: 100, x1: 160, z1: 112 }, // knights' camp
+      { x0: 194, z0: 88, x1: 203, z1: 96 },   // the Crown hollow
+      { x0: 186, z0: 4, x1: 194, z1: 11 },    // watchtower ruin
+      { x0: 174, z0: 138, x1: 182, z1: 146 }, // the Drowned Field shrine
+    );
+
+    // 5. terrain heights ------------------------------------------------------------------------------
     this.generateHeights();
 
-    // 5. village ---------------------------------------------------------------------------------------
+    // 6. village + outpost buildings ---------------------------------------------------------------------
     for (const hs of this.houses) for (let z = hs.z; z < hs.z + hs.d; z++) for (let x = hs.x; x < hs.x + hs.w; x++) {
       set(x, z, Tile.Grass); this.houseCell[this.idx(x, z)] = 1;
     }
     this.generateVillage(set);
+    // Millbrook fields, mill yard and the hermit's orchard beds
+    for (let z = 128; z <= 131; z++) for (let x = 68; x <= 79; x++) set(x, z, Tile.Bed);
+    for (let z = 143; z <= 145; z++) for (let x = 80; x <= 90; x++) set(x, z, Tile.Bed);
+    for (let z = 136; z <= 137; z++) for (let x = 84; x <= 88; x++) set(x, z, Tile.Bed);
+    for (let z = 130; z <= 131; z++) for (let x = 84; x <= 89; x++) set(x, z, Tile.Cobble);
+    for (let z = 104; z <= 105; z++) for (let x = 12; x <= 17; x++) set(x, z, Tile.Bed);
+    // the knights' camp is trampled earth, the shrines and the tower are cobbled
+    for (let z = 102; z <= 110; z++) for (let x = 151; x <= 159; x++) if (Math.hypot(x - 155, z - 106) < 4.6) set(x, z, Tile.Path);
+    for (let z = 90; z <= 94; z++) for (let x = 196; x <= 201; x++) set(x, z, Tile.Cobble);
+    for (let z = 5; z <= 10; z++) for (let x = 187; x <= 193; x++) set(x, z, Tile.Cobble);
+    for (let z = 140; z <= 144; z++) for (let x = 176; x <= 180; x++) set(x, z, Tile.Cobble);
+    for (let z = 59; z <= 63; z++) for (let x = 85; x <= 89; x++) if (Math.hypot(x - 87, z - 61) < 2.6) set(x, z, Tile.Cobble);
 
-    // 6. trees -----------------------------------------------------------------------------------------
-    const v = this.village;
+    // 7. trees -----------------------------------------------------------------------------------------
     const inYard = (x: number, z: number) => x >= v.x0 && x <= v.x1 && z >= v.z0 && z <= v.z1;
+    const inPad = (x: number, z: number) => this.pads.some((p) => x >= p.x0 && x <= p.x1 && z >= p.z0 && z <= p.z1);
     const nearSpawn = (x: number, z: number) => Math.hypot(x + 0.5 - this.playerStart.x, z + 0.5 - this.playerStart.z) < 3;
-    const nearRoad = (x: number, z: number) => { for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) { const t = get(x + dx, z + dz); if (t === Tile.Path || t === Tile.Bridge) return true; } return false; };
+    const nearRoad = (x: number, z: number) => { for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) { const t = get(x + dx, z + dz); if (t === Tile.Path || t === Tile.Bridge || t === Tile.Cobble || t === Tile.Bed) return true; } return false; };
     const flat = (x: number, z: number) => {
       const hs = [this.cornerH(x, z), this.cornerH(x + 1, z), this.cornerH(x, z + 1), this.cornerH(x + 1, z + 1)];
       return Math.max(...hs) - Math.min(...hs) < 0.3;
     };
-    const treeOK = (x: number, z: number) => get(x, z) === Tile.Grass && !this.houseCell[this.idx(x, z)] && !inYard(x, z) && !nearSpawn(x, z) && !nearRoad(x, z) && flat(x, z) && this.riverDist[this.idx(x, z)] > 1.5;
-    // border forest
+    const treeOK = (x: number, z: number) => get(x, z) === Tile.Grass && !this.houseCell[this.idx(x, z)] && !inYard(x, z) && !inPad(x, z) && !nearSpawn(x, z) && !nearRoad(x, z) && flat(x, z) && this.riverDist[this.idx(x, z)] > 1.5;
+    const plant = (x: number, z: number) => { if (treeOK(x, z)) this.treeCell[this.idx(x, z)] = 1; };
+    // border forest (the world's edge)
     for (let z = 0; z < h; z++) for (let x = 0; x < w; x++) {
       const ring = Math.min(x, z, w - 1 - x, h - 1 - z);
       if (ring < 2) { if (get(x, z) !== Tile.Water) this.treeCell[this.idx(x, z)] = 1; continue; }
-      if (ring <= 6 && treeOK(x, z)) {
-        const p = [0.7, 0.5, 0.35, 0.22, 0.12][ring - 2] ?? 0.08;
-        if (rng.next() < p) this.treeCell[this.idx(x, z)] = 1;
-      }
+      if (ring <= 5 && treeOK(x, z)) { const p = [0.65, 0.4, 0.22, 0.1][ring - 2]; if (rng.next() < p) this.treeCell[this.idx(x, z)] = 1; }
     }
-    // forests: low-frequency value noise decides woodland regions, groves add dense clumps
-    const noise = (x: number, z: number, f: number, seed: number) => {
-      const gx = x / f, gz = z / f, x0 = Math.floor(gx), z0 = Math.floor(gz), fx = gx - x0, fz = gz - z0;
-      const sm = (t: number) => t * t * (3 - 2 * t);
-      const n00 = hash2(x0, z0, seed), n10 = hash2(x0 + 1, z0, seed), n01 = hash2(x0, z0 + 1, seed), n11 = hash2(x0 + 1, z0 + 1, seed);
-      return (n00 * (1 - sm(fx)) + n10 * sm(fx)) * (1 - sm(fz)) + (n01 * (1 - sm(fx)) + n11 * sm(fx)) * sm(fz);
-    };
-    for (let z = 0; z < h; z++) for (let x = 0; x < w; x++) {
-      if (!treeOK(x, z)) continue;
-      const n = noise(x, z, 18, 11) * 0.7 + noise(x, z, 7, 12) * 0.3;
-      if (n > 0.62 && rng.next() < (n - 0.62) * 3.2) this.treeCell[this.idx(x, z)] = 1;
-      else if (rng.next() < 0.012) this.treeCell[this.idx(x, z)] = 1; // lone trees
-    }
-    const groves = [
-      { x: 84, z: 92, r: 9, p: 0.55 }, { x: 172, z: 148, r: 8, p: 0.55 }, { x: 96, z: 20, r: 7, p: 0.5 }, { x: 24, z: 88, r: 7, p: 0.55 },
-      { x: 64, z: 160, r: 8, p: 0.5 }, { x: 136, z: 88, r: 6, p: 0.4 }, { x: 180, z: 20, r: 7, p: 0.5 }, { x: 150, z: 160, r: 7, p: 0.5 }, { x: 30, z: 40, r: 5, p: 0.5 },
+    // woodlands: hand-placed ellipses (x, z, rx, rz, density). Willowmere is the big one.
+    const woods = [
+      [88, 12, 30, 12, 0.5], [70, 36, 16, 9, 0.45], [100, 38, 12, 8, 0.45], [108, 8, 8, 6, 0.5],  // Willowmere Woods
+      [26, 46, 9, 5, 0.4], [50, 60, 9, 7, 0.4], [14, 62, 8, 6, 0.42],                           // heron woods, west copses
+      [104, 72, 14, 9, 0.42], [120, 86, 7, 5, 0.4],                                              // riverside woods (west bank)
+      [30, 150, 16, 8, 0.45], [12, 130, 7, 9, 0.42], [60, 162, 14, 6, 0.45],                     // the southern forest
+      [110, 158, 14, 8, 0.42], [90, 165, 10, 5, 0.4],                                            // Millbrook's southern woods
+      [178, 26, 10, 6, 0.36], [200, 30, 6, 8, 0.4],                                              // highland pines
+      [150, 84, 8, 5, 0.32], [188, 66, 10, 5, 0.34], [196, 118, 8, 8, 0.36],                     // moor copses
+      [150, 170, 14, 4, 0.5], [196, 150, 8, 6, 0.4],                                              // SE ridge woods
     ];
-    for (const g of groves) for (let z = g.z - g.r - 2; z <= g.z + g.r + 2; z++) for (let x = g.x - g.r - 2; x <= g.x + g.r + 2; x++) {
-      const d = Math.hypot(x - g.x, z - g.z) + (rng.next() - 0.5) * 1.5;
-      if (d < g.r && treeOK(x, z) && rng.next() < g.p) this.treeCell[this.idx(x, z)] = 1;
+    for (const [x, z, rx, rz, p] of woods) for (let tz = z - rz - 1; tz <= z + rz + 1; tz++) for (let tx = x - rx - 1; tx <= x + rx + 1; tx++) {
+      const d = Math.hypot((tx - x) / rx, (tz - z) / rz) + (rng.next() - 0.5) * 0.25;
+      if (d < 1 && rng.next() < p * (d < 0.6 ? 1 : 0.6)) plant(tx, tz);
+    }
+    // groves: tight clumps that frame roads, ponds and clearings
+    const groves = [
+      [21, 23, 5.5, 0.55], [43, 37, 4.5, 0.55], [24, 5, 4, 0.5], [6, 22, 3.5, 0.55], [16, 40, 3, 0.5], [34, 22, 3, 0.4], [52, 34, 4, 0.5], // home meadow (as before)
+      [66, 56, 4, 0.5], [78, 44, 4, 0.5], [96, 58, 5, 0.45], [56, 92, 5, 0.5], [40, 98, 3.5, 0.5], [26, 112, 4, 0.5],
+      [70, 126, 3, 0.5], [104, 122, 4, 0.5], [110, 140, 4, 0.5], [84, 150, 5, 0.5], [50, 140, 4, 0.5],
+      [140, 56, 4, 0.5], [146, 36, 5, 0.5], [170, 48, 3, 0.5], [176, 96, 4, 0.5], [188, 104, 3.5, 0.45], [166, 118, 4, 0.5],
+      [150, 140, 4, 0.45], [190, 130, 4, 0.45], [174, 166, 5, 0.5],
+    ];
+    for (const [x, z, r, p] of groves) for (let tz = z - r - 2; tz <= z + r + 2; tz++) for (let tx = x - r - 2; tx <= x + r + 2; tx++) {
+      const d = Math.hypot(tx - x, tz - z) + (rng.next() - 0.5) * 1.5;
+      if (d < r && rng.next() < p) plant(tx, tz);
+    }
+    // orchard rows on the hermit's hill and a willow line along the brook
+    for (let x = 6; x <= 22; x += 3) for (let z = 108; z <= 114; z += 3) plant(x, z);
+    for (let x = 72; x <= 110; x += 4) { const zb = 118 - (x - 70) * 0.28; plant(x, Math.round(zb) - 4); plant(x + 2, Math.round(zb) + 4); }
+    // scattered lone trees, region-weighted (fewer on the moor, none on the highland top)
+    for (let i = 0; i < 260; i++) {
+      const x = rng.int(3, w - 4), z = rng.int(3, h - 4);
+      const moor = x > 140 && z > 60 && z < 120, high = x > 150 && z < 40;
+      if (high || (moor && rng.next() < 0.6)) continue;
+      plant(x, z);
     }
     // village trees: framing corners + a big one by the plaza
     for (const [x, z] of [[2, 2], [3, 2], [2, 3], [3, 3], [18, 14], [19, 14], [18, 15], [19, 15], [19, 1], [1, 16], [2, 16], [17, 1], [12, 16], [1, 6], [1, 7]]) if (get(x, z) === Tile.Grass && !this.houseCell[this.idx(x, z)]) this.treeCell[this.idx(x, z)] = 1;
@@ -330,41 +395,102 @@ export class World {
       }
     }
 
-    // 7. bushes / rocks ---------------------------------------------------------------------------------
+    // 8. bushes / rocks ---------------------------------------------------------------------------------
     const objFree = (x: number, z: number) => (get(x, z) === Tile.Grass || get(x, z) === Tile.Flowers) && !this.treeCell[this.idx(x, z)] && !this.houseCell[this.idx(x, z)] && !nearSpawn(x, z) && flat(x, z) && this.riverDist[this.idx(x, z)] > 1.2;
     const occupied = new Uint8Array(w * h);
     const patterns = [[[0, 0], [1, 0], [2, 0]], [[0, 0], [0, 1], [0, 2]], [[0, 0], [1, 0], [0, 1], [1, 1]], [[0, 0], [1, 0], [2, 0], [0, 1]], [[0, 0], [2, 0], [1, 1]]];
-    for (let i = 0; i < 190; i++) {
-      const bx = rng.int(3, w - 6), bz = rng.int(3, h - 6);
-      if (inYard(bx, bz)) continue;
-      const pat = rng.pick(patterns);
-      for (const [ox, oz] of pat) {
-        const x = bx + ox, z = bz + oz;
-        if (objFree(x, z) && !inYard(x, z) && !occupied[this.idx(x, z)]) { this.bushes.push({ tx: x, tz: z }); occupied[this.idx(x, z)] = 1; }
-      }
+    const bushAt = (x: number, z: number) => { if (objFree(x, z) && !inYard(x, z) && !inPad(x, z) && !occupied[this.idx(x, z)]) { this.bushes.push({ tx: x, tz: z }); occupied[this.idx(x, z)] = 1; } };
+    const rockAt = (x: number, z: number) => { if (objFree(x, z) && !inYard(x, z) && !inPad(x, z) && !occupied[this.idx(x, z)]) { this.rocks.push({ tx: x, tz: z }); occupied[this.idx(x, z)] = 1; } };
+    const cluster = (x: number, z: number, place: (x: number, z: number) => void) => { for (const [ox, oz] of rng.pick(patterns)) place(x + ox, z + oz); };
+    // Granny's bushes around the village and the pond (the kid's rupee bush is by the pond)
+    const homeBushes = [[6, 23], [7, 23], [13, 23], [14, 23], [15, 23], [4, 26], [5, 26], [16, 25], [17, 26], [11, 27], [12, 27], [6, 34], [7, 34], [14, 33], [15, 33], [13, 28], [17, 30], [18, 31], [27, 18], [28, 18], [30, 24], [31, 24], [22, 12], [23, 12]];
+    for (const [x, z] of homeBushes) bushAt(x, z);
+    const bushClusters = [
+      [37, 26], [44, 33], [55, 42], [63, 48], [72, 50], [90, 49], [104, 44], [112, 50],                 // along the east road
+      [36, 12], [44, 16], [58, 12], [66, 22], [80, 18], [94, 24], [100, 30], [108, 18],                 // forest trail
+      [34, 60], [44, 70], [46, 78], [30, 88], [38, 96], [52, 104], [58, 114], [66, 130], [96, 136],     // south road
+      [26, 68], [18, 74], [30, 74],                                                                      // heron pond
+      [30, 118], [34, 136], [50, 134], [54, 120],                                                         // Mirror Lake shore
+      [134, 44], [140, 50], [148, 48], [156, 52], [164, 74], [170, 84], [182, 78], [186, 86],             // east road
+      [144, 118], [150, 124], [160, 124], [166, 134], [176, 130],                                         // Drowned Field
+      [98, 60], [110, 64], [118, 82], [124, 104], [112, 110],                                             // riverside
+    ];
+    for (const [x, z] of bushClusters) cluster(x, z, bushAt);
+    for (let i = 0; i < 40; i++) cluster(rng.int(4, w - 6), rng.int(4, h - 6), bushAt);
+    // rock fields: the highland, the moor and the river shingle; a few boulders elsewhere
+    const rockFields = [
+      [178, 34, 12, 6, 0.12], [196, 20, 8, 10, 0.1], [160, 14, 8, 8, 0.1],   // highland
+      [176, 100, 22, 12, 0.07], [196, 70, 8, 6, 0.1],                        // moor
+      [128, 60, 6, 10, 0.08], [126, 110, 6, 8, 0.08],                        // shingle
+      [20, 46, 8, 4, 0.08], [10, 150, 8, 6, 0.08], [150, 156, 10, 5, 0.1],  // hills
+    ];
+    for (const [x, z, rx, rz, p] of rockFields) for (let tz = z - rz; tz <= z + rz; tz++) for (let tx = x - rx; tx <= x + rx; tx++) {
+      if (Math.hypot((tx - x) / rx, (tz - z) / rz) < 1 && rng.next() < p) rockAt(tx, tz);
     }
-    // a few guaranteed bushes near the village for Granny's quest
-    for (const [x, z] of [[6, 20], [7, 20], [13, 21], [14, 21], [15, 21], [4, 25], [5, 25], [16, 25], [17, 26], [11, 27], [12, 27]]) if (objFree(x, z) && !occupied[this.idx(x, z)]) { this.bushes.push({ tx: x, tz: z }); occupied[this.idx(x, z)] = 1; }
-    for (let i = 0; i < 380; i++) {
-      const x = rng.int(3, w - 4), z = rng.int(3, h - 4);
-      if (objFree(x, z) && !occupied[this.idx(x, z)] && !inYard(x, z)) { this.rocks.push({ tx: x, tz: z }); occupied[this.idx(x, z)] = 1; }
-    }
+    for (let i = 0; i < 90; i++) rockAt(rng.int(3, w - 4), rng.int(3, h - 4));
+    for (const [x, z] of [[27, 19], [40, 21], [27, 35], [15, 33], [37, 8], [6, 19], [30, 25], [22, 12], [44, 29], [12, 24], [33, 5]]) cluster(x, z, bushAt);
 
-    // 8. village fence ring with gates ------------------------------------------------------------------
+    // 9. props: village + outposts -----------------------------------------------------------------------
+    this.props.push(
+      // woodcutter's clearing
+      { kind: 'log', x: 86.5, z: 35.5 }, { kind: 'log', x: 93.5, z: 34.5, rot: 0.8 }, { kind: 'crate', x: 92.5, z: 30.5 }, { kind: 'barrel', x: 87.5, z: 30.5 }, { kind: 'sign', x: 90.5, z: 36.5 },
+      // standing stones on the mesa
+      { kind: 'menhir', x: 87.5, z: 58.5 }, { kind: 'menhir', x: 89.8, z: 60.2, rot: 0.6 }, { kind: 'menhir', x: 89.6, z: 62.6, rot: 1.2 }, { kind: 'menhir', x: 87.4, z: 63.8, rot: 0.3 }, { kind: 'menhir', x: 85.2, z: 62.5, rot: 0.9 }, { kind: 'menhir', x: 85.0, z: 60.0, rot: 0.2 },
+      // Millbrook
+      { kind: 'weathercock', x: 86.5, z: 125.5 }, { kind: 'cart', x: 82.5, z: 132.5, rot: 0.4 }, { kind: 'hay', x: 72.5, z: 134.5 }, { kind: 'hay', x: 71.5, z: 136.5 }, { kind: 'hay', x: 89.5, z: 141.5 },
+      { kind: 'scarecrow', x: 74.5, z: 129.5 }, { kind: 'barrel', x: 79.5, z: 141.5 }, { kind: 'sign', x: 64.5, z: 133.5 }, { kind: 'lamp', x: 80.5, z: 136.5 }, { kind: 'bench', x: 86.5, z: 143.5 },
+      // Mirror Lake: fisher's jetty
+      { kind: 'barrel', x: 50.5, z: 114.5 }, { kind: 'crate', x: 43.5, z: 112.5 }, { kind: 'sign', x: 48.5, z: 109.5 },
+      // hermit's orchard hill
+      { kind: 'bench', x: 16.5, z: 102.5, rot: Math.PI }, { kind: 'flowerpot', x: 11.5, z: 103.5 }, { kind: 'menhir', x: 8.5, z: 96.5, rot: 0.4 },
+      // knights' camp
+      { kind: 'campfire', x: 155.5, z: 106.5 }, { kind: 'tent', x: 152.5, z: 103.5, rot: 0.7 }, { kind: 'tent', x: 158.5, z: 103.5, rot: -0.7 }, { kind: 'tent', x: 158.5, z: 109.5, rot: -2.4 },
+      { kind: 'banner', x: 152.5, z: 109.5 }, { kind: 'crate', x: 154.5, z: 110.5 }, { kind: 'barrel', x: 156.5, z: 102.5 }, { kind: 'log', x: 155.5, z: 108.5, rot: Math.PI / 2 },
+      // watchtower ruin on the highland
+      { kind: 'tower', x: 190.5, z: 7.5 }, { kind: 'ruinwall', x: 187.5, z: 10.5 }, { kind: 'ruinwall', x: 193.5, z: 9.5, rot: Math.PI / 2 }, { kind: 'banner', x: 188.5, z: 5.5 }, { kind: 'campfire', x: 192.5, z: 10.5 },
+      // the Crown hollow at the east edge
+      { kind: 'pillar', x: 196.5, z: 90.5 }, { kind: 'pillar', x: 196.5, z: 94.5 }, { kind: 'pillar', x: 199.5, z: 89.5 }, { kind: 'pillar', x: 199.5, z: 95.5 }, { kind: 'crown', x: 201.5, z: 92.5 }, { kind: 'ruinwall', x: 201.5, z: 89.5 }, { kind: 'ruinwall', x: 201.5, z: 95.5 },
+      // Drowned Field shrine + grave stakes
+      { kind: 'pillar', x: 176.5, z: 140.5 }, { kind: 'pillar', x: 180.5, z: 140.5 }, { kind: 'menhir', x: 178.5, z: 141.5 }, { kind: 'ruinwall', x: 178.5, z: 144.5 },
+      { kind: 'banner', x: 150.5, z: 132.5 }, { kind: 'banner', x: 158.5, z: 138.5, rot: 0.5 }, { kind: 'log', x: 154.5, z: 136.5, rot: 1.1 },
+      // road signs at the crossroads and bridges
+      { kind: 'sign', x: 42.5, z: 48.5 }, { kind: 'sign', x: 118.5, z: 48.5 }, { kind: 'sign', x: 162.5, z: 82.5 }, { kind: 'sign', x: 42.5, z: 32.5 }, { kind: 'lamp', x: 128.5, z: 44.5 }, { kind: 'lamp', x: 119.5, z: 44.5 },
+    );
+    // scattered stakes along the Drowned Field (old battle lines)
+    for (let i = 0; i < 18; i++) { const x = 144 + rng.int(0, 30), z = 122 + rng.int(0, 30); if (objFree(x, z) && !occupied[this.idx(x, z)] && get(x, z) === Tile.Grass) this.fences.push({ tx: x, tz: z }); }
+    // outpost NPCs
+    this.npcs.push(
+      { id: 'woodcutter', x: 89.5, z: 34.5, facing: 0, wander: 1.5 },
+      { id: 'miller', x: 86.5, z: 129.5, facing: 0, wander: 1.5 },
+      { id: 'shepherd', x: 93.5, z: 143.5, facing: 3, wander: 2 },
+      { id: 'fisher', x: 46.5, z: 115.5, facing: 0, wander: 0 },
+      { id: 'hermit', x: 14.5, z: 103.5, facing: 0, wander: 1 },
+      { id: 'squire', x: 118.5, z: 50.5, facing: 1, wander: 0 },
+    );
+
+    // 10. village fence ring with gates; solid props -----------------------------------------------------
     const fenceAt = (x: number, z: number) => { if (objFree(x, z) && !occupied[this.idx(x, z)]) { this.fences.push({ tx: x, tz: z }); occupied[this.idx(x, z)] = 1; } };
     for (let x = v.x0; x <= v.x1; x++) { if (x < 8 || x > 10) fenceAt(x, v.z1); }
     for (let z = v.z0 + 1; z <= v.z1; z++) { if (z < 8 || z > 9) fenceAt(v.x1, z); }
+    // Millbrook paddock fence
+    for (let x = 80; x <= 91; x++) if (x !== 85 && x !== 86) fenceAt(x, 146);
+    for (let z = 143; z <= 146; z++) { fenceAt(79, z); fenceAt(91, z); }
+    for (const f of this.fences) occupied[this.idx(f.tx, f.tz)] = 1;
     for (const b of this.beds()) { const i = this.idx(b[0], b[1]); if (!occupied[i]) occupied[i] = 2; }
     for (const pr of this.props) {
-      if (pr.kind === 'lamp' || pr.kind === 'sign' || pr.kind === 'flowerpot') continue;
+      if (pr.kind === 'lamp' || pr.kind === 'sign' || pr.kind === 'flowerpot' || pr.kind === 'campfire' || pr.kind === 'crown') continue;
       const tx = Math.floor(pr.x), tz = Math.floor(pr.z);
       if (!this.houseCell[this.idx(tx, tz)]) occupied[this.idx(tx, tz)] = 1;
       if (pr.kind === 'stall') { occupied[this.idx(tx - 1, tz)] = 1; occupied[this.idx(tx + 1, tz)] = 1; }
+      if (pr.kind === 'tower') for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) occupied[this.idx(tx + dx, tz + dz)] = 1;
     }
 
-    // 9. flowers ---------------------------------------------------------------------------------------
+    // 11. flowers: meadows bloom, the moor and highland barely -------------------------------------------
     for (let z = 0; z < h; z++) for (let x = 0; x < w; x++) {
-      if (get(x, z) === Tile.Grass && !this.treeCell[this.idx(x, z)] && !occupied[this.idx(x, z)] && rng.next() < 0.05) set(x, z, Tile.Flowers);
+      if (get(x, z) !== Tile.Grass || this.treeCell[this.idx(x, z)] || occupied[this.idx(x, z)]) continue;
+      const moor = x > 140 && z > 60, high = x > 150 && z < 40;
+      const p = high ? 0.01 : moor ? 0.02 : (x < 60 && z < 50) ? 0.07 : 0.045;
+      if (rng.next() < p) set(x, z, Tile.Flowers);
     }
 
     // solidity ----------------------------------------------------------------------------------------
@@ -373,22 +499,32 @@ export class World {
       const t = this.tiles[i];
       const s = t === Tile.Water || t === Tile.Cliff || this.treeCell[i] === 1 || this.houseCell[i] === 1 || occupied[i] >= 1;
       this.solid[i] = s ? 1 : 0;
-      this.tall[i] = (t === Tile.Cliff || this.treeCell[i] === 1 || this.houseCell[i] === 1 || occupied[i] >= 1) ? 1 : 0;
+      this.tall[i] = (t === Tile.Cliff || this.treeCell[i] === 1 || this.houseCell[i] === 1 || occupied[i] === 1) ? 1 : 0;
     }
 
-    // 10. enemy spawns: procedural, denser further from the village ---------------------------------------
-    const kinds: EnemyKind[] = ['sword', 'sword', 'sword', 'spear', 'spear', 'javelin', 'archer'];
-    let tries = 0;
-    while (this.spawns.length < 110 && tries++ < 20000) {
-      const x = rng.int(4, w - 5), z = rng.int(4, h - 5);
-      const dv = Math.hypot(x - 10, z - 9);
-      if (dv < 26) continue;
-      if (this.isSolidTile(x, z) || get(x, z) === Tile.Water || get(x, z) === Tile.Bridge) continue;
-      if (this.spawns.some((s) => Math.hypot(s.x - x, s.z - z) < 7)) continue;
-      const far = Math.min(1, (dv - 26) / 120);
-      const kind = far > rng.next() * 1.4 ? rng.pick(kinds) : rng.pick(['sword', 'sword', 'spear'] as EnemyKind[]);
-      this.spawns.push({ x: x + 0.5, z: z + 0.5, kind });
-    }
+    for (const np of this.npcs) if (this.isSolidTile(Math.floor(np.x), Math.floor(np.z))) { const p = this.nearestFree(np.x, np.z); np.x = p.x; np.z = p.z; }
+
+    // 12. enemy spawns: hand-placed per region, harder further from Thistledown ---------------------------
+    const S = (x: number, z: number, kind: EnemyKind) => { const p = this.nearestFree(x + 0.5, z + 0.5); if (!inYard(Math.floor(p.x), Math.floor(p.z))) this.spawns.push({ x: p.x, z: p.z, kind }); };
+    const sw: EnemyKind = 'sword', sp: EnemyKind = 'spear', jv: EnemyKind = 'javelin', ar: EnemyKind = 'archer';
+    // home meadow (as in the original layout)
+    for (const [x, z, k] of [[22, 13, sw], [28, 20, sw], [14, 23, sw], [24, 33, sw], [44, 19, sw], [36, 18, sw], [37, 11, sp], [43, 24, sp], [30, 36, sp], [19, 21, sp], [18, 29, jv], [40, 27, jv], [12, 22, jv], [43, 12, ar], [38, 35, ar], [26, 39, ar], [47, 33, ar], [50, 44, sw], [54, 26, sw]] as [number, number, EnemyKind][]) S(x, z, k);
+    // Willowmere Woods trail
+    for (const [x, z, k] of [[66, 12, sw], [74, 22, sp], [82, 28, sw], [92, 22, ar], [98, 28, sw], [104, 14, sp], [108, 24, jv], [70, 44, sw], [100, 44, sp], [84, 48, jv], [110, 40, sw]] as [number, number, EnemyKind][]) S(x, z, k);
+    // east road + the river banks
+    for (const [x, z, k] of [[60, 50, sw], [74, 54, sp], [92, 52, ar], [106, 48, sw], [112, 42, jv], [128, 50, sp], [134, 42, sw], [144, 48, ar], [152, 44, sw], [156, 50, sp]] as [number, number, EnemyKind][]) S(x, z, k);
+    // Amber Highland (archers hold the terraces)
+    for (const [x, z, k] of [[158, 36, sp], [166, 30, ar], [172, 20, ar], [180, 16, sp], [186, 14, ar], [192, 12, sw], [194, 6, ar], [162, 12, jv], [170, 6, ar], [200, 26, jv]] as [number, number, EnemyKind][]) S(x, z, k);
+    // Grey Moor and the knights' camp
+    for (const [x, z, k] of [[150, 70, sw], [166, 66, sp], [176, 74, jv], [184, 84, sw], [192, 84, ar], [196, 100, ar], [170, 92, sp], [160, 98, sw], [152, 100, sp], [158, 112, jv], [148, 112, ar], [164, 104, sw], [190, 112, sp], [200, 86, sp]] as [number, number, EnemyKind][]) S(x, z, k);
+    // riverside (west bank, mesa, brook)
+    for (const [x, z, k] of [[86, 66, sp], [98, 70, sw], [110, 78, jv], [104, 90, sw], [118, 98, ar], [112, 106, sp], [96, 104, sw], [80, 60, ar], [72, 68, sw]] as [number, number, EnemyKind][]) S(x, z, k);
+    // south road, heron pond, Mirror Lake
+    for (const [x, z, k] of [[36, 56, sw], [46, 66, sp], [34, 78, sw], [28, 92, jv], [40, 104, sw], [56, 110, sp], [30, 128, ar], [52, 136, sw], [60, 126, sp], [20, 120, sw], [8, 84, sw], [22, 76, ar]] as [number, number, EnemyKind][]) S(x, z, k);
+    // Millbrook outskirts + the south bridge
+    for (const [x, z, k] of [[66, 148, sw], [80, 154, sp], [96, 150, jv], [106, 132, sw], [116, 128, ar], [104, 144, sw], [70, 160, ar], [112, 152, sp]] as [number, number, EnemyKind][]) S(x, z, k);
+    // the Drowned Field (the hardest ground)
+    for (const [x, z, k] of [[144, 126, sp], [152, 134, ar], [160, 130, sw], [168, 136, jv], [176, 136, ar], [182, 148, sp], [190, 140, sw], [196, 156, ar], [162, 150, sw], [150, 150, jv], [178, 156, sp], [170, 162, ar], [188, 168, sw]] as [number, number, EnemyKind][]) S(x, z, k);
   }
 
   private generateHeights() {
@@ -409,17 +545,23 @@ export class World {
         lvl[cz * W + cx] = Math.max(lvl[cz * W + cx], levels * (1 - smoothstep(0.45, 1.05, d)));
       }
     };
-    // NE highland: broad terraces with cliff faces; the road climbs it at x~160 (ramp carved below)
+    // NE Amber Highland: broad terraces with cliff faces; the road climbs it at x~160 (ramp carved below)
     plateau(150, 0, 208, 40, 2, 1.4);
     plateau(168, 0, 208, 24, 3.5, 1.4);
     plateau(186, 0, 208, 12, 5, 1.4);
-    // SE ridge and south hills
-    plateau(150, 160, 208, 176, 2, 1.6);
-    hill(28, 158, 14, 7, 2); hill(96, 166, 12, 6, 1.5); hill(120, 158, 8, 5, 1.2);
-    // western hills
-    hill(18, 44, 7, 5, 1.6); hill(70, 70, 10, 7, 1.4); hill(20, 100, 8, 6, 1.6); hill(84, 34, 8, 5, 1.2);
-    // mid-map mesa (between the roads)
-    plateau(76, 56, 96, 68, 1.5, 2.2);
+    // Crown hollow: a raised shelf at the east edge, reached by the moor road
+    plateau(192, 84, 208, 100, 1.2, 3);
+    // SE ridge and the Drowned Field's low mounds
+    plateau(150, 166, 208, 176, 2, 1.6);
+    hill(176, 142, 6, 4, 0.8); hill(154, 136, 5, 3, 0.6);
+    // southern hills and Millbrook's mill knoll
+    hill(28, 158, 14, 7, 2); hill(96, 166, 12, 6, 1.5); hill(120, 158, 8, 5, 1.2); hill(86, 127, 5, 3.5, 0.6);
+    // western hills: SW hill by the pond (as in the original meadow), orchard hill, heron ridge
+    hill(7, 39, 6, 3.2, 2); hill(18, 46, 7, 4, 1.4); hill(14, 100, 9, 8, 1.6); hill(20, 74, 8, 4, 1.2); hill(70, 70, 10, 7, 1.4); hill(84, 34, 8, 5, 1.2);
+    // mid-map mesa with the standing stones on top
+    plateau(78, 56, 96, 68, 1.5, 2.2);
+    // gentle village rise
+    hill(10, 8, 14, 12, 0.8);
     // rolling meadow noise
     for (let cz = 0; cz < H; cz++) for (let cx = 0; cx < W; cx++) {
       lvl[cz * W + cx] += 0.22 * Math.sin(cx * 0.31 + 1.3) * Math.cos(cz * 0.27 + 0.4) + 0.12 * Math.sin(cx * 0.9) * Math.cos(cz * 0.8) + (rng.next() - 0.5) * 0.05;
@@ -437,6 +579,18 @@ export class World {
       const eastGate = cz >= 8 && cz <= 10 && cx > v.x1 + 1;
       const fall = southGate || eastGate ? 4.5 : 1.3;
       lvl[i] = Math.max(lvl[i], 1.6 * (1 - smoothstep(0, fall, d)));
+    }
+    // points of interest: flatten a pad to its mean level, blending out over 3 tiles
+    for (const p of this.pads) {
+      let sum = 0, n = 0;
+      for (let cz = p.z0; cz <= p.z1 + 1; cz++) for (let cx = p.x0; cx <= p.x1 + 1; cx++) { sum += lvl[cz * W + cx]; n++; }
+      const mean = sum / n;
+      for (let cz = Math.max(0, p.z0 - 3); cz <= Math.min(H - 1, p.z1 + 4); cz++) for (let cx = Math.max(0, p.x0 - 3); cx <= Math.min(W - 1, p.x1 + 4); cx++) {
+        const dx = Math.max(p.x0 - cx, 0, cx - (p.x1 + 1)), dz = Math.max(p.z0 - cz, 0, cz - (p.z1 + 1));
+        const t = 1 - smoothstep(0, 3, Math.hypot(dx, dz));
+        const i = cz * W + cx;
+        lvl[i] = lvl[i] * (1 - t) + mean * t;
+      }
     }
     // ramp for the NE highland where the road climbs (x 158..163, z 40..48)
     for (let cz = 40; cz <= 48; cz++) for (let cx = 157; cx <= 164; cx++) lvl[cz * W + cx] = 2 * smoothstep(48.5, 40, cz);
@@ -477,6 +631,7 @@ export class World {
         if (cx < 0 || cz < 0 || cx > W - 1 || cz > H - 1) continue;
         const i = cz * W + cx;
         if (a > lo + 1 && a < hi - 1) continue; // corners over the water span: leave sunk
+        if (b.deadEnd && a > lo + 1) continue;
         const dist = Math.max(0, lo - a, a - hi);   // tiles away from the abutment (approach ramp)
         const under = a === lo + 1 || a === hi - 1; // water-edge corner: bank keeps sloping down beneath the deck
         const lift = under ? -WATER_DEPTH * 0.6 : -dist * 0.18;
@@ -502,9 +657,9 @@ export class World {
         // ramp up over the abutment tile
         const alongX = b.x1 - b.x0 > b.z1 - b.z0;
         const p = alongX ? x : z, p0 = alongX ? b.x0 : b.z0, p1 = alongX ? b.x1 + 1 : b.z1 + 1;
-        const ramp = Math.min(1, Math.min(p - p0, p1 - p));
+        const ramp = b.deadEnd ? Math.min(1, p - p0) : Math.min(1, Math.min(p - p0, p1 - p));
         const ground0 = this.heightAt(alongX ? p0 : x, alongX ? z : p0), ground1 = this.heightAt(alongX ? p1 : x, alongX ? z : p1);
-        const ground = p - p0 < p1 - p ? ground0 : ground1;
+        const ground = b.deadEnd || p - p0 < p1 - p ? ground0 : ground1;
         return ground + (b.y - ground + 0.0) * ramp + (ramp >= 1 ? 0 : 0);
       }
     }
@@ -725,6 +880,15 @@ export class World {
       const g = new THREE.Group();
       g.position.set(cx, 0, cz);
       g.rotation.y = alongX ? 0 : Math.PI / 2;
+      if (b.deadEnd) {
+        // jetty: flat plank deck on stilts, a mooring post at the far end
+        g.add(new THREE.Mesh(new THREE.BoxGeometry(len, 0.1, wid - 0.1), plank).translateY(b.y - 0.05));
+        for (let k = 0; k < len * 2; k++) { const gr = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.02, wid - 0.1), dark); gr.position.set(-len / 2 + 0.25 + k * 0.5, b.y, 0); g.add(gr); }
+        for (let k = 0; k <= len; k += 2) for (const side of [-1, 1]) { const st = new THREE.Mesh(new THREE.BoxGeometry(0.12, 1.3, 0.12), dark); st.position.set(-len / 2 + 0.2 + k, b.y - 0.6, side * (wid / 2 - 0.15)); g.add(st); }
+        const post = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.7, 0.14), dark); post.position.set(len / 2 - 0.2, b.y + 0.3, wid / 2 - 0.2); g.add(post);
+        group.add(g);
+        continue;
+      }
       // deck: slightly arched (3 segments), planks across
       const segs = 3;
       for (let i = 0; i < segs; i++) {
