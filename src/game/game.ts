@@ -137,7 +137,7 @@ export class Game implements GameCtx {
 
     const ps = this.world.playerStart;
     this.player = new Player(this, ps.x, ps.z);
-    this.player.facing = 2;
+    this.player.facing = 4; // north
     for (const n of this.world.npcs) this.npcs.push(new Npc(this, n));
     this.spawnAllEnemies();
     this.cam = { x: ps.x, z: ps.z - 1 };
@@ -374,7 +374,7 @@ export class Game implements GameCtx {
     this.cam = { x: ps.x, z: ps.z - 1 };
     this.deathTimer = 0;
     this.talking = false; this.convo = null;
-    this.player.facing = 2;
+    this.player.facing = 4; // north
     this.audio.resume();
     this.audio.startMusic();
     this.setPhase('playing');

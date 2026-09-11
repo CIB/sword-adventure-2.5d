@@ -27,14 +27,21 @@ export enum Tile {
   Bed = 7, // flower bed / crops (village)
 }
 
-export type Facing = 0 | 1 | 2 | 3; // 0 south, 1 east, 2 north, 3 west
-export const FACING_VEC: [number, number][] = [
-  [0, 1],
-  [1, 0],
-  [0, -1],
-  [-1, 0],
-];
-export const FACING_ANGLE = [0, Math.PI / 2, Math.PI, -Math.PI / 2];
+/** 8-way facing: 0 south, then clockwise (seen from above) in 45° steps: 1 SE, 2 east, 3 NE, 4 north, 5 NW, 6 west, 7 SW */
+export type Facing = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
+export const FACING_ANGLE = [0, 1, 2, 3, 4, 5, 6, 7].map(i => normAngle(i * Math.PI / 4));
+export const FACING_VEC: [number, number][] = FACING_ANGLE.map(a => {
+  const r = (v: number) => Math.abs(v) < 1e-9 ? 0 : Math.abs(Math.abs(v) - 1) < 1e-9 ? Math.sign(v) : v;
+  return [r(Math.sin(a)), r(Math.cos(a))] as [number, number];
+});
+/** nearest of the 8 facings for a direction vector */
+export function facingFrom(dx: number, dz: number): Facing {
+  return ((Math.round(Math.atan2(dx, dz) / (Math.PI / 4)) % 8) + 8) % 8 as Facing;
+}
+/** angular distance (0..π) between a facing and a direction vector */
+export function facingDelta(f: Facing, dx: number, dz: number): number {
+  return Math.abs(normAngle(Math.atan2(dx, dz) - FACING_ANGLE[f]));
+}
 
 /** Small deterministic PRNG (mulberry32) */
 export class RNG {

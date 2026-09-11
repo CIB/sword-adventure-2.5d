@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { FACING_ANGLE, FACING_VEC, MAX_HP, inArc, lerp, normAngle, type Facing } from './constants';
+import { FACING_ANGLE, FACING_VEC, MAX_HP, inArc, lerp, normAngle, facingFrom, facingDelta, type Facing } from './constants';
 import type { AudioEngine } from './audio';
 import type { Input } from './input';
 import { ATTACK_KEYS, SHIELD_KEYS } from './input';
@@ -153,12 +153,9 @@ export class Player {
           const len = Math.hypot(mx, mz);
           const dx = (mx / len) * speed * dt, dz = (mz / len) * speed * dt;
           this.game.world.moveBox(this.pos, dx, dz, this.HW, this.HH, speed * dt);
-          // facing: keep the current one while it still has a component along the movement (diagonals),
-          // otherwise turn to the dominant axis of the (world-space) move vector
-          const fv = FACING_VEC[this.facing];
-          const along = fv[0] * mx + fv[1] * mz;
-          const keep = along > 1e-6 && Math.abs(along) >= Math.max(Math.abs(mx), Math.abs(mz)) * 0.7 - 1e-6;
-          if (!keep) this.facing = Math.abs(mx) > Math.abs(mz) + 1e-6 ? (mx > 0 ? 1 : 3) : Math.abs(mz) > Math.abs(mx) + 1e-6 ? (mz > 0 ? 0 : 2) : (along > 0 ? this.facing : (mx > 0 ? 1 : 3));
+          // 8-way facing: turn to the nearest 45° heading of the (world-space) move vector,
+          // with a little hysteresis so a heading exactly between two facings doesn't flicker
+          if (facingDelta(this.facing, mx, mz) > Math.PI / 8 + 0.05) this.facing = facingFrom(mx, mz);
           moving = true;
           this.animT += dt * speed * 2.6;
         }
@@ -246,13 +243,13 @@ export class Player {
     //  up:         arm hangs down at her side, blade angled slightly outward.
     //  left:       the sword arm is on the far side of her body, so hold it a little forward
     //              and across so arm + blade peek out ahead of her instead of hiding behind the torso.
-    const STANCE: Record<Facing, { x: number; y: number; z: number; w: number }> = {
+    const STANCE: Record<0 | 1 | 2 | 3, { x: number; y: number; z: number; w: number }> = {
       0: { x: -0.85, y: -0.35, z: 0.15, w: -0.35 },
       1: { x: -0.85, y: -0.35, z: 0.15, w: -0.35 },
       2: { x: -0.3, y: 0.0, z: -0.3, w: -0.55 },
       3: { x: -0.9, y: -0.3, z: 0.1, w: 0.0 },
     };
-    const st = STANCE[this.facing];
+    const st = STANCE[(Math.round(this.facing / 2) % 4) as 0 | 1 | 2 | 3]; // diagonals borrow a cardinal stance
     const idlePose: Pose = {
       rootYaw: 0, twist: 0, lean: 0,
       armX: st.x - Math.max(0, -swing) * 0.3 + (moving ? 0.1 : 0), armY: st.y, armZ: st.z, wrist: st.w,
@@ -375,7 +372,7 @@ export class Enemy {
     this.st = STATS[kind];
     this.hp = this.st.hp;
     this.model = buildSoldier(kind);
-    this.facing = Math.floor(game.rand() * 4) as Facing;
+    this.facing = Math.floor(game.rand() * 8) as Facing;
     this.pickPatrolDir();
     game.scene.add(this.model.root);
     this.sync();
@@ -384,19 +381,14 @@ export class Enemy {
   get melee() { return this.kind === 'sword' || this.kind === 'spear'; }
 
   private pickPatrolDir() {
-    const f = Math.floor(this.game.rand() * 4) as Facing;
+    const f = Math.floor(this.game.rand() * 8) as Facing;
     this.dir = { x: FACING_VEC[f][0], z: FACING_VEC[f][1] };
   }
 
   private faceToward(dx: number, dz: number, hyst = 1) {
-    const ax = Math.abs(dx), az = Math.abs(dz);
-    if (hyst > 1) {
-      const f = FACING_VEC[this.facing];
-      const along = f[0] * dx + f[1] * dz;
-      if (along > 0 && (f[0] !== 0 ? ax * hyst >= az : az * hyst >= ax)) return;
-    }
-    if (ax > az) this.facing = dx > 0 ? 1 : 3;
-    else this.facing = dz > 0 ? 0 : 2;
+    // keep the current heading while it's within (hyst × half a step) of the target direction
+    if (facingDelta(this.facing, dx, dz) <= (Math.PI / 8) * hyst + 1e-6) return;
+    this.facing = facingFrom(dx, dz);
   }
 
   private walk(dx: number, dz: number, speed: number, dt: number): boolean {
@@ -496,7 +488,7 @@ export class Enemy {
           const aligned = ax < 0.45 || az < 0.45;
           if (dist < 2.2) moving = this.walk(-dx, -dz, st.chase, dt);
           else if (aligned) {
-            if (ax < az) this.facing = dz > 0 ? 0 : 2; else this.facing = dx > 0 ? 1 : 3;
+            this.faceToward(dx, dz, 1.5);
             if (this.cooldown <= 0 && dist < st.range) { this.state = 'windup'; this.stateT = 0.45; }
           } else {
             if (ax < az) moving = this.walk(Math.sign(dx), 0, st.speed, dt); else moving = this.walk(0, Math.sign(dz), st.speed, dt);
@@ -665,7 +657,7 @@ export class Npc {
   constructor(private game: GameCtx, public spec: NpcSpec) {
     this.pos = { x: spec.x, z: spec.z };
     this.home = { x: spec.x, z: spec.z };
-    this.facing = spec.facing ?? 0;
+    this.facing = ((spec.facing ?? 0) * 2) as Facing; // specs use the classic 4 directions
     this.isDog = spec.id === 'dog';
     this.model = this.isDog ? buildDog() : buildVillager(VILLAGER_LOOKS[spec.id] ?? VILLAGER_LOOKS.farmer);
     // "!" / "..." speech bubble shown when the player is close enough to talk
@@ -699,7 +691,7 @@ export class Npc {
   facePlayer() {
     const p = this.game.player;
     const dx = p.pos.x - this.pos.x, dz = p.pos.z - this.pos.z;
-    if (Math.abs(dx) > Math.abs(dz)) this.facing = dx > 0 ? 1 : 3; else this.facing = dz > 0 ? 0 : 2;
+    this.facing = facingFrom(dx, dz);
   }
 
   update(dt: number, near: boolean) {
@@ -714,12 +706,12 @@ export class Npc {
         if (this.dir.x || this.dir.z) { this.dir = { x: 0, z: 0 }; this.wanderT = 1 + this.game.rand() * 2.5; }
         else {
           // pick a direction that keeps us near home
-          const f = Math.floor(this.game.rand() * 4) as Facing;
+          const f = Math.floor(this.game.rand() * 8) as Facing;
           let dx = FACING_VEC[f][0], dz = FACING_VEC[f][1];
           const hx = this.home.x - this.pos.x, hz = this.home.z - this.pos.z;
           if (Math.hypot(hx, hz) > wander * 0.7) { if (Math.abs(hx) > Math.abs(hz)) { dx = Math.sign(hx); dz = 0; } else { dx = 0; dz = Math.sign(hz); } }
           this.dir = { x: dx, z: dz };
-          this.facing = dx !== 0 ? (dx > 0 ? 1 : 3) : dz > 0 ? 0 : 2;
+          this.facing = facingFrom(dx, dz);
           this.wanderT = 0.5 + this.game.rand() * 1.2;
         }
       }
