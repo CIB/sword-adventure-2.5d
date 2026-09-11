@@ -6,7 +6,7 @@ import {
 } from './constants';
 import { World, type EnemyKind, type Vec2 } from './world';
 import { AudioEngine } from './audio';
-import { Input, PAUSE_KEYS, MUTE_KEYS, ATTACK_KEYS, TALK_KEYS } from './input';
+import { Input, PAUSE_KEYS, MUTE_KEYS, ATTACK_KEYS, TALK_KEYS, ROTATE_CCW_KEYS, ROTATE_CW_KEYS, rotateQuarter } from './input';
 import { Player, Enemy, Npc, Projectile, Pickup, Effect, fxSpark, fxPuff, fxLeaves, type GameCtx } from './entities';
 import { NPC_TALK, newQuestState, type Conversation, type QuestState, type TalkCtx } from './dialogue';
 import { buildTrees, buildBush, buildStump, buildRock, buildFence, buildHouse, buildProp, getGradientMap, buildVillager, buildDog, VILLAGER_LOOKS } from './models';
@@ -404,6 +404,10 @@ export class Game implements GameCtx {
   private update(dt: number) {
     const input = this.input;
     if (input.justPressed(MUTE_KEYS)) { this.audio.init(); this.audio.setMuted(!this.audio.muted); this.onMute(this.audio.muted); }
+    if (this.phase === 'playing' && !this.talking) {
+      if (input.justPressed(ROTATE_CW_KEYS)) this.rotateView(1);
+      else if (input.justPressed(ROTATE_CCW_KEYS)) this.rotateView(-1);
+    }
     if (this.phase === 'title') {
       this.time += dt;
       this.waveTex.offset.set(this.time * 0.05, -this.time * 0.02);
@@ -572,17 +576,39 @@ export class Game implements GameCtx {
   }
 
   private camY = 0;
+  /** camera yaw in quarter turns (0 = north up). Public so the UI can show/rotate it. */
+  viewQuarter = 0;
+  private viewAngle = 0;        // animated yaw (radians)
+  onView: (q: number) => void = () => {};
+  rotateView(dir: 1 | -1) {
+    this.viewQuarter = (((this.viewQuarter + dir) % 4) + 4) % 4;
+    this.input.viewQuarter = this.viewQuarter;
+    this.onView(this.viewQuarter);
+    this.audio.blip();
+  }
   private placeCamera(dt: number) {
     const p = this.player.pos;
     const k = dt > 0 ? 1 - Math.exp(-dt * 9) : 1;
-    this.cam.x += (p.x - this.cam.x) * k;
-    this.cam.z += (p.z - 1.0 - this.cam.z) * k;
+    // animate the yaw toward the target quarter turn (shortest way round)
+    const target = this.viewQuarter * Math.PI / 2;
+    let da = target - this.viewAngle;
+    da = Math.atan2(Math.sin(da), Math.cos(da));
+    this.viewAngle += da * (dt > 0 ? 1 - Math.exp(-dt * 10) : 1);
+    if (Math.abs(da) < 1e-3) this.viewAngle = target;
+    // look slightly "up the screen" (toward the top edge in camera space) so there's more room ahead
+    const [ax, az] = rotateQuarter(0, -1.0, this.viewQuarter);
+    this.cam.x += (p.x + ax - this.cam.x) * k;
+    this.cam.z += (p.z + az - this.cam.z) * k;
     // follow the player's altitude so the shear offset stays centred on the ground she stands on
     const gy = this.world.surfaceAt(p.x, p.z);
     this.camY += (gy - this.camY) * (dt > 0 ? 1 - Math.exp(-dt * 5) : 1);
-    const hx = VIEW_TILES_X / 2, hz = VIEW_TILES_Y / 2;
+    const sideways = this.viewQuarter % 2 === 1;
+    const hx = (sideways ? VIEW_TILES_Y : VIEW_TILES_X) / 2, hz = (sideways ? VIEW_TILES_X : VIEW_TILES_Y) / 2;
     const cx = clamp(this.cam.x, hx, MAP_W - hx), cz = clamp(this.cam.z, hz, MAP_H - hz);
     const sx = Math.round(cx * PX_PER_TILE) / PX_PER_TILE, sz = Math.round(cz * PX_PER_TILE) / PX_PER_TILE;
+    // camera "up" on screen = world -Z rotated by the yaw (rotating about +Y)
+    const ca = Math.cos(this.viewAngle), sa = Math.sin(this.viewAngle);
+    this.camera.up.set(-sa, 0, -ca);
     this.camera.position.set(sx, this.camY + CAM_HEIGHT, sz);
     this.camera.lookAt(sx, this.camY, sz);
   }
