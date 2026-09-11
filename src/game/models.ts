@@ -332,7 +332,12 @@ export function buildFence(): THREE.Group {
   return g;
 }
 
-/** Hipped roof: rectangular eave (W x D) at y=0, short ridge (length rl) at height H, pushed back by rz. Flat-shaded. */
+/**
+ * Hipped roof: rectangular eave (W x D) at y=0, short ridge (length rl) at height H, pushed back by rz.
+ * Flat-shaded, with vertex colours that run light at the ridge -> dark at the eave. Under the straight-down
+ * game camera a slope has no perspective cue, so this gradient (quantised by the post-FX into SNES-style bands)
+ * is what makes the roof read as sloped instead of flat.
+ */
 function hipRoofGeometry(W: number, D: number, H: number, rl: number, rz: number): THREE.BufferGeometry {
   const hw = W / 2, hd = D / 2, hr = rl / 2;
   const A = [-hw, 0, hd], B = [hw, 0, hd], C = [hw, 0, -hd], E = [-hw, 0, -hd]; // eave corners (front = +z)
@@ -343,10 +348,15 @@ function hipRoofGeometry(W: number, D: number, H: number, rl: number, rz: number
     [B, C, R2],                     // right hip
     [E, A, R1],                     // left hip
   ];
-  const pos: number[] = [];
-  for (const t of tris) for (const v of t) pos.push(v[0], v[1], v[2]);
+  const pos: number[] = [], col: number[] = [];
+  for (const t of tris) for (const v of t) {
+    pos.push(v[0], v[1], v[2]);
+    const k = 0.62 + 0.5 * (v[1] / H); // eave 0.62 -> ridge 1.12
+    col.push(k, k, k);
+  }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
   g.computeVertexNormals();
   return g;
 }
@@ -412,23 +422,24 @@ export function buildHouse(spec: HouseSpec): THREE.Group {
   const W = spec.w + 1.0, D = depth + 0.9, RH = 1.45;
   const ridgeLen = Math.max(0.6, W - 2.2), ridgeZ = -D * 0.12; // ridge sits toward the back so the front slope is large
   const roofY = WH + 0.14;
+  roof.vertexColors = true;
   const rg = new THREE.Mesh(hipRoofGeometry(W, D, RH, ridgeLen, ridgeZ), roof);
   rg.position.set(cx, roofY, cz);
   g.add(rg);
-  // lighter front slope highlight strip + darker lower band (SNES two-tone shading)
+  // shingle rows across the front slope: thin dark lines every ~0.3 along the slope (reads as tiled roof rows)
   const frontN = Math.atan2(RH, D / 2 - ridgeZ); // slope angle of the front face
-  const band = (t0: number, t1: number, mat: THREE.Material, lift: number) => {
-    const z0 = D / 2 - (D / 2 - ridgeZ) * t0, z1 = D / 2 - (D / 2 - ridgeZ) * t1;
-    const y0 = RH * t0, y1 = RH * t1;
-    const len = Math.hypot(z1 - z0, y1 - y0);
-    const wid0 = W - (W - ridgeLen) * t0, wid1 = W - (W - ridgeLen) * t1;
-    const m = part(UNIT_BOX, mat, [0, 0, 0], [(wid0 + wid1) / 2 - 0.2, 0.02, len]);
-    m.position.set(cx, roofY + (y0 + y1) / 2 + lift, cz + (z0 + z1) / 2 + lift * 0.4);
-    m.rotation.x = -frontN;
-    return m;
-  };
-  g.add(band(0.0, 0.16, roofD, 0.015));
-  g.add(band(0.66, 0.8, roofL, 0.015));
+  const slopeLen = Math.hypot(D / 2 - ridgeZ, RH);
+  const rows = Math.floor(slopeLen / 0.3);
+  for (let r = 1; r < rows; r++) {
+    const t = r / rows;
+    const z = D / 2 - (D / 2 - ridgeZ) * t, y = RH * t;
+    const wid = W - (W - ridgeLen) * t - 0.16;
+    const line = part(UNIT_BOX, roofD, [0, 0, 0], [wid, 0.02, 0.05]);
+    line.position.set(cx, roofY + y + 0.012, cz + z + 0.008);
+    line.rotation.x = -frontN;
+    g.add(line);
+  }
+  void roofL;
   // eave trim
   g.add(part(UNIT_BOX, trim, [cx, roofY - 0.02, cz + D / 2 - 0.02], [W + 0.06, 0.12, 0.1]));
   g.add(part(UNIT_BOX, trim, [cx, roofY - 0.02, cz - D / 2 + 0.02], [W + 0.06, 0.12, 0.1]));
