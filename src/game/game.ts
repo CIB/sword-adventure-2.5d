@@ -6,7 +6,7 @@ import {
 } from './constants';
 import { World, type EnemyKind, type Vec2 } from './world';
 import { AudioEngine } from './audio';
-import { Input, PAUSE_KEYS, MUTE_KEYS, ATTACK_KEYS, TALK_KEYS, ROTATE_CCW_KEYS, ROTATE_CW_KEYS, rotateView } from './input';
+import { Input, PAUSE_KEYS, MUTE_KEYS, ATTACK_KEYS, TALK_KEYS, ROTATE_CCW_KEYS, ROTATE_CW_KEYS, FULLSCREEN_KEYS, HELP_KEYS, rotateView } from './input';
 import { Player, Enemy, Npc, Projectile, Pickup, Effect, fxSpark, fxPuff, fxLeaves, type GameCtx } from './entities';
 import { NPC_TALK, newQuestState, type Conversation, type QuestState, type TalkCtx } from './dialogue';
 import { buildTrees, buildBush, buildStump, buildRock, buildFence, buildHouse, buildProp, getGradientMap, buildVillager, buildDog, VILLAGER_LOOKS } from './models';
@@ -43,6 +43,12 @@ void main(){
 const PORTRAITS = new Set(['elder', 'bard', 'granny', 'aria']);
 const PORTRAIT_VERSION = 2; // bump when portrait images change (busts the browser cache)
 
+/**
+ * Oblique projection: ground stays 1:1, world height becomes a vertical screen offset.
+ * Multiplied into the orthographic projection matrix (see applyProjection).
+ */
+const SHEAR_MATRIX = new THREE.Matrix4().set(1, 0, 0, 0, 0, 1, SHEAR, SHEAR * CAM_HEIGHT, 0, 0, 1, 0, 0, 0, 0, 1);
+
 export interface DialogueView { id: string; name: string; color: string; text: string; chars: number; more: boolean; portrait: string }
 
 export class Game implements GameCtx {
@@ -50,8 +56,12 @@ export class Game implements GameCtx {
   scene = new THREE.Scene();
   camera: THREE.OrthographicCamera;
   private rt: THREE.WebGLRenderTarget;
+  private postMat: THREE.ShaderMaterial;
   private postScene = new THREE.Scene();
   private postCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  /** Internal render resolution in game pixels. resize() widens/tallens it so the game fills the window. */
+  viewW = VIEW_W;
+  viewH = VIEW_H;
   world = new World();
   audio: AudioEngine;
   input: Input;
@@ -84,6 +94,10 @@ export class Game implements GameCtx {
   private deathTimer = 0;
   onPhase: (p: Phase) => void = () => {};
   onMute: (m: boolean) => void = () => {};
+  /** Browser fullscreen was toggled from the game (F key / gamepad Y) — the app performs the request. */
+  onFullscreen: () => void = () => {};
+  /** Control help was toggled from the game (H key / gamepad Select). */
+  onHelp: () => void = () => {};
   /** Dialogue state for the React overlay (null when not talking) */
   onDialogue: (d: DialogueView | null) => void = () => {};
   private lastDialogueKey = '';
@@ -115,16 +129,14 @@ export class Game implements GameCtx {
       },
       vertexShader: POST_VS, fragmentShader: POST_FS, depthTest: false, depthWrite: false,
     });
+    this.postMat = postMat;
     this.postScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), postMat));
 
     // Top-down orthographic camera with an oblique shear: ground stays 1:1, height becomes a vertical screen
     // offset so fronts of objects (and terrain slopes) are visible.
     this.camera = new THREE.OrthographicCamera(-VIEW_TILES_X / 2, VIEW_TILES_X / 2, VIEW_TILES_Y / 2, -VIEW_TILES_Y / 2, 1, 200);
     this.camera.up.set(0, 0, -1);
-    this.camera.updateProjectionMatrix();
-    const shear = new THREE.Matrix4().set(1, 0, 0, 0, 0, 1, SHEAR, SHEAR * CAM_HEIGHT, 0, 0, 1, 0, 0, 0, 0, 1);
-    this.camera.projectionMatrix.multiply(shear);
-    this.camera.projectionMatrixInverse.copy(this.camera.projectionMatrix).invert();
+    this.applyProjection();
 
     // lights
     this.scene.add(new THREE.AmbientLight(0xffffff, 1.15));
@@ -142,6 +154,35 @@ export class Game implements GameCtx {
     this.spawnAllEnemies();
     this.cam = { x: ps.x, z: ps.z - 1 };
     this.placeCamera(0);
+  }
+
+  // ------------------------------------------------------------------ viewport
+  /** Set the orthographic frustum from the current internal resolution, then re-apply the oblique shear. */
+  private applyProjection() {
+    const cam = this.camera;
+    const hw = this.viewW / PX_PER_TILE / 2, hh = this.viewH / PX_PER_TILE / 2;
+    cam.left = -hw; cam.right = hw; cam.top = hh; cam.bottom = -hh;
+    cam.updateProjectionMatrix();
+    cam.projectionMatrix.multiply(SHEAR_MATRIX);
+    cam.projectionMatrixInverse.copy(cam.projectionMatrix).invert();
+  }
+
+  /**
+   * Change the internal render resolution (in game pixels). Called by the app whenever the window size changes so
+   * the play area fills the whole screen instead of letterboxing; the CSS size is owned by the app.
+   */
+  resize(w: number, h: number) {
+    w = Math.max(1, Math.round(w));
+    h = Math.max(1, Math.round(h));
+    if (w === this.viewW && h === this.viewH) return;
+    this.viewW = w;
+    this.viewH = h;
+    this.renderer.setSize(w, h, false);
+    this.rt.setSize(w, h); // three re-creates the colour + depth textures on the next render
+    (this.postMat.uniforms.texel.value as THREE.Vector2).set(1 / w, 1 / h);
+    this.applyProjection();
+    this.hud.resize(w, h);
+    this.placeCamera(0); // keep the map-edge clamp right (the title screen never calls placeCamera)
   }
 
   // ------------------------------------------------------------------ world building
@@ -405,6 +446,8 @@ export class Game implements GameCtx {
   private update(dt: number) {
     const input = this.input;
     if (input.justPressed(MUTE_KEYS)) { this.audio.init(); this.audio.setMuted(!this.audio.muted); this.onMute(this.audio.muted); }
+    if (input.justPressed(FULLSCREEN_KEYS)) this.onFullscreen();
+    if (input.justPressed(HELP_KEYS)) this.onHelp();
     if (this.phase === 'playing' && !this.talking) {
       if (input.justPressed(ROTATE_CW_KEYS)) this.rotateView(1);
       else if (input.justPressed(ROTATE_CCW_KEYS)) this.rotateView(-1);
@@ -605,7 +648,8 @@ export class Game implements GameCtx {
     this.camY += (gy - this.camY) * (dt > 0 ? 1 - Math.exp(-dt * 5) : 1);
     // keep the rotated view rectangle inside the map: half-extents of its world-space bounding box
     const ca = Math.cos(this.viewAngle), sa = Math.sin(this.viewAngle);
-    const hx = (Math.abs(ca) * VIEW_TILES_X + Math.abs(sa) * VIEW_TILES_Y) / 2, hz = (Math.abs(sa) * VIEW_TILES_X + Math.abs(ca) * VIEW_TILES_Y) / 2;
+    const tilesX = this.viewW / PX_PER_TILE, tilesY = this.viewH / PX_PER_TILE;
+    const hx = (Math.abs(ca) * tilesX + Math.abs(sa) * tilesY) / 2, hz = (Math.abs(sa) * tilesX + Math.abs(ca) * tilesY) / 2;
     const cx = clamp(this.cam.x, hx, MAP_W - hx), cz = clamp(this.cam.z, hz, MAP_H - hz);
     const sx = Math.round(cx * PX_PER_TILE) / PX_PER_TILE, sz = Math.round(cz * PX_PER_TILE) / PX_PER_TILE;
     // camera "up" on screen = world -Z rotated by the yaw (rotating about +Y)
@@ -629,6 +673,7 @@ export class Game implements GameCtx {
       dialogue: !!this.convo,
       toast: this.toastT > 0 ? this.toastMsg : '',
       canTalk: !this.talking && this.phase === 'playing' && this.npcs.some((n) => n.canTalk()),
+      gamepad: this.input.gamepadActive,
     });
   }
 }
