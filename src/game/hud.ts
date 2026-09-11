@@ -36,15 +36,29 @@ export interface HudState {
   dialogue?: boolean;
   toast?: string;
   canTalk?: boolean;
+  /** true when a gamepad is in use — button labels replace key labels */
+  gamepad?: boolean;
 }
 
 export class Hud {
   private g: CanvasRenderingContext2D;
+  /** internal resolution in game pixels — updated by resize() so the layout follows the viewport */
+  private w = VIEW_W;
+  private h = VIEW_H;
   constructor(canvas: HTMLCanvasElement) {
     canvas.width = VIEW_W;
     canvas.height = VIEW_H;
     this.g = canvas.getContext('2d')!;
     this.g.imageSmoothingEnabled = false;
+  }
+
+  /** Resize the HUD backing store to the game's new internal resolution. */
+  resize(w: number, h: number) {
+    this.w = Math.max(1, Math.round(w));
+    this.h = Math.max(1, Math.round(h));
+    this.g.canvas.width = this.w;
+    this.g.canvas.height = this.h;
+    this.g.imageSmoothingEnabled = false; // resizing the canvas resets context state
   }
 
   private px(x: number, y: number, c: string, s = 1) { this.g.fillStyle = c; this.g.fillRect(x, y, s, s); }
@@ -124,10 +138,11 @@ export class Hud {
   }
 
   draw(s: HudState) {
-    const g = this.g;
-    g.clearRect(0, 0, VIEW_W, VIEW_H);
-    if (!s.dialogue && s.canTalk && Math.floor(s.time * 2) % 2 === 0) this.text('E - TALK', VIEW_W / 2 - 16, VIEW_H - 14, '#f8f8f8');
-    if (s.toast) this.text(s.toast, VIEW_W / 2 - s.toast.length * 4, VIEW_H / 2 - 30, '#f8d848', 2);
+    const g = this.g, W = this.w, H = this.h;
+    const pad = !!s.gamepad; // gamepad: show button labels instead of key labels
+    g.clearRect(0, 0, W, H);
+    if (!s.dialogue && s.canTalk && Math.floor(s.time * 2) % 2 === 0) this.text(pad ? 'A - TALK' : 'E - TALK', W / 2 - 16, H - 14, '#f8f8f8');
+    if (s.toast) this.text(s.toast, W / 2 - s.toast.length * 4, H / 2 - 30, '#f8d848', 2);
     // charge meter (spin attack)
     this.frame(8, 8, 12, 38, '#f0f0f0', '#101820');
     const fillH = Math.round(s.charge * 30);
@@ -138,24 +153,25 @@ export class Hud {
     // item boxes
     this.frame(26, 10, 22, 22, s.attacking ? '#ffffff' : '#f0c040', '#283048');
     this.swordIcon(33, 15);
-    this.text('J', 34, 34, '#f0f0f0');
+    this.text(pad ? 'A' : 'J', 34, 34, '#f0f0f0');
     this.frame(52, 10, 22, 22, s.blocking ? '#ffffff' : '#f0c040', '#283048');
     this.shieldIcon(59, 15);
-    this.text('K', 60, 34, '#f0f0f0');
+    this.text(pad ? 'B' : 'K', 60, 34, '#f0f0f0');
     // counters
     this.rupeeIcon(96, 12);
     this.text(String(s.rupees).padStart(3, '0'), 104, 12, '#f8f8f8', 2);
     this.helmetIcon(140, 12);
     this.text(String(s.kills).padStart(3, '0'), 152, 12, '#f8f8f8', 2);
-    // life
-    this.text('-- LIFE --', 238, 8, '#f8f8f8');
+    // life — right-anchored so it keeps the same margin from the edge at any viewport width
+    const lx = W - 82;
+    this.text('-- LIFE --', lx, 8, '#f8f8f8');
     const hearts = MAX_HP / 2;
     for (let i = 0; i < hearts; i++) {
       const hpForHeart = s.hp - i * 2;
       const fill = hpForHeart >= 2 ? 'full' : hpForHeart === 1 ? 'half' : 'empty';
       const col = i % 8, row = Math.floor(i / 8);
       const blink = s.hp <= 2 && s.hp > 0 && Math.floor(s.time * 4) % 2 === 0 && fill !== 'empty';
-      this.heart(232 + col * 9, 18 + row * 8, blink ? 'empty' : fill);
+      this.heart(lx - 6 + col * 9, 18 + row * 8, blink ? 'empty' : fill);
     }
   }
 }

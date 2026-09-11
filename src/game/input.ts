@@ -1,12 +1,17 @@
 const GAME_KEYS = new Set([
   'KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
   'KeyJ', 'KeyK', 'KeyZ', 'KeyX', 'KeyE', 'KeyC', 'Space', 'ShiftLeft', 'ShiftRight', 'Enter', 'KeyM', 'KeyP', 'Escape',
+  'KeyF', 'KeyH',
 ]);
 
 export const ATTACK_KEYS = ['KeyJ', 'KeyZ', 'Space'];
 export const SHIELD_KEYS = ['KeyK', 'KeyX', 'ShiftLeft', 'ShiftRight'];
 export const PAUSE_KEYS = ['Enter', 'KeyP', 'Escape'];
 export const MUTE_KEYS = ['KeyM'];
+/** Toggle browser fullscreen (gamepad: Y). */
+export const FULLSCREEN_KEYS = ['KeyF'];
+/** Show / hide the on-screen control help (gamepad: Select). */
+export const HELP_KEYS = ['KeyH'];
 export const ROTATE_CCW_KEYS = ['KeyQ', 'Comma'];
 export const ROTATE_CW_KEYS = ['KeyR', 'Period'];
 /** Talk / advance dialogue. The attack keys also work so a Zelda-style "A to talk" feels natural. */
@@ -20,13 +25,14 @@ const PAD_BUTTONS: Record<number, string> = {
   0: 'KeyJ',       // A  – sword / talk / confirm
   1: 'KeyK',       // B  – shield
   2: 'KeyE',       // X  – talk
-  3: 'KeyK',       // Y  – shield
+  3: 'KeyF',       // Y  – fullscreen
   4: 'KeyQ',       // LB – rotate view ccw
   5: 'KeyR',       // RB – rotate view cw
   6: 'KeyQ',       // LT
   7: 'KeyR',       // RT
-  8: 'KeyM',       // Select/Back – mute
+  8: 'KeyH',       // Select/Back – show/hide control help
   9: 'Enter',      // Start – pause / confirm
+  10: 'KeyM',      // L3 (left stick click) – mute
   12: 'ArrowUp', 13: 'ArrowDown', 14: 'ArrowLeft', 15: 'ArrowRight', // d-pad
 };
 const STICK_DEADZONE = 0.35;
@@ -40,6 +46,9 @@ export class Input {
   gamepadActive = false;
   private onPadUse: () => void = () => {};
   private onDown = (e: KeyboardEvent) => {
+    // Ctrl/Cmd/Alt chords belong to the browser (find, reload, …) — never play them, never block them.
+    // Shift is deliberately excluded: it is a shield key, so Shift+J (attack) has to keep working.
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (GAME_KEYS.has(e.code)) e.preventDefault();
     if (!this.keys.has(e.code)) this.pressed.add(e.code);
     this.keys.add(e.code);

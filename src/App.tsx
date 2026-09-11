@@ -4,18 +4,71 @@ import { AudioEngine } from './game/audio';
 import { Input } from './game/input';
 import { VIEW_W, VIEW_H } from './game/constants';
 
-function useScale() {
-  const [scale, setScale] = useState(2);
+export interface Viewport { scale: number; vw: number; vh: number }
+
+/**
+ * Fit the game to the whole browser window.
+ *
+ * `scale` is the largest whole-number zoom that still fits, so pixels stay square; the internal resolution then
+ * grows to cover the window (`ceil`), which shows *more map* on wide/tall screens instead of letterboxing.
+ * The canvas is drawn at `vw x vh` game pixels and displayed at `vw*scale x vh*scale` CSS pixels — a pixel or two
+ * of overshoot is cropped by the overflow-hidden wrapper.
+ */
+function calcViewport(): Viewport {
+  const iw = Math.max(1, window.innerWidth), ih = Math.max(1, window.innerHeight);
+  const scale = Math.max(1, Math.floor(Math.min(iw / VIEW_W, ih / VIEW_H)));
+  return {
+    scale,
+    vw: Math.max(VIEW_W, Math.ceil(iw / scale)),
+    vh: Math.max(VIEW_H, Math.ceil(ih / scale)),
+  };
+}
+
+function useViewport(): Viewport {
+  const [vp, setVp] = useState<Viewport>(calcViewport);
   useEffect(() => {
-    const calc = () => {
-      const s = Math.min(window.innerWidth / VIEW_W, (window.innerHeight - 56) / VIEW_H);
-      setScale(s >= 1 ? Math.floor(s) : Math.max(0.5, s));
+    const onChange = () => setVp(calcViewport());
+    window.addEventListener('resize', onChange);
+    window.addEventListener('orientationchange', onChange);
+    return () => {
+      window.removeEventListener('resize', onChange);
+      window.removeEventListener('orientationchange', onChange);
     };
-    calc();
-    window.addEventListener('resize', calc);
-    return () => window.removeEventListener('resize', calc);
   }, []);
-  return scale;
+  return vp;
+}
+
+type FsElement = HTMLElement & { webkitRequestFullscreen?: () => Promise<void> | void };
+type FsDocument = Document & { webkitFullscreenElement?: Element | null; webkitExitFullscreen?: () => Promise<void> | void };
+
+function fullscreenElement(): Element | null {
+  const d = document as FsDocument;
+  return document.fullscreenElement ?? d.webkitFullscreenElement ?? null;
+}
+
+/** Enter fullscreen and lock to landscape where the platform allows it (phones, handhelds). */
+function enterFullscreen() {
+  if (fullscreenElement()) return;
+  const el = document.documentElement as FsElement;
+  const p = el.requestFullscreen ? el.requestFullscreen({ navigationUI: 'hide' }) : el.webkitRequestFullscreen?.();
+  void Promise.resolve(p)
+    .then(() => {
+      const o = screen.orientation as ScreenOrientation & { lock?: (orient: string) => Promise<void> };
+      return o.lock?.('landscape');
+    })
+    .catch(() => {}); // not allowed without a user gesture / unsupported: keep playing windowed
+}
+
+function exitFullscreen() {
+  if (!fullscreenElement()) return;
+  const d = document as FsDocument;
+  void Promise.resolve(d.exitFullscreen ? d.exitFullscreen() : d.webkitExitFullscreen?.()).catch(() => {});
+}
+
+/** F key / gamepad Y / the ⛶ button. */
+function toggleFullscreen() {
+  if (fullscreenElement()) exitFullscreen();
+  else enterFullscreen();
 }
 
 /** Dialogue overlay: rendered at screen resolution with a readable font, portrait from the NPC's 3D model. */
@@ -54,7 +107,9 @@ export default function App() {
   const [stats, setStats] = useState({ kills: 0, rupees: 0 });
   const [dialogue, setDialogue] = useState<DialogueView | null>(null);
   const [gamepad, setGamepad] = useState(false);
-  const scale = useScale();
+  const [help, setHelp] = useState(true);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const vp = useViewport();
 
   useEffect(() => {
     if (!glRef.current || !hudRef.current) return;
@@ -68,33 +123,48 @@ export default function App() {
     };
     game.onMute = setMuted;
     game.onDialogue = setDialogue;
+    game.onFullscreen = toggleFullscreen;
+    game.onHelp = () => setHelp((h) => !h);
     input.onGamepadUse(() => setGamepad(true));
+    game.resize(vp.vw, vp.vh);
     game.start();
     return () => {
       game.dispose();
       input.dispose();
       gameRef.current = null;
     };
+    // mount only — later viewport changes are pushed by the effect below
   }, []);
 
-  const w = Math.round(VIEW_W * scale), h = Math.round(VIEW_H * scale);
-  const goFullscreen = () => {
-    const el = document.documentElement as HTMLElement & { webkitRequestFullscreen?: () => Promise<void> };
-    if (document.fullscreenElement) return;
-    const p = el.requestFullscreen?.({ navigationUI: 'hide' }) ?? el.webkitRequestFullscreen?.();
-    void p?.then(() => (screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> }).lock?.('landscape').catch(() => {})).catch(() => {});
-  };
+  // keep the game's internal resolution (and HUD) in sync with the window
+  useEffect(() => {
+    gameRef.current?.resize(vp.vw, vp.vh);
+  }, [vp.vw, vp.vh]);
+
+  // the user can leave fullscreen with Esc / the OS gesture — mirror that in our state
+  useEffect(() => {
+    const onChange = () => setIsFullscreen(!!fullscreenElement());
+    onChange();
+    document.addEventListener('fullscreenchange', onChange);
+    document.addEventListener('webkitfullscreenchange', onChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', onChange);
+      document.removeEventListener('webkitfullscreenchange', onChange);
+    };
+  }, []);
+
+  const w = vp.vw * vp.scale, h = vp.vh * vp.scale;
   const startOrResume = () => {
     const g = gameRef.current;
     if (!g) return;
-    if (navigator.maxTouchPoints > 0) goFullscreen();
+    if (navigator.maxTouchPoints > 0) enterFullscreen();
     if (g.phase === 'title') g.startGame();
     else if (g.phase === 'gameover') g.restart();
   };
 
   return (
     <div className="w-screen h-screen bg-[#07080c] flex flex-col items-center justify-center overflow-hidden select-none font-pixel text-white">
-      <div className="relative shadow-[0_0_0_4px_#1a1f2e,0_0_60px_rgba(0,0,0,0.8)]" style={{ width: w, height: h }}>
+      <div className="relative" style={{ width: w, height: h }}>
         <canvas ref={glRef} className="absolute inset-0 w-full h-full pixelated" />
         <canvas ref={hudRef} className="absolute inset-0 w-full h-full pixelated pointer-events-none" />
 
@@ -116,11 +186,14 @@ export default function App() {
                 <div className="text-gray-400">Q / R · ROTATE VIEW</div>
                 <div className="text-gray-400">ENTER · PAUSE · M · MUTE</div>
               </div>
+              <div className="mt-6 text-[9px] md:text-[11px] text-amber-200/80">
+                {gamepad ? 'SELECT: CONTROLS · Y: FULLSCREEN' : 'H: CONTROLS · F: FULLSCREEN'}
+              </div>
             </div>
           </div>
         )}
 
-        {dialogue && <DialogueBox d={dialogue} scale={scale} />}
+        {dialogue && <DialogueBox d={dialogue} scale={vp.scale} />}
 
         {phase === 'paused' && (
           <div className="absolute inset-0 flex items-center justify-center bg-black/40">
@@ -139,15 +212,18 @@ export default function App() {
           </div>
         )}
 
-        {muted && <div className="absolute right-2 bottom-2 text-[9px] text-gray-300 bg-black/50 px-2 py-1">MUTED</div>}
+        {muted && <div className="absolute right-2 bottom-8 text-[9px] text-gray-300 bg-black/50 px-2 py-1">MUTED</div>}
         {document.fullscreenEnabled && (
-          <button onClick={goFullscreen} title="Fullscreen" className="absolute right-2 top-2 text-[9px] text-gray-300/70 hover:text-white bg-black/40 px-2 py-1 cursor-pointer">⛶</button>
+          <button onClick={toggleFullscreen} title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'} className="absolute right-2 top-2 text-[9px] text-gray-300/70 hover:text-white bg-black/40 px-2 py-1 cursor-pointer">{isFullscreen ? '🗗' : '⛶'}</button>
         )}
-      </div>
-      <div className="mt-3 text-[9px] md:text-[10px] text-gray-500 tracking-wider text-center px-2">
-        {gamepad
-          ? 'STICK/D-PAD MOVE · A SWORD (HOLD FOR SPIN ATTACK) · B SHIELD · X TALK · L/R ROTATE VIEW · START PAUSE · SELECT MUTE'
-          : 'WASD MOVE · J SWORD (HOLD FOR SPIN ATTACK) · K SHIELD · E TALK · Q/R ROTATE VIEW · ENTER PAUSE · M MUTE'}
+
+        {help && phase !== 'title' && !dialogue && (
+          <div className="absolute left-0 right-0 bottom-0 text-center text-[8px] md:text-[10px] leading-relaxed tracking-wider text-gray-200 bg-black/55 px-2 py-1 pointer-events-none">
+            {gamepad
+              ? 'STICK/D-PAD MOVE · A SWORD (HOLD FOR SPIN ATTACK) · B SHIELD · X TALK · L/R ROTATE VIEW · START PAUSE · Y FULLSCREEN · SELECT HIDE THIS · L3 MUTE'
+              : 'WASD MOVE · J SWORD (HOLD FOR SPIN ATTACK) · K SHIELD · E TALK · Q/R ROTATE VIEW · ENTER PAUSE · F FULLSCREEN · H HIDE THIS · M MUTE'}
+          </div>
+        )}
       </div>
     </div>
   );
