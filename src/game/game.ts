@@ -16,8 +16,8 @@ export type Phase = 'title' | 'playing' | 'paused' | 'gameover';
 
 interface BushObj { tx: number; tz: number; mesh: THREE.Group; alive: boolean; stump?: THREE.Mesh }
 
-const POST_VS = `varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`;
-const POST_FS = `
+export const POST_VS = `varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`;
+export const POST_FS = `
 precision highp float;
 uniform sampler2D tDiffuse; uniform sampler2D tDepth; uniform vec2 texel;
 uniform float camNear; uniform float camFar; uniform float threshold;

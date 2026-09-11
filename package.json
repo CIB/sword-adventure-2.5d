@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "viewer": "vite --open /viewer.html",
+    "build:viewer": "VIEWER=1 vite build"
   },
   "dependencies": {
     "@types/three": "^0.185.4",
