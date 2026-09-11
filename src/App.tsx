@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Game, type Phase, type DialogueView } from './game/game';
 import { AudioEngine } from './game/audio';
 import { Input } from './game/input';
-import { VIEW_W, VIEW_H, PX_PER_TILE, ZOOM_TARGET_CSS_PX, ZOOM_MIN_TILES_X } from './game/constants';
+import { VIEW_W, VIEW_H, PX_PER_TILE, ZOOM_TARGET_CSS_PX, ZOOM_MIN_TILES_X, HUD_SCALE } from './game/constants';
 
 export interface Viewport {
   scale: number;
@@ -25,7 +25,9 @@ export interface Viewport {
  * of overshoot is cropped by the overflow-hidden wrapper.
  *
  * On windows too small for that to reach `ZOOM_TARGET_CSS_PX` per pixel — handhelds, phones — `zoom` adds a second
- * integer magnification that applies to the 3D view alone: the world renders at `vw/zoom x vh/zoom` and the CSS
+ * integer magnification that applies to the 3D view alone. `ZOOM_TARGET_CSS_PX` is 2, the midpoint between the
+ * small-screen PR's full magnification (4) and no magnification (1), after the Ayn Thor proved the original 4 too
+ * aggressive; the world renders at `vw/zoom x vh/zoom` and the CSS
  * upscale magnifies it, so texture pixels *and* the outline pass go chunky together (and a quarter of the
  * fragments get shaded at zoom 2). The HUD keeps `vw x vh`, since its layout is built for 320x240.
  */
@@ -142,7 +144,8 @@ export default function App() {
     game.onFullscreen = toggleFullscreen;
     game.onHelp = () => setHelp((h) => !h);
     input.onGamepadUse(() => setGamepad(true));
-    game.resize(vp.worldW, vp.worldH, vp.vw, vp.vh);
+    // HUD renders at 1/HUD_SCALE of the window res and is stretched to fill, so it reads HUD_SCALE× larger on screen
+    game.resize(vp.worldW, vp.worldH, Math.max(1, Math.round(vp.vw / HUD_SCALE)), Math.max(1, Math.round(vp.vh / HUD_SCALE)));
     game.start();
     return () => {
       game.dispose();
@@ -154,7 +157,8 @@ export default function App() {
 
   // keep the game's internal resolution (and HUD) in sync with the window
   useEffect(() => {
-    gameRef.current?.resize(vp.worldW, vp.worldH, vp.vw, vp.vh);
+    // HUD renders at 1/HUD_SCALE of the window res and is stretched to fill, so it reads HUD_SCALE× larger on screen
+    gameRef.current?.resize(vp.worldW, vp.worldH, Math.max(1, Math.round(vp.vw / HUD_SCALE)), Math.max(1, Math.round(vp.vh / HUD_SCALE)));
   }, [vp.worldW, vp.worldH, vp.vw, vp.vh]);
 
   // the user can leave fullscreen with Esc / the OS gesture — mirror that in our state

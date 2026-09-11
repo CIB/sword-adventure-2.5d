@@ -7,12 +7,22 @@ export const VIEW_TILES_Y = VIEW_H / PX_PER_TILE; // 12 tiles tall
 /**
  * On small windows (handhelds, phones) the 3D view is rendered at `1/zoom` of the window-filling resolution and
  * magnified by the CSS `pixelated` upscale, instead of growing the internal resolution. These are the two knobs
- * the app balances: `ZOOM_TARGET_CSS_PX` is how large one world pixel should end up on screen — 4 is what a
- * 1080p desktop already gets at zoom 1, so desktops keep it bit-identical — and `ZOOM_MIN_TILES_X` is the most
- * the world may be magnified before the view gets too tight (horizontal tiles that must stay visible).
+ * the app balances: `ZOOM_TARGET_CSS_PX` is how large one world pixel should end up on screen on small devices.
+ * A 1080p desktop already shows ~4 CSS px per world pixel at zoom 1 (so desktops stay bit-identical at zoom 1
+ * whatever this is set to); on a handheld `scale` is small, so the app adds an integer `zoom` to push world
+ * pixels up toward this target. `ZOOM_TARGET_CSS_PX` is 2 — the midpoint between the small-screen PR's full
+ * magnification target (4) and no magnification (1) — after the Ayn Thor proved 4 zoomed in too far.
+ * `ZOOM_MIN_TILES_X` is the most the world may be magnified before the view gets too tight (horizontal tiles
+ * that must stay visible).
  */
-export const ZOOM_TARGET_CSS_PX = 4;
+export const ZOOM_TARGET_CSS_PX = 2;
 export const ZOOM_MIN_TILES_X = 12;
+/**
+ * HUD on-screen size multiplier. The HUD canvas is rendered at `1/HUD_SCALE` of the window resolution and then
+ * stretched to fill the window (nearest-neighbour, `pixelated`), so its text and icons appear `HUD_SCALE×` larger
+ * on screen than the world HUD without resampling blur. 1.15 = "slightly larger".
+ */
+export const HUD_SCALE = 1.15;
 export const CAM_HEIGHT = 40;
 export const SHEAR = 0.85; // oblique projection factor: 1 unit of height = 0.85 tiles of screen space
 export const LEVEL_H = 0.5;   // world units per terrain level
