@@ -395,6 +395,7 @@ export class Game implements GameCtx {
     this.raf = requestAnimationFrame(this.loop);
     const dt = Math.min(0.05, Math.max(0.001, (now - this.lastNow) / 1000));
     this.lastNow = now;
+    this.input.pollGamepads();
     this.update(dt);
     this.input.endFrame();
     this.render();

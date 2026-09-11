@@ -21,6 +21,8 @@ const viewerRoot = () => ({
 });
 
 export default defineConfig({
+  // relative asset URLs so the same build works at github.io/<repo>/, a custom domain, or file://
+  base: './',
   // The game ships as a single HTML file. `VIEWER=1 vite build` instead builds the model viewer (viewer.html)
   // as a normal multi-file bundle into dist-viewer/. In dev both are served: /  (game) and /viewer.html.
   plugins: [react(), tailwindcss(), viewerRoot(), ...(process.env.VIEWER ? [] : [viteSingleFile()])],
