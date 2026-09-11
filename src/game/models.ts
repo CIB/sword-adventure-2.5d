@@ -20,6 +20,9 @@ export function toon(color: string | number | THREE.Color): THREE.MeshToonMateri
   return new THREE.MeshToonMaterial({ color, gradientMap: getGradientMap() });
 }
 
+/** Shared proportions for all humanoids (heroine, soldiers, villagers). Lower y to make everyone a bit stockier. */
+export const CHAR_SCALE = { x: 1.02, y: 0.92, z: 0.95 };
+
 export const UNIT_BOX = new THREE.BoxGeometry(1, 1, 1);
 export const UNIT_SPHERE = new THREE.SphereGeometry(0.5, 14, 10);
 export const UNIT_HEMI = new THREE.SphereGeometry(0.5, 14, 6, 0, Math.PI * 2, 0, Math.PI / 2);
@@ -163,7 +166,7 @@ export function buildHeroine(): Humanoid {
   ponytail.add(part(UNIT_SPHERE, m.hair, [0, -0.56, -0.06], [0.2, 0.16, 0.18]));
   head.add(ponytail);
 
-  root.scale.set(1.0, 1.0, 0.95);
+  root.scale.set(CHAR_SCALE.x, CHAR_SCALE.y, CHAR_SCALE.z);
   return { root, body, head, armR, armL, handR, handL, legR, legL, weapon, shield, ponytail, materials: collectMaterials(root) };
 }
 
@@ -248,7 +251,7 @@ export function buildSoldier(kind: EnemyKind): Humanoid {
     handR.add(part(UNIT_BOX, m.wood, [0, -0.1, -0.06], [0.03, 0.3, 0.03]));
   }
 
-  root.scale.set(1.02, 1.0, 0.95);
+  root.scale.set(CHAR_SCALE.x * 1.02, CHAR_SCALE.y, CHAR_SCALE.z);
   return { root, body, head, armR, armL, handR, handL, legR, legL, weapon, shield, materials: collectMaterials(root) };
 }
 
@@ -540,7 +543,7 @@ export function buildVillager(look: VillagerLook): Humanoid {
     case 'basket': handL.add(part(UNIT_CYL, toon('#c48b4f'), [0, -0.08, 0.1], [0.34, 0.24, 0.34])); break;
   }
   const s = look.scale ?? (look.kid ? 0.72 : 1);
-  root.scale.set(1.0 * s, 1.0 * s, 0.95 * s);
+  root.scale.set(CHAR_SCALE.x * s, CHAR_SCALE.y * s, CHAR_SCALE.z * s);
   return { root, body, head, armR, armL, handR, handL, legR, legL, materials: collectMaterials(root) };
 }
 
