@@ -1,0 +1,17 @@
+@import "tailwindcss";
+
+@theme {
+  --font-pixel: "Press Start 2P", "VT323", ui-monospace, "Courier New", monospace;
+}
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: #07080c;
+}
+
+.pixelated {
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
