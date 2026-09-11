@@ -162,6 +162,8 @@ export class AudioEngine {
   charged() { const t = this.ctx?.currentTime ?? 0; [880, 1108, 1318, 1760].forEach((f, i) => this.tone('square', f, 0.06, 0.09, { when: t + i * 0.045 })); }
   spin() { this.noise(0.38, 0.3, 'highpass', 700, { f1: 3500 }); this.tone('square', 300, 0.32, 0.07, { f1: 950 }); }
   alert() { const t = this.ctx?.currentTime ?? 0; this.tone('square', 1200, 0.05, 0.09, { when: t }); this.tone('square', 1600, 0.09, 0.09, { when: t + 0.05 }); }
+  talk() { const t = this.ctx?.currentTime ?? 0; this.tone('square', 880, 0.05, 0.08, { when: t }); this.tone('square', 1320, 0.07, 0.08, { when: t + 0.05 }); }
+  blip() { this.tone('square', 1500 + Math.random() * 300, 0.03, 0.035); }
   lowHp() { this.tone('square', 1046, 0.06, 0.07); }
   start() { const t = this.ctx?.currentTime ?? 0; [523, 659, 784, 1047].forEach((f, i) => this.tone('square', f, 0.12, 0.12, { when: t + i * 0.1 })); this.tone('square', 1047, 0.4, 0.12, { when: t + 0.4 }); this.tone('triangle', 523, 0.5, 0.15, { when: t + 0.4 }); }
   gameOver() { const t = this.ctx?.currentTime ?? 0; [392, 349, 330, 262].forEach((f, i) => this.tone('sawtooth', f, 0.32, 0.14, { when: t + i * 0.3, lp: 900 })); }

@@ -1,22 +1,23 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import {
-  VIEW_W, VIEW_H, VIEW_TILES_X, VIEW_TILES_Y, CAM_HEIGHT, SHEAR, MAP_W, MAP_H, PX_PER_TILE,
-  Tile, RNG, inArc, FACING_VEC, clamp,
+  VIEW_W, VIEW_H, VIEW_TILES_X, VIEW_TILES_Y, CAM_HEIGHT, SHEAR, WATER_DEPTH, MAP_W, MAP_H, PX_PER_TILE, MAX_HP,
+  RNG, inArc, FACING_VEC, clamp,
 } from './constants';
 import { World, type EnemyKind, type Vec2 } from './world';
 import { AudioEngine } from './audio';
-import { Input, PAUSE_KEYS, MUTE_KEYS, ATTACK_KEYS } from './input';
-import { Player, Enemy, Projectile, Pickup, Effect, fxSpark, fxPuff, fxLeaves, type GameCtx } from './entities';
-import { buildTrees, buildBush, buildStump, buildRock, buildFence, buildHouse, getGradientMap } from './models';
+import { Input, PAUSE_KEYS, MUTE_KEYS, ATTACK_KEYS, TALK_KEYS, ROTATE_CCW_KEYS, ROTATE_CW_KEYS, rotateView } from './input';
+import { Player, Enemy, Npc, Projectile, Pickup, Effect, fxSpark, fxPuff, fxLeaves, type GameCtx } from './entities';
+import { NPC_TALK, newQuestState, type Conversation, type QuestState, type TalkCtx } from './dialogue';
+import { buildTrees, buildBush, buildStump, buildRock, buildFence, buildHouse, buildProp, getGradientMap, buildVillager, buildDog, VILLAGER_LOOKS } from './models';
 import { Hud } from './hud';
 
 export type Phase = 'title' | 'playing' | 'paused' | 'gameover';
 
 interface BushObj { tx: number; tz: number; mesh: THREE.Group; alive: boolean; stump?: THREE.Mesh }
 
-const POST_VS = `varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`;
-const POST_FS = `
+export const POST_VS = `varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`;
+export const POST_FS = `
 precision highp float;
 uniform sampler2D tDiffuse; uniform sampler2D tDepth; uniform vec2 texel;
 uniform float camNear; uniform float camFar; uniform float threshold;
@@ -38,6 +39,12 @@ void main(){
   gl_FragColor = vec4(c, 1.0);
 }`;
 
+/** Characters with hand-made (AI-generated, SNES-style) portraits in public/portraits/; everyone else gets a live render of their 3D head. */
+const PORTRAITS = new Set(['elder', 'bard', 'granny', 'aria']);
+const PORTRAIT_VERSION = 2; // bump when portrait images change (busts the browser cache)
+
+export interface DialogueView { id: string; name: string; color: string; text: string; chars: number; more: boolean; portrait: string }
+
 export class Game implements GameCtx {
   renderer: THREE.WebGLRenderer;
   scene = new THREE.Scene();
@@ -56,6 +63,16 @@ export class Game implements GameCtx {
   effects: Effect[] = [];
   bushes: BushObj[] = [];
   respawns: { kind: EnemyKind; spawn: Vec2; t: number }[] = [];
+  npcs: Npc[] = [];
+  quests: QuestState = newQuestState();
+  talking = false;
+  private convo: Conversation | null = null;
+  private convoPage = 0;
+  private convoId = '';
+  private convoChars = 0; // typewriter progress on the current page
+  private toastMsg = '';
+  private toastT = 0;
+  private spinners: THREE.Object3D[] = [];
   phase: Phase = 'title';
   time = 0;
   private lastNow = 0;
@@ -67,6 +84,10 @@ export class Game implements GameCtx {
   private deathTimer = 0;
   onPhase: (p: Phase) => void = () => {};
   onMute: (m: boolean) => void = () => {};
+  /** Dialogue state for the React overlay (null when not talking) */
+  onDialogue: (d: DialogueView | null) => void = () => {};
+  private lastDialogueKey = '';
+  private portraitCache = new Map<string, string>();
 
   constructor(canvas: HTMLCanvasElement, hudCanvas: HTMLCanvasElement, audio: AudioEngine, input: Input) {
     this.audio = audio;
@@ -90,14 +111,15 @@ export class Game implements GameCtx {
       uniforms: {
         tDiffuse: { value: this.rt.texture }, tDepth: { value: depthTex },
         texel: { value: new THREE.Vector2(1 / VIEW_W, 1 / VIEW_H) },
-        camNear: { value: 1 }, camFar: { value: 100 }, threshold: { value: 0.16 },
+        camNear: { value: 1 }, camFar: { value: 200 }, threshold: { value: 0.16 },
       },
       vertexShader: POST_VS, fragmentShader: POST_FS, depthTest: false, depthWrite: false,
     });
     this.postScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), postMat));
 
-    // Top-down orthographic camera with an oblique shear: ground stays 1:1, fronts of objects become visible.
-    this.camera = new THREE.OrthographicCamera(-VIEW_TILES_X / 2, VIEW_TILES_X / 2, VIEW_TILES_Y / 2, -VIEW_TILES_Y / 2, 1, 100);
+    // Top-down orthographic camera with an oblique shear: ground stays 1:1, height becomes a vertical screen
+    // offset so fronts of objects (and terrain slopes) are visible.
+    this.camera = new THREE.OrthographicCamera(-VIEW_TILES_X / 2, VIEW_TILES_X / 2, VIEW_TILES_Y / 2, -VIEW_TILES_Y / 2, 1, 200);
     this.camera.up.set(0, 0, -1);
     this.camera.updateProjectionMatrix();
     const shear = new THREE.Matrix4().set(1, 0, 0, 0, 0, 1, SHEAR, SHEAR * CAM_HEIGHT, 0, 0, 1, 0, 0, 0, 0, 1);
@@ -115,6 +137,8 @@ export class Game implements GameCtx {
 
     const ps = this.world.playerStart;
     this.player = new Player(this, ps.x, ps.z);
+    this.player.facing = 4; // north
+    for (const n of this.world.npcs) this.npcs.push(new Npc(this, n));
     this.spawnAllEnemies();
     this.cam = { x: ps.x, z: ps.z - 1 };
     this.placeCamera(0);
@@ -123,16 +147,15 @@ export class Game implements GameCtx {
   // ------------------------------------------------------------------ world building
   private buildStatic() {
     const w = this.world;
-    const ground = new THREE.Mesh(new THREE.PlaneGeometry(MAP_W, MAP_H), new THREE.MeshBasicMaterial({ map: w.createGroundTexture() }));
-    ground.rotation.x = -Math.PI / 2;
-    ground.position.set(MAP_W / 2, 0, MAP_H / 2);
+    // heightmapped ground; lit (toon) so slopes read as shading, like the characters
+    const ground = new THREE.Mesh(w.createGroundGeometry(), new THREE.MeshToonMaterial({ map: w.createGroundTexture(), gradientMap: getGradientMap() }));
     this.scene.add(ground);
 
     // animated water overlay
     const quads: THREE.BufferGeometry[] = [];
     for (let z = 0; z < w.h; z++) for (let x = 0; x < w.w; x++) {
-      if (w.tile(x, z) !== Tile.Water) continue;
-      const g = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2).translate(x + 0.5, 0.012, z + 0.5);
+      if (!w.isWaterUnder(x, z)) continue;
+      const g = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2).translate(x + 0.5, -WATER_DEPTH + 0.02, z + 0.5);
       const pos = g.attributes.position, uv = g.attributes.uv;
       for (let i = 0; i < pos.count; i++) uv.setXY(i, pos.getX(i) / 2, -pos.getZ(i) / 2);
       quads.push(g);
@@ -142,39 +165,34 @@ export class Game implements GameCtx {
       this.scene.add(water);
     }
 
-    // cliffs (instanced boxes: grass texture on top, rock texture on sides)
-    const cliffs: [number, number][] = [];
-    for (let z = 0; z < w.h; z++) for (let x = 0; x < w.w; x++) if (w.tile(x, z) === Tile.Cliff) cliffs.push([x, z]);
-    if (cliffs.length) {
-      const side = new THREE.MeshToonMaterial({ map: w.createCliffSideTexture(), gradientMap: getGradientMap() });
-      const top = new THREE.MeshBasicMaterial({ map: w.createGrassTileTexture() });
-      const inst = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), [side, side, top, top, side, side], cliffs.length);
-      const m = new THREE.Matrix4();
-      cliffs.forEach(([x, z], i) => { m.makeTranslation(x + 0.5, 0.5, z + 0.5); inst.setMatrixAt(i, m); });
-      inst.instanceMatrix.needsUpdate = true;
-      this.scene.add(inst);
-    }
-
     for (const o of buildTrees(w.trees)) this.scene.add(o);
+    for (const o of w.createBridgeMeshes()) this.scene.add(o);
     for (const b of w.bushes) {
       const mesh = buildBush();
-      mesh.position.set(b.tx + 0.5, 0, b.tz + 0.5);
+      mesh.position.set(b.tx + 0.5, w.tileH(b.tx, b.tz), b.tz + 0.5);
       mesh.rotation.y = ((b.tx * 7 + b.tz * 3) % 5) * 0.4;
       this.scene.add(mesh);
       this.bushes.push({ tx: b.tx, tz: b.tz, mesh, alive: true });
     }
     for (const r of w.rocks) {
       const mesh = buildRock();
-      mesh.position.set(r.tx + 0.5, 0, r.tz + 0.5);
+      mesh.position.set(r.tx + 0.5, w.tileH(r.tx, r.tz), r.tz + 0.5);
       mesh.rotation.y = ((r.tx * 5 + r.tz * 11) % 6) * 0.5;
       this.scene.add(mesh);
     }
     for (const f of w.fences) {
       const mesh = buildFence();
-      mesh.position.set(f.tx + 0.5, 0, f.tz + 0.5);
+      mesh.position.set(f.tx + 0.5, w.heightAt(f.tx + 0.5, f.tz + 0.5), f.tz + 0.5);
       this.scene.add(mesh);
     }
-    for (const hs of w.houses) this.scene.add(buildHouse(hs));
+    for (const hs of w.houses) { const m = buildHouse(hs); m.position.y = w.tileH(hs.x + Math.floor(hs.w / 2), hs.z + 1); this.scene.add(m); }
+    for (const pr of w.props) {
+      const mesh = buildProp(pr);
+      mesh.position.y = w.surfaceAt(pr.x, pr.z);
+      this.scene.add(mesh);
+      const sp = mesh.getObjectByName('spin');
+      if (sp) this.spinners.push(sp);
+    }
   }
 
   private spawnAllEnemies() {
@@ -189,6 +207,7 @@ export class Game implements GameCtx {
   }
 
   spawnEffect(e: Effect) {
+    if (e.groundAt) e.group.position.y = this.world.surfaceAt(e.groundAt.x, e.groundAt.z);
     this.effects.push(e);
     this.scene.add(e.group);
   }
@@ -211,6 +230,111 @@ export class Game implements GameCtx {
     const r = this.rand();
     if (r < heartP) this.pickups.push(new Pickup(this, 'heart', { x, z }));
     else if (r < heartP + rupeeP) this.pickups.push(new Pickup(this, this.rand() < 0.2 ? 'rupee5' : 'rupee', { x, z }));
+  }
+
+  // ------------------------------------------------------------------ dialogue
+  private talkCtx(): TalkCtx {
+    const p = this.player;
+    return {
+      rupees: p.rupees,
+      spendRupees: (n) => { if (p.rupees < n) return false; p.rupees -= n; this.audio.rupee(); return true; },
+      heal: () => { p.hp = MAX_HP; this.audio.heart(); },
+      reward: (n) => { p.rupees = Math.min(999, p.rupees + n); this.audio.rupee(); this.toast('+' + n + ' RUPEES'); },
+      toast: (m) => this.toast(m),
+    };
+  }
+
+  toast(msg: string) { this.toastMsg = msg; this.toastT = 2.2; }
+
+  private tryTalk() {
+    if (this.player.attacking || this.player.dead) return;
+    let best: Npc | null = null, bd = Infinity;
+    for (const n of this.npcs) {
+      if (!n.canTalk()) continue;
+      const d = Math.hypot(n.pos.x - this.player.pos.x, n.pos.z - this.player.pos.z);
+      if (d < bd) { bd = d; best = n; }
+    }
+    if (!best) return;
+    const talker = NPC_TALK[best.spec.id];
+    if (!talker) return;
+    best.facePlayer();
+    this.convo = talker(this.quests, this.talkCtx());
+    this.convoId = best.spec.id;
+    this.convoPage = 0; this.convoChars = 0;
+    this.talking = true;
+    this.quests.talked.add(best.spec.id);
+    this.audio.talk();
+  }
+
+  private updateDialogue(dt: number) {
+    const c = this.convo!;
+    const page = c.pages[this.convoPage];
+    const done = this.convoChars >= page.length;
+    if (!done) {
+      const before = Math.floor(this.convoChars);
+      this.convoChars = Math.min(page.length, this.convoChars + dt * 45);
+      if (Math.floor(this.convoChars) !== before && Math.floor(this.convoChars) % 3 === 0) this.audio.blip();
+    }
+    if (this.input.justPressed(TALK_KEYS)) {
+      if (!done) { this.convoChars = page.length; return; }
+      this.convoPage++;
+      this.convoChars = 0;
+      if (this.convoPage >= c.pages.length) {
+        this.talking = false;
+        this.convo = null;
+        c.onEnd?.(this.quests, this.talkCtx());
+      } else this.audio.blip();
+    }
+  }
+
+  private publishDialogue() {
+    if (!this.convo) { if (this.lastDialogueKey) { this.lastDialogueKey = ''; this.onDialogue(null); } return; }
+    const chars = Math.floor(this.convoChars);
+    const key = this.convoId + '|' + this.convoPage + '|' + chars;
+    if (key === this.lastDialogueKey) return;
+    this.lastDialogueKey = key;
+    this.onDialogue({ id: this.convoId, name: this.convo.name, color: this.convo.color, text: this.convo.pages[this.convoPage], chars, more: this.convoPage < this.convo.pages.length - 1, portrait: this.portrait(this.convoId) });
+  }
+
+  /** Render a character's head (from its real 3D model) into a small portrait image (data URL), cached per NPC id. */
+  private portrait(id: string): string {
+    const hit = this.portraitCache.get(id);
+    if (hit) return hit;
+    if (PORTRAITS.has(id)) { const url = `portraits/${id}.png?v=${PORTRAIT_VERSION}`; this.portraitCache.set(id, url); return url; }
+    const npc = this.npcs.find((n) => n.spec.id === id);
+    const isDog = id === 'dog';
+    const model = isDog ? buildDog() : buildVillager(VILLAGER_LOOKS[id] ?? VILLAGER_LOOKS.farmer);
+    void npc;
+    const S = 96;
+    const scene = new THREE.Scene();
+    scene.add(new THREE.AmbientLight(0xffffff, 1.2));
+    const sun = new THREE.DirectionalLight(0xffffff, 1.9); sun.position.set(-0.4, 1, 1.2); scene.add(sun);
+    model.root.scale.set(1, 1, 1); model.root.rotation.y = 0.35; // three-quarter view, unsquashed
+    scene.add(model.root);
+    // frame the head and shoulders
+    const headY = isDog ? 0.5 : 1.0, half = isDog ? 0.45 : 0.55;
+    const cam = new THREE.OrthographicCamera(-half, half, half, -half, 0.1, 20);
+    cam.position.set(0, headY - (isDog ? 0.05 : 0.08), 5); cam.lookAt(0, headY - (isDog ? 0.05 : 0.08), 0);
+    const rt = new THREE.WebGLRenderTarget(S, S, { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
+    rt.texture.colorSpace = THREE.SRGBColorSpace;
+    const prevClear = this.renderer.getClearColor(new THREE.Color()), prevAlpha = this.renderer.getClearAlpha();
+    this.renderer.setRenderTarget(rt);
+    this.renderer.setClearColor(0x000000, 0);
+    this.renderer.clear();
+    this.renderer.render(scene, cam);
+    const buf = new Uint8Array(S * S * 4);
+    this.renderer.readRenderTargetPixels(rt, 0, 0, S, S, buf);
+    this.renderer.setRenderTarget(null);
+    this.renderer.setClearColor(prevClear, prevAlpha);
+    rt.dispose();
+    const cv = document.createElement('canvas'); cv.width = S; cv.height = S;
+    const g = cv.getContext('2d')!;
+    const img = g.createImageData(S, S);
+    for (let y = 0; y < S; y++) img.data.set(buf.subarray((S - 1 - y) * S * 4, (S - y) * S * 4), y * S * 4); // flip Y
+    g.putImageData(img, 0, 0);
+    const url = cv.toDataURL();
+    this.portraitCache.set(id, url);
+    return url;
   }
 
   // ------------------------------------------------------------------ phases
@@ -249,6 +373,8 @@ export class Game implements GameCtx {
     this.spawnAllEnemies();
     this.cam = { x: ps.x, z: ps.z - 1 };
     this.deathTimer = 0;
+    this.talking = false; this.convo = null;
+    this.player.facing = 4; // north
     this.audio.resume();
     this.audio.startMusic();
     this.setPhase('playing');
@@ -269,6 +395,7 @@ export class Game implements GameCtx {
     this.raf = requestAnimationFrame(this.loop);
     const dt = Math.min(0.05, Math.max(0.001, (now - this.lastNow) / 1000));
     this.lastNow = now;
+    this.input.pollGamepads();
     this.update(dt);
     this.input.endFrame();
     this.render();
@@ -278,6 +405,10 @@ export class Game implements GameCtx {
   private update(dt: number) {
     const input = this.input;
     if (input.justPressed(MUTE_KEYS)) { this.audio.init(); this.audio.setMuted(!this.audio.muted); this.onMute(this.audio.muted); }
+    if (this.phase === 'playing' && !this.talking) {
+      if (input.justPressed(ROTATE_CW_KEYS)) this.rotateView(1);
+      else if (input.justPressed(ROTATE_CCW_KEYS)) this.rotateView(-1);
+    }
     if (this.phase === 'title') {
       this.time += dt;
       this.waveTex.offset.set(this.time * 0.05, -this.time * 0.02);
@@ -297,6 +428,24 @@ export class Game implements GameCtx {
 
     this.time += dt;
     this.waveTex.offset.set(this.time * 0.05, -this.time * 0.02);
+    for (const sp of this.spinners) sp.rotation.y += dt * 1.5;
+    if (this.toastT > 0) this.toastT -= dt;
+
+    // NPCs (they idle/wander even mid-conversation freeze of the player)
+    const pp = this.player.pos;
+    for (const n of this.npcs) n.update(dt, !this.player.dead && n.canTalk());
+
+    if (this.talking) {
+      this.updateDialogue(dt);
+      this.placeCamera(dt);
+      return;
+    }
+    if (input.justPressed(TALK_KEYS) && !this.player.attacking) {
+      const before = this.talking;
+      this.tryTalk();
+      if (this.talking !== before) { this.player.holding = false; this.player.charged = false; this.player.chargeT = 0; return; }
+    }
+    void pp;
 
     this.player.update(dt, input);
     for (const e of this.enemies) e.update(dt);
@@ -343,7 +492,7 @@ export class Game implements GameCtx {
       if (d > 0.45 && !inArc(Math.atan2(dx, dz), sw.from, sw.to, 0.3)) continue;
       sw.hit.add(e);
       this.audio.hit();
-      this.spawnEffect(fxSpark(e.pos.x, 0.8, e.pos.z));
+      this.spawnEffect(fxSpark(e.pos.x, 0.8, e.pos.z).at(e.pos.x, e.pos.z));
       if (e.hurt(sw.dmg, p.x, p.z)) this.onEnemyDied(e);
     }
     for (const b of this.bushes) {
@@ -358,21 +507,23 @@ export class Game implements GameCtx {
 
   private onEnemyDied(e: Enemy) {
     this.player.kills++;
+    this.quests.kills++;
     this.audio.enemyDie();
-    this.spawnEffect(fxPuff(e.pos.x, e.pos.z));
+    this.spawnEffect(fxPuff(e.pos.x, e.pos.z).at(e.pos.x, e.pos.z));
     this.dropLoot(e.pos.x, e.pos.z, 0.35, 0.4);
     this.respawns.push({ kind: e.kind, spawn: e.spawn, t: 22 + this.rand() * 12 });
   }
 
   private cutBush(b: BushObj) {
     b.alive = false;
+    this.quests.bushes++;
     this.scene.remove(b.mesh);
     this.world.setSolid(b.tx, b.tz, false);
     b.stump = buildStump();
-    b.stump.position.set(b.tx + 0.5, 0, b.tz + 0.5);
+    b.stump.position.set(b.tx + 0.5, this.world.tileH(b.tx, b.tz), b.tz + 0.5);
     this.scene.add(b.stump);
     this.audio.bushCut();
-    this.spawnEffect(fxLeaves(b.tx + 0.5, b.tz + 0.5));
+    this.spawnEffect(fxLeaves(b.tx + 0.5, b.tz + 0.5).at(b.tx + 0.5, b.tz + 0.5));
     this.dropLoot(b.tx + 0.5, b.tz + 0.5, 0.18, 0.3);
   }
 
@@ -420,21 +571,47 @@ export class Game implements GameCtx {
       if (r.t > 0) return true;
       if (Math.hypot(r.spawn.x - p.x, r.spawn.z - p.z) < 9) { r.t = 3; return true; }
       this.enemies.push(new Enemy(this, r.kind, r.spawn.x, r.spawn.z, r.spawn));
-      this.spawnEffect(fxPuff(r.spawn.x, r.spawn.z));
+      this.spawnEffect(fxPuff(r.spawn.x, r.spawn.z).at(r.spawn.x, r.spawn.z));
       return false;
     });
   }
 
+  private camY = 0;
+  /** camera yaw in 45° steps (0 = north up, 8 steps per turn) */
+  viewStep = 0;
+  private viewAngle = 0;        // animated yaw (radians)
+  onView: (step: number) => void = () => {};
+  rotateView(dir: 1 | -1) {
+    this.viewStep = (((this.viewStep + dir) % 8) + 8) % 8;
+    this.onView(this.viewStep);
+    this.audio.blip();
+  }
   private placeCamera(dt: number) {
     const p = this.player.pos;
     const k = dt > 0 ? 1 - Math.exp(-dt * 9) : 1;
-    this.cam.x += (p.x - this.cam.x) * k;
-    this.cam.z += (p.z - 1.0 - this.cam.z) * k;
-    const hx = VIEW_TILES_X / 2, hz = VIEW_TILES_Y / 2;
+    // animate the yaw toward the target quarter turn (shortest way round)
+    const target = this.viewStep * Math.PI / 4;
+    let da = target - this.viewAngle;
+    da = Math.atan2(Math.sin(da), Math.cos(da));
+    this.viewAngle += da * (dt > 0 ? 1 - Math.exp(-dt * 10) : 1);
+    if (Math.abs(da) < 1e-3) this.viewAngle = target;
+    this.input.viewAngle = this.viewAngle;
+    // look slightly "up the screen" (toward the top edge in camera space) so there's more room ahead
+    const [ax, az] = rotateView(0, -1.0, this.viewAngle);
+    this.cam.x += (p.x + ax - this.cam.x) * k;
+    this.cam.z += (p.z + az - this.cam.z) * k;
+    // follow the player's altitude so the shear offset stays centred on the ground she stands on
+    const gy = this.world.surfaceAt(p.x, p.z);
+    this.camY += (gy - this.camY) * (dt > 0 ? 1 - Math.exp(-dt * 5) : 1);
+    // keep the rotated view rectangle inside the map: half-extents of its world-space bounding box
+    const ca = Math.cos(this.viewAngle), sa = Math.sin(this.viewAngle);
+    const hx = (Math.abs(ca) * VIEW_TILES_X + Math.abs(sa) * VIEW_TILES_Y) / 2, hz = (Math.abs(sa) * VIEW_TILES_X + Math.abs(ca) * VIEW_TILES_Y) / 2;
     const cx = clamp(this.cam.x, hx, MAP_W - hx), cz = clamp(this.cam.z, hz, MAP_H - hz);
     const sx = Math.round(cx * PX_PER_TILE) / PX_PER_TILE, sz = Math.round(cz * PX_PER_TILE) / PX_PER_TILE;
-    this.camera.position.set(sx, CAM_HEIGHT, sz);
-    this.camera.lookAt(sx, 0, sz);
+    // camera "up" on screen = world -Z rotated by the yaw (rotating about +Y)
+    this.camera.up.set(-sa, 0, -ca);
+    this.camera.position.set(sx, this.camY + CAM_HEIGHT, sz);
+    this.camera.lookAt(sx, this.camY, sz);
   }
 
   // ------------------------------------------------------------------ render
@@ -444,10 +621,14 @@ export class Game implements GameCtx {
     this.renderer.setRenderTarget(null);
     this.renderer.render(this.postScene, this.postCam);
     const p = this.player;
+    this.publishDialogue();
     this.hud.draw({
       hp: p.hp, rupees: p.rupees, kills: p.kills,
       charge: p.charged ? 1 : p.holding ? Math.min(1, p.chargeT / 0.75) : 0,
       charged: p.charged, blocking: p.blocking, attacking: p.attacking, time: this.time,
+      dialogue: !!this.convo,
+      toast: this.toastT > 0 ? this.toastMsg : '',
+      canTalk: !this.talking && this.phase === 'playing' && this.npcs.some((n) => n.canTalk()),
     });
   }
 }

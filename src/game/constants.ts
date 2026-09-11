@@ -6,9 +6,13 @@ export const VIEW_TILES_X = VIEW_W / PX_PER_TILE; // 16 tiles wide
 export const VIEW_TILES_Y = VIEW_H / PX_PER_TILE; // 12 tiles tall
 export const CAM_HEIGHT = 40;
 export const SHEAR = 0.85; // oblique projection factor: 1 unit of height = 0.85 tiles of screen space
-export const MAP_W = 52;
-export const MAP_H = 44;
+export const LEVEL_H = 0.5;   // world units per terrain level
+export const MAX_WALK_SLOPE = 0.45; // max height difference per tile step that can be walked (steeper = cliff)
+export const MAP_W = 208;
+export const MAP_H = 176;
 export const TEX_PX = 20; // ground texture pixels per tile
+export const WATER_DEPTH = 0.75; // how far the river bed sits below the meadow (world units)
+export const BRIDGE_H = 0.22;    // bridge deck height above the meadow level
 
 export const MAX_HP = 12; // 6 hearts, 2 hp per heart
 
@@ -19,16 +23,37 @@ export enum Tile {
   Bridge = 3,
   Cliff = 4,
   Flowers = 5,
+  Cobble = 6,
+  Bed = 7, // flower bed / crops (village)
 }
 
-export type Facing = 0 | 1 | 2 | 3; // 0 south, 1 east, 2 north, 3 west
-export const FACING_VEC: [number, number][] = [
-  [0, 1],
-  [1, 0],
-  [0, -1],
-  [-1, 0],
-];
-export const FACING_ANGLE = [0, Math.PI / 2, Math.PI, -Math.PI / 2];
+/** 8-way facing: 0 south, then clockwise (seen from above) in 45° steps: 1 SE, 2 east, 3 NE, 4 north, 5 NW, 6 west, 7 SW */
+export type Facing = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
+export const FACING_ANGLE = [0, 1, 2, 3, 4, 5, 6, 7].map(i => normAngle(i * Math.PI / 4));
+export const FACING_VEC: [number, number][] = FACING_ANGLE.map(a => {
+  const r = (v: number) => Math.abs(v) < 1e-9 ? 0 : Math.abs(Math.abs(v) - 1) < 1e-9 ? Math.sign(v) : v;
+  return [r(Math.sin(a)), r(Math.cos(a))] as [number, number];
+});
+/**
+ * How finely characters (player, NPCs, enemies) may turn: 4 = classic Zelda-style cardinal lock,
+ * 8 = 45° headings. The facing representation is always 8-way; this only restricts which values get picked.
+ */
+export const FACING_DIRS: 4 | 8 = 4;
+/** half the angular width of one facing sector — the turn threshold used for hysteresis */
+export const FACING_HALF_STEP = Math.PI / FACING_DIRS;
+/** nearest allowed facing for a direction vector */
+export function facingFrom(dx: number, dz: number): Facing {
+  const step = (Math.PI * 2) / FACING_DIRS, per = 8 / FACING_DIRS;
+  return ((Math.round(Math.atan2(dx, dz) / step) * per % 8) + 8) % 8 as Facing;
+}
+/** a random allowed facing */
+export function randomFacing(rand01: number): Facing {
+  return (Math.floor(rand01 * FACING_DIRS) * (8 / FACING_DIRS)) as Facing;
+}
+/** angular distance (0..π) between a facing and a direction vector */
+export function facingDelta(f: Facing, dx: number, dz: number): number {
+  return Math.abs(normAngle(Math.atan2(dx, dz) - FACING_ANGLE[f]));
+}
 
 /** Small deterministic PRNG (mulberry32) */
 export class RNG {

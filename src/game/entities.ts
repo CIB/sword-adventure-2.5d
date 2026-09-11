@@ -1,12 +1,12 @@
 import * as THREE from 'three';
-import { FACING_ANGLE, FACING_VEC, MAX_HP, inArc, lerp, normAngle, type Facing } from './constants';
+import { FACING_ANGLE, FACING_VEC, MAX_HP, inArc, lerp, normAngle, facingFrom, facingDelta, randomFacing, FACING_HALF_STEP, type Facing } from './constants';
 import type { AudioEngine } from './audio';
 import type { Input } from './input';
 import { ATTACK_KEYS, SHIELD_KEYS } from './input';
-import type { EnemyKind, Vec2, World } from './world';
+import type { EnemyKind, Vec2, World, NpcSpec } from './world';
 import {
   buildArrow, buildHeart, buildHeroine, buildJavelinProjectile, buildRupee, buildSoldier, part,
-  UNIT_BOX, UNIT_OCTA, UNIT_SPHERE, type Humanoid,
+  UNIT_BOX, UNIT_OCTA, UNIT_SPHERE, type Humanoid, buildVillager, buildDog, VILLAGER_LOOKS,
 } from './models';
 
 export interface GameCtx {
@@ -19,6 +19,8 @@ export interface GameCtx {
   spawnProjectile(kind: 'arrow' | 'javelin', x: number, z: number, dx: number, dz: number, dmg: number): void;
   spawnEffect(e: Effect): void;
   tryHitPlayer(dmg: number, sx: number, sz: number, opts?: { projectile?: boolean }): 'hit' | 'blocked' | 'immune';
+  /** true while a dialogue box is open (player + NPCs freeze) */
+  talking: boolean;
 }
 
 const angleTo = (dx: number, dz: number) => Math.atan2(dx, dz);
@@ -30,7 +32,22 @@ function setEmissive(mats: THREE.MeshToonMaterial[], on: boolean) {
 
 // ======================================================================= PLAYER
 export type PlayerState = 'idle' | 'walk' | 'swing' | 'spin' | 'hurt' | 'dead';
-const SWING_DUR = 0.2, SPIN_DUR = 0.45, SWING_START = -1.9, SWING_END = 1.15;
+const SWING_DUR = 0.2, SPIN_DUR = 0.5, SWING_START = -1.9, SWING_END = 1.15;
+const SPIN_START = -0.35; // spin begins with the blade front-right, where the charge pose holds it
+const SPIN_RADIUS = 1.75; // spin attack AoE radius (normal swing: 1.05)
+const RECOVER_DUR = 0.14; // blend back to idle after an attack instead of snapping
+const easeOutCubic = (p: number) => 1 - (1 - p) ** 3;
+const smooth = (p: number) => p * p * (3 - 2 * p);
+// quick wind-up, then a fast full circle that decelerates on the follow-through
+const spinCurve = (p: number) => (p < 0.1 ? -0.12 * (p / 0.1) : -0.12 + 1.12 * easeOutCubic((p - 0.1) / 0.9));
+
+/** Upper-body pose used to blend attack poses back into idle */
+interface Pose { rootYaw: number; twist: number; lean: number; armX: number; armY: number; armZ: number; wrist: number; armLX: number; armLY: number; armLZ: number }
+const lerpPose = (a: Pose, b: Pose, t: number): Pose => ({
+  rootYaw: lerp(a.rootYaw, b.rootYaw, t), twist: lerp(a.twist, b.twist, t), lean: lerp(a.lean, b.lean, t),
+  armX: lerp(a.armX, b.armX, t), armY: lerp(a.armY, b.armY, t), armZ: lerp(a.armZ, b.armZ, t), wrist: lerp(a.wrist, b.wrist, t),
+  armLX: lerp(a.armLX, b.armLX, t), armLY: lerp(a.armLY, b.armLY, t), armLZ: lerp(a.armLZ, b.armLZ, t),
+});
 
 export class Player {
   pos: Vec2;
@@ -55,6 +72,9 @@ export class Player {
   sweepDmg = 1;
   sweepR = 1.05;
   sweepActive = false;
+  recoverT = 0;
+  rootYaw = 0; // extra model yaw from the spin attack (visual only; facing/hit arcs are unaffected)
+  lastPose: Pose | null = null;
   sparkle: THREE.Mesh;
   readonly HW = 0.3;
   readonly HH = 0.25;
@@ -90,7 +110,7 @@ export class Player {
       const f = Math.max(0, 1 - dt * 7);
       this.knock.x *= f; this.knock.z *= f;
       if (this.stateT <= 0) this.state = 'idle';
-      this.animate(false);
+      this.animate(false, dt);
       this.sync();
       return;
     }
@@ -107,10 +127,11 @@ export class Player {
       const dur = this.state === 'swing' ? SWING_DUR : SPIN_DUR;
       const p = Math.min(1, this.stateT / dur);
       this.sweepPrev = this.sweepCur;
-      this.sweepCur = this.state === 'swing' ? lerp(SWING_START, SWING_END, easeOut(p)) : SWING_END - Math.PI * 2 * p;
+      this.sweepCur = this.state === 'swing' ? lerp(SWING_START, SWING_END, easeOutCubic(p)) : SPIN_START - Math.PI * 2 * spinCurve(p);
       this.sweepActive = true;
       if (p >= 1) {
         this.state = 'idle';
+        this.recoverT = RECOVER_DUR;
         if (attackDown) { this.holding = true; this.chargeT = 0; this.charged = false; }
       }
     } else {
@@ -132,9 +153,9 @@ export class Player {
           const len = Math.hypot(mx, mz);
           const dx = (mx / len) * speed * dt, dz = (mz / len) * speed * dt;
           this.game.world.moveBox(this.pos, dx, dz, this.HW, this.HH, speed * dt);
-          const fv = FACING_VEC[this.facing];
-          const keep = (fv[0] !== 0 && mx === fv[0]) || (fv[1] !== 0 && mz === fv[1]);
-          if (!keep) this.facing = mx !== 0 ? (mx > 0 ? 1 : 3) : mz > 0 ? 0 : 2;
+          // turn to the nearest allowed heading of the (world-space) move vector, with a little
+          // hysteresis so a heading exactly between two facings (e.g. a diagonal) doesn't flicker
+          if (facingDelta(this.facing, mx, mz) > FACING_HALF_STEP + 0.05) this.facing = facingFrom(mx, mz);
           moving = true;
           this.animT += dt * speed * 2.6;
         }
@@ -142,7 +163,7 @@ export class Player {
     }
     this.sparkle.visible = this.charged;
     if (this.charged) { this.sparkle.rotation.y += dt * 12; const s = 0.16 + Math.sin(this.animT * 3 + this.chargeT * 20) * 0.05; this.sparkle.scale.set(s, s, s); }
-    this.animate(moving);
+    this.animate(moving, dt);
     this.sync();
   }
 
@@ -162,18 +183,20 @@ export class Player {
   private startSpin() {
     this.state = 'spin';
     this.stateT = 0;
-    this.sweepPrev = this.sweepCur = SWING_END;
+    this.sweepPrev = this.sweepCur = SPIN_START;
     this.sweepHit.clear();
     this.sweepDmg = 2;
-    this.sweepR = 1.25;
+    this.sweepR = SPIN_RADIUS;
     this.sweepActive = true;
     this.game.audio.spin();
+    this.game.spawnEffect(fxSpinWave(this, SPIN_DUR, SPIN_RADIUS).at(this.pos.x, this.pos.z));
   }
 
   /** Arc (world angles) swept by the sword since the last frame */
   getSweep(): { from: number; to: number; r: number; dmg: number; hit: Set<object> } | null {
     if (!this.sweepActive) return null;
-    return { from: normAngle(this.facingAngle + this.sweepPrev), to: normAngle(this.facingAngle + this.sweepCur), r: this.sweepR, dmg: this.sweepDmg, hit: this.sweepHit };
+    // the model is mirrored (left-handed), so the blade's world angle is facing - sweep
+    return { from: normAngle(this.facingAngle - this.sweepPrev), to: normAngle(this.facingAngle - this.sweepCur), r: this.sweepR, dmg: this.sweepDmg, hit: this.sweepHit };
   }
 
   hurt(dmg: number, sx: number, sz: number) {
@@ -201,38 +224,102 @@ export class Player {
     if (this.state !== 'hurt' && this.state !== 'dead') { this.state = 'hurt'; this.stateT = 0.12; }
   }
 
-  private animate(moving: boolean) {
+  private animate(moving: boolean, dt: number) {
     const m = this.model;
+    if (!this.attacking) this.recoverT = Math.max(0, this.recoverT - dt);
     const swing = moving ? Math.sin(this.animT) : 0;
     m.legL.rotation.x = swing * 0.7;
     m.legR.rotation.x = -swing * 0.7;
     m.body.position.y = moving ? Math.abs(Math.sin(this.animT)) * 0.04 : 0;
     if (m.ponytail) m.ponytail.rotation.x = (moving ? Math.sin(this.animT) * 0.2 : 0) + 0.15;
-    // arms
+    // upper body ---------------------------------------------------------
+    // The right arm stays roughly horizontal so the blade sweeps a flat arc in front of the
+    // heroine (the oblique camera turns any pitch change into an apparent vertical chop).
+    // Torso twist + wrist cock + a short recovery blend keep the swing from looking rigid.
+    // Sword arm is held forward and slightly out (blade points ahead), pumping a bit with the stride
+    // instead of trailing behind like a free-swinging arm.
+    // Per-facing idle sword stance (the arm is a single rigid segment, so poses are tuned per view):
+    //  down/right: sword held forward, blade ahead of her.
+    //  up:         arm hangs down at her side, blade angled slightly outward.
+    //  left:       the sword arm is on the far side of her body, so hold it a little forward
+    //              and across so arm + blade peek out ahead of her instead of hiding behind the torso.
+    const STANCE: Record<0 | 1 | 2 | 3, { x: number; y: number; z: number; w: number }> = {
+      0: { x: -0.85, y: -0.35, z: 0.15, w: -0.35 },
+      1: { x: -0.85, y: -0.35, z: 0.15, w: -0.35 },
+      2: { x: -0.3, y: 0.0, z: -0.3, w: -0.55 },
+      3: { x: -0.9, y: -0.3, z: 0.1, w: 0.0 },
+    };
+    const st = STANCE[(Math.round(this.facing / 2) % 4) as 0 | 1 | 2 | 3]; // diagonals borrow a cardinal stance
+    const idlePose: Pose = {
+      rootYaw: 0, twist: 0, lean: 0,
+      armX: st.x - Math.max(0, -swing) * 0.3 + (moving ? 0.1 : 0), armY: st.y, armZ: st.z, wrist: st.w,
+      armLX: -0.35 + swing * 0.3, armLY: 0.15, armLZ: -0.12, // shield arm held slightly forward so the shield clears the chest
+    };
+    let pose: Pose;
     if (this.state === 'swing') {
       const p = Math.min(1, this.stateT / SWING_DUR);
-      m.armR.rotation.set(-Math.PI / 2 + lerp(-0.55, 0.3, p), this.sweepCur, 0);
+      const e = easeOutCubic(p);
+      const twist = lerp(-0.55, 0.45, e);            // shoulders wind up to the right, follow through left
+      pose = {
+        rootYaw: 0, twist, lean: lerp(-0.08, 0.16, e),
+        armX: -Math.PI / 2 + lerp(0.12, 0.38, e),   // slight downward tilt, stays near horizontal
+        armY: this.sweepCur - twist,                 // world-space yaw == hit arc; torso does part of the work
+        armZ: 0,
+        wrist: lerp(-0.75, 0.5, e),                  // blade trails at the start, whips ahead at the end
+        armLX: lerp(0.35, -0.25, e), armLY: lerp(0.3, -0.35, e), armLZ: -0.25,
+      };
     } else if (this.state === 'spin') {
-      m.armR.rotation.set(-Math.PI / 2, this.sweepCur, 0);
+      // Whole body pirouettes: the sword arm stays locked out to the front-right and the
+      // entire model (torso, legs, head) rotates so the blade sweeps the full circle.
+      const p = Math.min(1, this.stateT / SPIN_DUR);
+      const arc = Math.sin(p * Math.PI);
+      const armY = SPIN_START;
+      pose = {
+        rootYaw: this.sweepCur - armY, twist: 0.25 * arc, lean: 0.14 * arc,
+        armX: -Math.PI / 2 + 0.1 - 0.2 * arc, armY, armZ: 0, wrist: 0.9 * arc,   // arm extends fully, blade flung outward
+        armLX: -0.9 * arc - 0.1, armLY: 0.6 * arc, armLZ: -0.4 * arc - 0.1,     // shield arm flies out for balance
+      };
+      m.body.position.y += arc * 0.16;                                        // small hop
+      m.legL.rotation.x = -0.35 * arc; m.legR.rotation.x = 0.45 * arc;         // legs tuck during the jump-spin
     } else if (this.charged || this.holding) {
-      m.armR.rotation.set(-Math.PI / 2 - 0.5, -1.7, 0);
+      // wind-up: shoulders coil to the right, sword pulled in across the body with the blade still pointing forward
+      const t = smooth(Math.min(1, this.chargeT / 0.25));
+      const tremble = this.charged ? Math.sin(this.chargeT * 45) * 0.03 : 0;
+      pose = {
+        rootYaw: -0.2 * t, twist: -0.3 * t + tremble, lean: 0.06 * t,
+        armX: -0.85 - 0.5 * t, armY: -0.35 + 0.45 * t, armZ: 0.15 + 0.15 * t, wrist: -0.35 + 0.55 * t + tremble * 2,
+        armLX: -0.2 * t + 0.1, armLY: 0.3 * t, armLZ: -0.25 * t - 0.1,
+      };
     } else {
-      m.armR.rotation.set(-swing * 0.35 + 0.65, -0.15, 0.1);
+      pose = idlePose;
     }
+
+    if (this.attacking) {
+      this.lastPose = { ...pose, rootYaw: normAngle(pose.rootYaw) };
+    } else if (this.recoverT > 0 && this.lastPose) {
+      // ease out of the follow-through pose instead of snapping to idle
+      pose = lerpPose(this.lastPose, pose, smooth(1 - this.recoverT / RECOVER_DUR));
+    }
+
+    this.rootYaw = pose.rootYaw;
+    m.body.rotation.set(pose.lean, pose.twist, 0);
+    m.head.rotation.y = -pose.twist * 0.6; // keep looking roughly where she's facing
+    m.armR.rotation.set(pose.armX, pose.armY, pose.armZ);
+    m.weapon!.rotation.set(0, 0, pose.wrist);
     if (this.blocking) {
       m.armL.rotation.set(-1.25, -0.55, 0);
       m.shield!.position.set(0, -0.02, 0.12);
       m.shield!.rotation.set(1.0, 0.45, 0);
     } else {
-      m.armL.rotation.set(0.1, 0, -0.1);
-      m.shield!.position.set(0, -0.04, 0.14);
+      m.armL.rotation.set(pose.armLX, pose.armLY, pose.armLZ);
+      m.shield!.position.set(0, -0.04, 0.2);
       m.shield!.rotation.set(0, 0, 0);
     }
   }
 
   private sync() {
-    this.model.root.position.set(this.pos.x, 0, this.pos.z);
-    this.model.root.rotation.y = this.facingAngle;
+    this.model.root.position.set(this.pos.x, this.game.world.surfaceAt(this.pos.x, this.pos.z), this.pos.z);
+    this.model.root.rotation.y = this.facingAngle - this.rootYaw; // mirrored model: yaw runs the other way
   }
 
   reset(x: number, z: number) {
@@ -240,6 +327,7 @@ export class Player {
     this.hp = MAX_HP; this.rupees = 0; this.kills = 0;
     this.state = 'idle'; this.stateT = 0; this.invuln = 0; this.deadT = 0; this.facing = 0;
     this.charged = false; this.holding = false; this.chargeT = 0; this.blocking = false;
+    this.recoverT = 0; this.lastPose = null; this.rootYaw = 0;
     this.model.root.scale.set(1, 1, 1); this.model.root.visible = true;
     this.sync();
   }
@@ -284,7 +372,7 @@ export class Enemy {
     this.st = STATS[kind];
     this.hp = this.st.hp;
     this.model = buildSoldier(kind);
-    this.facing = Math.floor(game.rand() * 4) as Facing;
+    this.facing = randomFacing(game.rand());
     this.pickPatrolDir();
     game.scene.add(this.model.root);
     this.sync();
@@ -293,19 +381,14 @@ export class Enemy {
   get melee() { return this.kind === 'sword' || this.kind === 'spear'; }
 
   private pickPatrolDir() {
-    const f = Math.floor(this.game.rand() * 4) as Facing;
+    const f = randomFacing(this.game.rand());
     this.dir = { x: FACING_VEC[f][0], z: FACING_VEC[f][1] };
   }
 
   private faceToward(dx: number, dz: number, hyst = 1) {
-    const ax = Math.abs(dx), az = Math.abs(dz);
-    if (hyst > 1) {
-      const f = FACING_VEC[this.facing];
-      const along = f[0] * dx + f[1] * dz;
-      if (along > 0 && (f[0] !== 0 ? ax * hyst >= az : az * hyst >= ax)) return;
-    }
-    if (ax > az) this.facing = dx > 0 ? 1 : 3;
-    else this.facing = dz > 0 ? 0 : 2;
+    // keep the current heading while it's within (hyst × half a step) of the target direction
+    if (facingDelta(this.facing, dx, dz) <= FACING_HALF_STEP * hyst + 1e-6) return;
+    this.facing = facingFrom(dx, dz);
   }
 
   private walk(dx: number, dz: number, speed: number, dt: number): boolean {
@@ -314,6 +397,9 @@ export class Enemy {
     dx /= len; dz /= len;
     const ox = this.pos.x, oz = this.pos.z;
     this.game.world.moveBox(this.pos, dx * speed * dt, dz * speed * dt, this.HW, this.HH, speed * dt);
+    // the village is a safe haven: knights never cross the fence line
+    const v = this.game.world.village;
+    if (this.pos.x > v.x0 - 0.5 && this.pos.x < v.x1 + 1.5 && this.pos.z > v.z0 - 0.5 && this.pos.z < v.z1 + 1.5) { this.pos.x = ox; this.pos.z = oz; return false; }
     this.faceToward(dx, dz, 1.5);
     const moved = Math.hypot(this.pos.x - ox, this.pos.z - oz);
     this.animT += moved * 9;
@@ -330,7 +416,7 @@ export class Enemy {
   private becomeAlert() {
     this.state = 'alert';
     this.stateT = 0.4;
-    this.game.spawnEffect(fxAlert(this.pos.x, this.pos.z));
+    this.game.spawnEffect(fxAlert(this.pos.x, this.pos.z).at(this.pos.x, this.pos.z));
     this.game.audio.alert();
   }
 
@@ -402,7 +488,7 @@ export class Enemy {
           const aligned = ax < 0.45 || az < 0.45;
           if (dist < 2.2) moving = this.walk(-dx, -dz, st.chase, dt);
           else if (aligned) {
-            if (ax < az) this.facing = dz > 0 ? 0 : 2; else this.facing = dx > 0 ? 1 : 3;
+            this.faceToward(dx, dz, 1.5);
             if (this.cooldown <= 0 && dist < st.range) { this.state = 'windup'; this.stateT = 0.45; }
           } else {
             if (ax < az) moving = this.walk(Math.sign(dx), 0, st.speed, dt); else moving = this.walk(0, Math.sign(dz), st.speed, dt);
@@ -543,13 +629,133 @@ export class Enemy {
   }
 
   private sync() {
-    this.model.root.position.set(this.pos.x, 0, this.pos.z);
+    this.model.root.position.set(this.pos.x, this.game.world.surfaceAt(this.pos.x, this.pos.z), this.pos.z);
     this.model.root.rotation.y = FACING_ANGLE[this.facing];
   }
 
   dispose() {
     this.alive = false;
     this.game.scene.remove(this.model.root);
+  }
+}
+
+// ======================================================================= NPC
+export class Npc {
+  pos: Vec2;
+  home: Vec2;
+  facing: Facing;
+  model: Humanoid;
+  animT = 0;
+  t = 0;
+  wanderT = 0;
+  dir: Vec2 = { x: 0, z: 0 };
+  bubble: THREE.Group;
+  readonly isDog: boolean;
+  readonly HW = 0.28;
+  readonly HH = 0.24;
+
+  constructor(private game: GameCtx, public spec: NpcSpec) {
+    this.pos = { x: spec.x, z: spec.z };
+    this.home = { x: spec.x, z: spec.z };
+    this.facing = ((spec.facing ?? 0) * 2) as Facing; // specs use the classic 4 directions
+    this.isDog = spec.id === 'dog';
+    this.model = this.isDog ? buildDog() : buildVillager(VILLAGER_LOOKS[spec.id] ?? VILLAGER_LOOKS.farmer);
+    // "!" / "..." speech bubble shown when the player is close enough to talk
+    this.bubble = new THREE.Group();
+    const bmat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    this.bubble.add(part(UNIT_BOX, bmat, [0, 0, 0], [0.34, 0.3, 0.05]));
+    this.bubble.add(part(UNIT_BOX, bmat, [0, -0.2, 0], [0.1, 0.12, 0.05]));
+    this.bubble.add(part(UNIT_BOX, new THREE.MeshBasicMaterial({ color: 0x1d2b5a }), [0, 0.03, 0.03], [0.06, 0.16, 0.02]));
+    this.bubble.add(part(UNIT_BOX, new THREE.MeshBasicMaterial({ color: 0x1d2b5a }), [0, -0.09, 0.03], [0.06, 0.05, 0.02]));
+    this.bubble.position.set(0, this.isDog ? 1.0 : 1.75, 0);
+    this.bubble.visible = false;
+    this.model.root.add(this.bubble);
+    this.wanderT = 1 + game.rand() * 2;
+    game.scene.add(this.model.root);
+    this.sync();
+  }
+
+  get facingAngle() { return FACING_ANGLE[this.facing]; }
+
+  /** Can the player talk to this NPC right now? (close + roughly facing them) */
+  canTalk(): boolean {
+    const p = this.game.player;
+    const dx = this.pos.x - p.pos.x, dz = this.pos.z - p.pos.z;
+    const d = Math.hypot(dx, dz);
+    if (d > 1.25) return false;
+    const f = FACING_VEC[p.facing];
+    return (f[0] * dx + f[1] * dz) / (d || 1) > 0.3;
+  }
+
+  /** Turn to face the player (used when a conversation starts) */
+  facePlayer() {
+    const p = this.game.player;
+    const dx = p.pos.x - this.pos.x, dz = p.pos.z - this.pos.z;
+    this.facing = facingFrom(dx, dz);
+  }
+
+  update(dt: number, near: boolean) {
+    this.t += dt;
+    this.bubble.visible = near && !this.game.talking;
+    if (this.bubble.visible) { this.bubble.position.y = (this.isDog ? 1.0 : 1.75) + Math.sin(this.t * 6) * 0.05; this.bubble.rotation.y = -this.facingAngle; }
+    let moving = false;
+    const wander = this.spec.wander ?? 0;
+    if (!this.game.talking && wander > 0) {
+      this.wanderT -= dt;
+      if (this.wanderT <= 0) {
+        if (this.dir.x || this.dir.z) { this.dir = { x: 0, z: 0 }; this.wanderT = 1 + this.game.rand() * 2.5; }
+        else {
+          // pick a direction that keeps us near home
+          const f = randomFacing(this.game.rand());
+          let dx = FACING_VEC[f][0], dz = FACING_VEC[f][1];
+          const hx = this.home.x - this.pos.x, hz = this.home.z - this.pos.z;
+          if (Math.hypot(hx, hz) > wander * 0.7) { if (Math.abs(hx) > Math.abs(hz)) { dx = Math.sign(hx); dz = 0; } else { dx = 0; dz = Math.sign(hz); } }
+          this.dir = { x: dx, z: dz };
+          this.facing = facingFrom(dx, dz);
+          this.wanderT = 0.5 + this.game.rand() * 1.2;
+        }
+      }
+      if (this.dir.x || this.dir.z) {
+        const speed = this.isDog ? 2.2 : 1.1;
+        const ox = this.pos.x, oz = this.pos.z;
+        const nx = this.pos.x + this.dir.x * speed * dt, nz = this.pos.z + this.dir.z * speed * dt;
+        // don't walk into the player, and stay within the wander radius
+        const p = this.game.player;
+        const blocked = Math.hypot(nx - p.pos.x, nz - p.pos.z) < 0.7 || Math.hypot(nx - this.home.x, nz - this.home.z) > wander;
+        if (!blocked) this.game.world.moveBox(this.pos, this.dir.x * speed * dt, this.dir.z * speed * dt, this.HW, this.HH);
+        const moved = Math.hypot(this.pos.x - ox, this.pos.z - oz);
+        if (moved < speed * dt * 0.3) this.wanderT = 0; else { moving = true; this.animT += moved * 9; }
+      }
+    }
+    this.animate(moving);
+    this.sync();
+  }
+
+  private animate(moving: boolean) {
+    const m = this.model;
+    const sw = moving ? Math.sin(this.animT) : 0;
+    if (this.isDog) {
+      m.legL.rotation.x = sw * 0.8; m.legR.rotation.x = -sw * 0.8; m.armL.rotation.x = -sw * 0.8; m.armR.rotation.x = sw * 0.8;
+      const tail = m.body.getObjectByName('tail'); if (tail) tail.rotation.z = Math.sin(this.t * 9) * 0.5;
+      m.body.position.y = moving ? Math.abs(Math.sin(this.animT)) * 0.05 : 0;
+      return;
+    }
+    m.legL.rotation.x = sw * 0.6; m.legR.rotation.x = -sw * 0.6;
+    m.body.position.y = moving ? Math.abs(Math.sin(this.animT)) * 0.03 : Math.sin(this.t * 2) * 0.008; // idle breathing
+    const id = this.spec.id;
+    if (id === 'elder') { m.armR.rotation.set(0.35, 0, 0.1); m.armL.rotation.set(0.15, 0, -0.1); m.body.rotation.x = 0.12; }
+    else if (id === 'bard') { m.armL.rotation.set(-1.35, -0.45, 0.0); m.armR.rotation.set(-1.25 + Math.sin(this.t * 7) * 0.1, 0.5, 0.0); // both hands in front, cradling / plucking the harp
+      m.head.rotation.z = Math.sin(this.t * 2) * 0.1; m.body.position.y += Math.abs(Math.sin(this.t * 2)) * 0.015; }
+    else if (id === 'granny') { m.armR.rotation.set(0.5 + Math.sin(this.t * 3) * 0.25, 0, 0.15); m.armL.rotation.set(0.2, 0, -0.1); m.body.rotation.x = 0.18; }
+    else if (id === 'farmer') { m.armR.rotation.set(moving ? -sw * 0.3 : -0.4 + Math.abs(Math.sin(this.t * 2.5)) * 0.8, 0, 0.1); m.armL.rotation.set(sw * 0.3, 0, -0.1); }
+    else if (id === 'kid') { m.armL.rotation.set(-sw * 0.6 - 0.1, 0, -0.35); m.armR.rotation.set(sw * 0.6 - 0.1, 0, 0.35); m.body.position.y += moving ? 0 : Math.abs(Math.sin(this.t * 4)) * 0.03; }
+    else if (id === 'shopkeeper') { m.armL.rotation.set(-1.0, 0, -0.3); m.armR.rotation.set(-1.0 + Math.sin(this.t * 1.5) * 0.1, 0, 0.3); }
+    else { m.armL.rotation.set(sw * 0.4, 0, -0.1); m.armR.rotation.set(-sw * 0.4, 0, 0.1); }
+  }
+
+  private sync() {
+    this.model.root.position.set(this.pos.x, this.game.world.surfaceAt(this.pos.x, this.pos.z), this.pos.z);
+    this.model.root.rotation.y = this.facingAngle;
   }
 }
 
@@ -569,16 +775,19 @@ export class Projectile {
     game.scene.add(this.mesh);
     this.sync();
   }
-  private sync() { this.mesh.position.set(this.pos.x, 0.6, this.pos.z); }
+  private y = 0;
+  private sync() { this.mesh.position.set(this.pos.x, this.y, this.pos.z); }
   update(dt: number) {
     if (!this.alive) return;
+    if (this.life === 0) this.y = this.game.world.surfaceAt(this.pos.x, this.pos.z) + 0.6;
     this.life += dt;
     this.pos.x += this.dir.x * this.speed * dt;
     this.pos.z += this.dir.z * this.speed * dt;
     this.sync();
     const w = this.game.world;
-    if (this.life > 3 || w.blocksProjectile(this.pos.x, this.pos.z)) {
-      this.game.spawnEffect(fxSpark(this.pos.x, 0.5, this.pos.z, 0.5));
+    const ground = w.heightAt(this.pos.x, this.pos.z);
+    if (this.life > 3 || w.blocksProjectile(this.pos.x, this.pos.z) || ground > this.y - 0.1 || ground < this.y - 1.4) {
+      this.game.spawnEffect(fxSpark(this.pos.x, this.y - ground - 0.1, this.pos.z, 0.5).at(this.pos.x, this.pos.z));
       this.destroy();
       return;
     }
@@ -586,7 +795,7 @@ export class Projectile {
     if (!p.dead && Math.hypot(p.pos.x - this.pos.x, p.pos.z - this.pos.z) < 0.45) {
       const res = this.game.tryHitPlayer(this.dmg, this.pos.x - this.dir.x, this.pos.z - this.dir.z, { projectile: true });
       if (res !== 'immune') {
-        if (res === 'blocked') this.game.spawnEffect(fxSpark(this.pos.x, 0.7, this.pos.z, 0.6));
+        if (res === 'blocked') this.game.spawnEffect(fxSpark(this.pos.x, 0.7, this.pos.z, 0.6).at(this.pos.x, this.pos.z));
         this.destroy();
       }
     }
@@ -609,7 +818,7 @@ export class Pickup {
     if (!this.alive) return;
     this.t += dt; this.life -= dt;
     if (this.life <= 0) { this.destroy(); return; }
-    this.mesh.position.y = 0.35 + Math.sin(this.t * 4) * 0.06;
+    this.mesh.position.y = this.game.world.surfaceAt(this.pos.x, this.pos.z) + 0.35 + Math.sin(this.t * 4) * 0.06;
     if (this.kind !== 'heart') this.mesh.rotation.y += dt * 3;
     this.mesh.visible = this.life > 3 || Math.floor(this.life * 10) % 2 === 0;
     const p = this.game.player;
@@ -626,7 +835,10 @@ export class Pickup {
 export class Effect {
   group = new THREE.Group();
   t = 0;
+  /** if set, the effect group is lifted to the terrain height at this point when spawned */
+  groundAt: Vec2 | null = null;
   constructor(public dur: number, private fn: (p: number, t: number, g: THREE.Group) => void) {}
+  at(x: number, z: number): this { this.groundAt = { x, z }; return this; }
   update(dt: number): boolean {
     this.t += dt;
     this.fn(Math.min(1, this.t / this.dur), this.t, this.group);
@@ -656,6 +868,52 @@ export function fxSpark(x: number, y: number, z: number, size = 1): Effect {
   });
   e.group.add(core);
   for (let i = 0; i < 4; i++) { const m = part(UNIT_BOX, whiteMat, [x, y, z], [0.08, 0.08, 0.08]); e.group.add(m); bits.push({ m, a: (i / 4) * Math.PI * 2 + 0.4 }); }
+  return e;
+}
+
+const waveMat = new THREE.MeshBasicMaterial({ color: 0x9fe6ff, transparent: true, opacity: 0.55, depthWrite: false, side: THREE.DoubleSide });
+const trailMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.7, depthWrite: false, side: THREE.DoubleSide });
+const dustMat = new THREE.MeshBasicMaterial({ color: 0xd9cfb0, transparent: true, opacity: 0.8, depthWrite: false });
+
+/** Charge attack VFX: an expanding ground ring, a fading blade-trail arc that follows the sword, and kicked-up dust. */
+export function fxSpinWave(player: { pos: Vec2; facingAngle: number; sweepCur: number; sweepR: number }, dur: number, radius: number): Effect {
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.85, 1, 40).rotateX(-Math.PI / 2), waveMat.clone());
+  ring.position.y = 0.05;
+  // Blade trail: an arc of ~75 degrees behind the sword tip. RingGeometry's theta starts on local +x; after
+  // rotateX(-90deg) local +y becomes world -z, so a ring point at theta sits at world angle (atan2(x,z)) = theta + 90deg.
+  const TRAIL_ARC = 1.3;
+  const trail = new THREE.Mesh(new THREE.RingGeometry(0.62, 1, 16, 1, -TRAIL_ARC, TRAIL_ARC).rotateX(-Math.PI / 2), trailMat.clone());
+  trail.position.y = 0.65;
+  const dust: { m: THREE.Mesh; a: number; s: number }[] = [];
+  const e = new Effect(dur + 0.25, (_p, t, g) => {
+    const { x, z } = player.pos;
+    g.position.set(x, g.position.y, z);
+    // ground shockwave: expands during the spin, then fades
+    const rp = Math.min(1, t / dur);
+    const rr = 0.4 + easeOutCubic(rp) * radius;
+    ring.scale.set(rr, 1, rr);
+    (ring.material as THREE.MeshBasicMaterial).opacity = 0.55 * (1 - Math.max(0, (t - dur * 0.5) / (dur * 0.5 + 0.25)));
+    // (mirrored model) the sword's world angle increases during the spin, so the trail occupies [tip - TRAIL_ARC, tip]
+    trail.visible = t < dur;
+    if (trail.visible) {
+      const tipA = player.facingAngle - player.sweepCur;
+      trail.rotation.y = tipA - Math.PI / 2;
+      trail.scale.set(player.sweepR, 1, player.sweepR);
+      (trail.material as THREE.MeshBasicMaterial).opacity = 0.7 * Math.sin(rp * Math.PI) ** 0.5;
+    }
+    for (const d of dust) {
+      const r = 0.45 + easeOutCubic(rp) * radius * 0.85;
+      d.m.position.set(Math.cos(d.a) * r, 0.1 + Math.sin(rp * Math.PI) * d.s * 1.2, Math.sin(d.a) * r * 0.7);
+      const sc = (1 - rp) * d.s;
+      d.m.scale.set(sc, sc, sc);
+    }
+  });
+  e.group.add(ring, trail);
+  for (let i = 0; i < 10; i++) {
+    const m = part(UNIT_SPHERE, dustMat, [0, 0, 0], [0.2, 0.2, 0.2]);
+    e.group.add(m);
+    dust.push({ m, a: (i / 10) * Math.PI * 2 + 0.2, s: 0.18 + (i % 3) * 0.06 });
+  }
   return e;
 }
 
