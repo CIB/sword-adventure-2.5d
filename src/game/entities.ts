@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { FACING_ANGLE, FACING_VEC, MAX_HP, inArc, lerp, normAngle, facingFrom, facingDelta, type Facing } from './constants';
+import { FACING_ANGLE, FACING_VEC, MAX_HP, inArc, lerp, normAngle, facingFrom, facingDelta, randomFacing, FACING_HALF_STEP, type Facing } from './constants';
 import type { AudioEngine } from './audio';
 import type { Input } from './input';
 import { ATTACK_KEYS, SHIELD_KEYS } from './input';
@@ -153,9 +153,9 @@ export class Player {
           const len = Math.hypot(mx, mz);
           const dx = (mx / len) * speed * dt, dz = (mz / len) * speed * dt;
           this.game.world.moveBox(this.pos, dx, dz, this.HW, this.HH, speed * dt);
-          // 8-way facing: turn to the nearest 45° heading of the (world-space) move vector,
-          // with a little hysteresis so a heading exactly between two facings doesn't flicker
-          if (facingDelta(this.facing, mx, mz) > Math.PI / 8 + 0.05) this.facing = facingFrom(mx, mz);
+          // turn to the nearest allowed heading of the (world-space) move vector, with a little
+          // hysteresis so a heading exactly between two facings (e.g. a diagonal) doesn't flicker
+          if (facingDelta(this.facing, mx, mz) > FACING_HALF_STEP + 0.05) this.facing = facingFrom(mx, mz);
           moving = true;
           this.animT += dt * speed * 2.6;
         }
@@ -372,7 +372,7 @@ export class Enemy {
     this.st = STATS[kind];
     this.hp = this.st.hp;
     this.model = buildSoldier(kind);
-    this.facing = Math.floor(game.rand() * 8) as Facing;
+    this.facing = randomFacing(game.rand());
     this.pickPatrolDir();
     game.scene.add(this.model.root);
     this.sync();
@@ -381,13 +381,13 @@ export class Enemy {
   get melee() { return this.kind === 'sword' || this.kind === 'spear'; }
 
   private pickPatrolDir() {
-    const f = Math.floor(this.game.rand() * 8) as Facing;
+    const f = randomFacing(this.game.rand());
     this.dir = { x: FACING_VEC[f][0], z: FACING_VEC[f][1] };
   }
 
   private faceToward(dx: number, dz: number, hyst = 1) {
     // keep the current heading while it's within (hyst × half a step) of the target direction
-    if (facingDelta(this.facing, dx, dz) <= (Math.PI / 8) * hyst + 1e-6) return;
+    if (facingDelta(this.facing, dx, dz) <= FACING_HALF_STEP * hyst + 1e-6) return;
     this.facing = facingFrom(dx, dz);
   }
 
@@ -706,7 +706,7 @@ export class Npc {
         if (this.dir.x || this.dir.z) { this.dir = { x: 0, z: 0 }; this.wanderT = 1 + this.game.rand() * 2.5; }
         else {
           // pick a direction that keeps us near home
-          const f = Math.floor(this.game.rand() * 8) as Facing;
+          const f = randomFacing(this.game.rand());
           let dx = FACING_VEC[f][0], dz = FACING_VEC[f][1];
           const hx = this.home.x - this.pos.x, hz = this.home.z - this.pos.z;
           if (Math.hypot(hx, hz) > wander * 0.7) { if (Math.abs(hx) > Math.abs(hz)) { dx = Math.sign(hx); dz = 0; } else { dx = 0; dz = Math.sign(hz); } }

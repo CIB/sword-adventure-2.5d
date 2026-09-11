@@ -34,9 +34,21 @@ export const FACING_VEC: [number, number][] = FACING_ANGLE.map(a => {
   const r = (v: number) => Math.abs(v) < 1e-9 ? 0 : Math.abs(Math.abs(v) - 1) < 1e-9 ? Math.sign(v) : v;
   return [r(Math.sin(a)), r(Math.cos(a))] as [number, number];
 });
-/** nearest of the 8 facings for a direction vector */
+/**
+ * How finely characters (player, NPCs, enemies) may turn: 4 = classic Zelda-style cardinal lock,
+ * 8 = 45° headings. The facing representation is always 8-way; this only restricts which values get picked.
+ */
+export const FACING_DIRS: 4 | 8 = 4;
+/** half the angular width of one facing sector — the turn threshold used for hysteresis */
+export const FACING_HALF_STEP = Math.PI / FACING_DIRS;
+/** nearest allowed facing for a direction vector */
 export function facingFrom(dx: number, dz: number): Facing {
-  return ((Math.round(Math.atan2(dx, dz) / (Math.PI / 4)) % 8) + 8) % 8 as Facing;
+  const step = (Math.PI * 2) / FACING_DIRS, per = 8 / FACING_DIRS;
+  return ((Math.round(Math.atan2(dx, dz) / step) * per % 8) + 8) % 8 as Facing;
+}
+/** a random allowed facing */
+export function randomFacing(rand01: number): Facing {
+  return (Math.floor(rand01 * FACING_DIRS) * (8 / FACING_DIRS)) as Facing;
 }
 /** angular distance (0..π) between a facing and a direction vector */
 export function facingDelta(f: Facing, dx: number, dz: number): number {
