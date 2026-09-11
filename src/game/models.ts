@@ -124,7 +124,7 @@ export function buildHeroine(): Humanoid {
   const mkLeg = (x: number) => {
     const leg = new THREE.Group();
     leg.position.set(x, 0.34, 0);
-    leg.add(part(UNIT_BOX, m.skin, [0, -0.09, 0], [0.13, 0.18, 0.14]));
+    leg.add(part(UNIT_BOX, m.skin, [0, -0.08, 0], [0.13, 0.2, 0.14]));
     leg.add(part(UNIT_BOX, m.boots, [0, -0.24, 0.0], [0.15, 0.14, 0.16]));
     leg.add(part(UNIT_BOX, m.boots, [0, -0.29, 0.03], [0.16, 0.1, 0.22]));
     return leg;
@@ -132,15 +132,12 @@ export function buildHeroine(): Humanoid {
   const legL = mkLeg(0.11), legR = mkLeg(-0.11);
   root.add(legL, legR);
 
-  // cuirass with a lighter chest plate, gold trim, belt and a short armoured skirt
-  body.add(part(UNIT_BOX, m.plate, [0, 0.6, 0], [0.52, 0.42, 0.32]));
+  // one-piece cuirass reaching just past the waist; bare hips/legs below
+  body.add(part(UNIT_BOX, m.plate, [0, 0.6, 0], [0.52, 0.5, 0.32]));
   body.add(part(UNIT_BOX, m.plateL, [0, 0.66, 0.15], [0.34, 0.24, 0.04]));
   body.add(part(UNIT_BOX, m.gold, [0, 0.79, 0], [0.54, 0.04, 0.34]));
-  body.add(part(UNIT_BOX, m.plateD, [0, 0.38, 0], [0.58, 0.12, 0.38]));
-  body.add(part(UNIT_BOX, m.belt, [0, 0.47, 0], [0.54, 0.06, 0.34]));
-  body.add(part(UNIT_BOX, m.gold, [0, 0.47, 0.17], [0.1, 0.06, 0.02]));
-  body.add(part(UNIT_BOX, m.skin, [0, 0.82, 0], [0.16, 0.08, 0.14])); // neck
-
+  body.add(part(UNIT_BOX, m.plateD, [0, 0.36, 0], [0.54, 0.04, 0.34]));   // lower rim
+  body.add(part(UNIT_BOX, m.skin, [0, 0.82, 0], [0.16, 0.08, 0.14]));     // neck
   // arms: pauldron + plate sleeve, bare forearm, gauntlet
   const mkArm = (x: number) => {
     const arm = new THREE.Group();
@@ -178,14 +175,13 @@ export function buildHeroine(): Humanoid {
   head.add(part(UNIT_BOX, m.eye, [-0.11, -0.05, 0.24], [0.07, 0.09, 0.04]));
   head.add(part(UNIT_BOX, m.eye, [0.11, -0.05, 0.24], [0.07, 0.09, 0.04]));
   head.add(part(UNIT_BOX, m.mouth, [0, -0.16, 0.25], [0.08, 0.02, 0.02]));
-  head.add(part(UNIT_SPHERE, m.plate, [0, 0.06, -0.01], [0.7, 0.5, 0.62]));          // dome
-  head.add(part(UNIT_BOX, m.plate, [0, -0.02, 0.22], [0.66, 0.1, 0.2]));            // brow / brim, just above the eyes
-  head.add(part(UNIT_BOX, m.plate, [-0.3, -0.1, 0.02], [0.1, 0.24, 0.36]));          // cheek guards
-  head.add(part(UNIT_BOX, m.plate, [0.3, -0.1, 0.02], [0.1, 0.24, 0.36]));
-  head.add(part(UNIT_BOX, m.plateD, [0, -0.06, 0.29], [0.06, 0.12, 0.03]));         // small nasal
-  head.add(part(UNIT_BOX, m.hair, [-0.26, -0.14, 0.12], [0.08, 0.26, 0.2]));         // hair at the sides, below the cheek guards
-  head.add(part(UNIT_BOX, m.hair, [0.26, -0.14, 0.12], [0.08, 0.26, 0.2]));
-  head.add(part(UNIT_BOX, m.hair, [0, -0.12, -0.26], [0.5, 0.3, 0.12]));            // hair at the back
+  head.add(part(UNIT_HEMI, m.plate, [0, 0.04, -0.01], [0.7, 0.42, 0.62]));            // dome (upper half only)
+  head.add(part(UNIT_BOX, m.plate, [0, 0.04, 0.2], [0.68, 0.12, 0.22]));              // brow band, resting just above the eyes
+  head.add(part(UNIT_BOX, m.plate, [-0.31, -0.02, -0.04], [0.1, 0.22, 0.32]));         // short cheek guards (ear level)
+  head.add(part(UNIT_BOX, m.plate, [0.31, -0.02, -0.04], [0.1, 0.22, 0.32]));
+  head.add(part(UNIT_BOX, m.hair, [-0.27, -0.16, 0.1], [0.08, 0.22, 0.2]));           // hair spilling out at the sides
+  head.add(part(UNIT_BOX, m.hair, [0.27, -0.16, 0.1], [0.08, 0.22, 0.2]));
+  head.add(part(UNIT_BOX, m.hair, [0, -0.1, -0.26], [0.5, 0.34, 0.12]));              // hair at the back
 
   const ponytail = new THREE.Group();
   ponytail.position.set(0, -0.08, -0.3);
