@@ -53,7 +53,6 @@ export default function App() {
   const [muted, setMuted] = useState(false);
   const [stats, setStats] = useState({ kills: 0, rupees: 0 });
   const [dialogue, setDialogue] = useState<DialogueView | null>(null);
-  const [view, setView] = useState(0);
   const scale = useScale();
 
   useEffect(() => {
@@ -68,7 +67,6 @@ export default function App() {
     };
     game.onMute = setMuted;
     game.onDialogue = setDialogue;
-    game.onView = setView;
     game.start();
     return () => {
       game.dispose();
@@ -133,14 +131,6 @@ export default function App() {
         )}
 
         {muted && <div className="absolute right-2 bottom-2 text-[9px] text-gray-300 bg-black/50 px-2 py-1">MUTED</div>}
-
-        {phase === 'playing' && !dialogue && (
-          <div className="absolute right-2 top-2 flex items-center gap-1 text-[9px]">
-            <button className="bg-black/55 hover:bg-black/80 text-gray-100 px-2 py-1 border border-white/20 cursor-pointer" title="Rotate view left (Q)" onClick={() => gameRef.current?.rotateView(-1)}>⟲</button>
-            <div className="bg-black/55 text-amber-200 px-2 py-1 border border-white/20 tabular-nums" title="Camera heading">{['N', 'E', 'S', 'W'][view]}</div>
-            <button className="bg-black/55 hover:bg-black/80 text-gray-100 px-2 py-1 border border-white/20 cursor-pointer" title="Rotate view right (R)" onClick={() => gameRef.current?.rotateView(1)}>⟳</button>
-          </div>
-        )}
       </div>
       <div className="mt-3 text-[9px] md:text-[10px] text-gray-500 tracking-wider text-center px-2">
         WASD MOVE · J SWORD (HOLD FOR SPIN ATTACK) · K SHIELD · E TALK · Q/R ROTATE VIEW · ENTER PAUSE · M MUTE
