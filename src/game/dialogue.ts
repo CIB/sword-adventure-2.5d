@@ -59,7 +59,7 @@ export const NPC_TALK: Record<string, Talker> = {
       pages: [
         'You truly did it! ' + q.kills + ' knights sent back to rest. The road will breathe easier.',
         'Take this for your trouble - it was meant for the Queen\'s tithe, but she has no more use for coin.',
-        'If you would go further... the Crown was carried east, over the great river. Speak with the bard. He knows the old songs.',
+        'If you would go further... the Crown was carried east, over the great river. Speak with Marigold, the singer by the well. She knows the old songs.',
       ],
       onEnd: (qs, ctx) => { qs.shells = 'done'; ctx.reward(30); ctx.heal(); if (qs.bard === 'hidden') qs.bard = 'offered'; },
     } : {
@@ -71,27 +71,27 @@ export const NPC_TALK: Record<string, Talker> = {
 
   // ------------------------------------------------------------------ bard
   bard: (q, ctx) => {
-    const name = 'FINCH THE BARD', color = '#8fd6ff';
+    const name = 'MARIGOLD', color = '#ffb0c8';
     if (q.bard === 'hidden') return {
       name, color,
-      pages: ['La la laaa~ Oh! A listener! I\'m Finch. I know every song sung between here and the sea.', 'Most of them are about lost things. Sad trade, memory. Come back when you\'ve earned a story of your own.'],
+      pages: ['La la laaa~ Oh! A listener! I\'m Marigold. I know every song sung between here and the sea.', 'Most of them are about lost things. Sad trade, memory. Come back when you\'ve earned a story of your own.'],
     };
     if (q.bard === 'offered' || q.bard === 'active') {
       if (q.bard === 'offered') q.bard = 'active';
       if (ctx.rupees >= SONG_PRICE) return {
         name, color,
         pages: [
-          'The Song of the Amber Crown? For ' + SONG_PRICE + ' rupees I\'ll sing it true. ...Deal? Splendid!',
+          'The Ballad of the Amber Crown? For ' + SONG_PRICE + ' rupees I\'ll sing it true. ...Deal? Wonderful!',
           '~ Beneath the willow where the river bends, a bridge of oak the water tends... ~',
           '~ Across it marched the Queen\'s own gold, by hands of a knight whose heart grew cold... ~',
           '~ In a hollow of stone at the world\'s east edge, the Crown still burns on a mossy ledge... ~',
-          'The east cliffs, past the second bridge. That\'s where the songs say the Crown was hidden. Nobody who went there came back to correct me.',
+          'The east cliffs, past the second bridge. That\'s where the songs say the Crown was hidden. Nobody who went there came back to correct the words.',
         ],
         onEnd: (qs, c) => { if (c.spendRupees(SONG_PRICE)) { qs.bard = 'done'; qs.rupeesSpent += SONG_PRICE; } },
       };
       return { name, color, pages: ['A story worth hearing is worth ' + SONG_PRICE + ' rupees. You\'ve ' + ctx.rupees + '. Bushes in the meadow hide a coin or two, they say.'] };
     }
-    return { name, color, pages: ['~ On a mossy ledge the Crown still burns... ~', 'Bring it home, Aria, and I\'ll write a new verse with your name in it.'] };
+    return { name, color, pages: ['~ On a mossy ledge the Crown still burns... ~', 'Bring it home, Aria, and I\'ll write a new verse with your name in it. Promise.'] };
   },
 
   // ------------------------------------------------------------------ granny

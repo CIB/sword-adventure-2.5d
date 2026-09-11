@@ -717,9 +717,10 @@ export function buildProp(p: PropSpec): THREE.Group {
 // ---------------------------------------------------------------- villagers
 export interface VillagerLook {
   skin: string; hair: string; top: string; bottom: string; accent?: string;
-  hat?: 'none' | 'straw' | 'cap' | 'bandana' | 'kerchief' | 'feather';
+  hat?: 'none' | 'straw' | 'cap' | 'bandana' | 'kerchief' | 'feather' | 'flower';
   hairStyle?: 'short' | 'long' | 'bald' | 'bun' | 'beard';
-  scale?: number; kid?: boolean; item?: 'cane' | 'lute' | 'hoe' | 'broom' | 'basket';
+  scale?: number; kid?: boolean; item?: 'cane' | 'lute' | 'harp' | 'hoe' | 'broom' | 'basket';
+  dress?: boolean; sash?: string;
 }
 
 export const VILLAGER_LOOKS: Record<string, VillagerLook> = {
@@ -727,7 +728,7 @@ export const VILLAGER_LOOKS: Record<string, VillagerLook> = {
   shopkeeper: { skin: '#f3bd92', hair: '#4a2c14', top: '#e8e8e8', bottom: '#c82828', accent: '#f2c14e', hat: 'cap', hairStyle: 'short' },
   kid: { skin: '#f6c8a0', hair: '#f5cf46', top: '#ff8a3d', bottom: '#3a5fd0', hat: 'none', hairStyle: 'short', kid: true },
   granny: { skin: '#f0c4a0', hair: '#d8d8e0', top: '#2f8f5a', bottom: '#7a4f2a', hat: 'kerchief', hairStyle: 'bun', item: 'broom' },
-  bard: { skin: '#f3bd92', hair: '#c8432c', top: '#3a9ad0', bottom: '#7a2a80', accent: '#f2c14e', hat: 'feather', hairStyle: 'long', item: 'lute' },
+  bard: { skin: '#f6c8a0', hair: '#e0703a', top: '#6f86d6', bottom: '#6f86d6', accent: '#f2e6b0', hat: 'flower', hairStyle: 'long', item: 'harp', dress: true, sash: '#e85a9a' },
   farmer: { skin: '#e8a878', hair: '#4a2c14', top: '#8ad34a', bottom: '#6b4a2c', hat: 'straw', hairStyle: 'short', item: 'hoe' },
   innkeeper: { skin: '#f3bd92', hair: '#7a3a1a', top: '#c8862a', bottom: '#5a3a2c', accent: '#f6f1e6', hat: 'none', hairStyle: 'bun' },
   smith: { skin: '#d89868', hair: '#2a1a10', top: '#5a5a66', bottom: '#3a3a3a', accent: '#8a5a2b', hat: 'bandana', hairStyle: 'beard' },
@@ -748,11 +749,21 @@ export function buildVillager(look: VillagerLook): Humanoid {
   const legL = makeLeg(0.11, m.bottom, m.boot), legR = makeLeg(-0.11, m.bottom, m.boot);
   root.add(legL, legR);
   body.add(part(UNIT_BOX, m.top, [0, 0.58, 0], [0.5, 0.42, 0.3]));
-  body.add(part(UNIT_BOX, m.bottom, [0, 0.37, 0], [0.54, 0.12, 0.34]));
-  body.add(part(UNIT_BOX, m.acc, [0, 0.47, 0], [0.52, 0.05, 0.32]));
+  if (look.dress) {
+    // long flared skirt with a light hem band and a sash tied at the back
+    body.add(part(UNIT_BOX, m.bottom, [0, 0.3, 0], [0.6, 0.26, 0.4]));
+    body.add(part(UNIT_BOX, m.bottom, [0, 0.14, 0], [0.66, 0.1, 0.46]));
+    body.add(part(UNIT_BOX, m.acc, [0, 0.09, 0], [0.68, 0.05, 0.48]));
+    body.add(part(UNIT_BOX, m.acc, [0, 0.76, 0.14], [0.3, 0.06, 0.04])); // collar
+    if (look.sash) { const sm = toon(look.sash); body.add(part(UNIT_BOX, sm, [0, 0.47, 0], [0.54, 0.07, 0.34])); body.add(part(UNIT_BOX, sm, [0, 0.36, -0.2], [0.26, 0.28, 0.08])); body.add(part(UNIT_BOX, sm, [-0.1, 0.24, -0.22], [0.08, 0.28, 0.05])); body.add(part(UNIT_BOX, sm, [0.1, 0.24, -0.22], [0.08, 0.28, 0.05])); }
+  } else {
+    body.add(part(UNIT_BOX, m.bottom, [0, 0.37, 0], [0.54, 0.12, 0.34]));
+    body.add(part(UNIT_BOX, m.acc, [0, 0.47, 0], [0.52, 0.05, 0.32]));
+  }
   body.add(part(UNIT_BOX, m.skin, [0, 0.8, 0], [0.16, 0.08, 0.14]));
-  const { arm: armR, hand: handR } = makeArm(-0.3, m.top, m.skin);
-  const { arm: armL, hand: handL } = makeArm(0.3, m.top, m.skin);
+  const { arm: armR, hand: handR } = makeArm(-0.3, look.dress ? m.skin : m.top, m.skin);
+  const { arm: armL, hand: handL } = makeArm(0.3, look.dress ? m.skin : m.top, m.skin);
+  if (look.dress) { armR.add(part(UNIT_BOX, m.top, [0, 0.02, 0], [0.16, 0.14, 0.18])); armL.add(part(UNIT_BOX, m.top, [0, 0.02, 0], [0.16, 0.14, 0.18])); } // short puff sleeves
   body.add(armR, armL);
   const head = new THREE.Group(); head.position.set(0, 1.0, 0); body.add(head);
   head.add(part(UNIT_SPHERE, m.skin, [0, 0, 0], [0.64, 0.5, 0.52]));
@@ -772,11 +783,28 @@ export function buildVillager(look: VillagerLook): Humanoid {
     case 'kerchief': head.add(part(UNIT_HEMI, toon('#e04545'), [0, 0.04, -0.02], [0.72, 0.46, 0.62])); head.add(part(UNIT_BOX, toon('#e04545'), [0, -0.1, -0.3], [0.3, 0.3, 0.1])); break;
     case 'bandana': head.add(part(UNIT_CYL, toon('#e04545'), [0, 0.12, 0], [0.7, 0.1, 0.6])); break;
     case 'feather': head.add(part(UNIT_HEMI, toon('#2f8f5a'), [0, 0.1, 0], [0.66, 0.42, 0.58])); head.add(part(UNIT_BOX, toon('#f6f1e6'), [0.24, 0.32, -0.08], [0.06, 0.4, 0.12]).rotateZ(-0.5)); break;
+    case 'flower': { // red hibiscus over the right ear
+      const red = toon('#e83a3a'), yel = toon('#f8d848');
+      for (const a of [0, 1.26, 2.51, 3.77, 5.03]) head.add(part(UNIT_SPHERE, red, [0.3 + Math.cos(a) * 0.0, 0.06 + Math.sin(a) * 0.09, 0.02 + Math.cos(a) * 0.09], [0.06, 0.11, 0.11]));
+      head.add(part(UNIT_SPHERE, yel, [0.34, 0.06, 0.02], [0.05, 0.06, 0.06]));
+      head.add(part(UNIT_BOX, toon('#2f8f5a'), [0.3, -0.02, -0.08], [0.04, 0.06, 0.14]));
+      break;
+    }
   }
   // held item
   switch (look.item) {
     case 'cane': handR.add(part(UNIT_CYL, m.wood, [0, -0.25, 0.05], [0.05, 0.75, 0.05])); handR.add(part(UNIT_SPHERE, toon('#f2c14e'), [0, 0.1, 0.05], [0.12, 0.12, 0.12])); break;
     case 'lute': { const l = new THREE.Group(); l.position.set(0.3, 0.1, 0.22); l.rotation.set(0.3, 0, -0.9); l.add(part(UNIT_SPHERE, m.wood, [0, -0.1, 0], [0.34, 0.42, 0.12])); l.add(part(UNIT_BOX, toon('#5a3a1e'), [0, 0.28, 0.02], [0.08, 0.5, 0.05])); l.add(part(UNIT_CYL, toon('#2a1a10'), [0, -0.08, 0.06], [0.12, 0.02, 0.12]).rotateX(Math.PI / 2)); handL.add(l); break; }
+    case 'harp': { // small lyre-harp cradled in the left arm
+      const h = new THREE.Group(); h.position.set(0.26, 0.12, 0.2); h.rotation.set(0.2, 0.3, -0.5);
+      h.add(part(UNIT_BOX, m.wood, [0, -0.22, 0], [0.34, 0.08, 0.06]));                       // base
+      h.add(part(UNIT_BOX, m.wood, [-0.15, 0.02, 0], [0.06, 0.5, 0.06]));                       // left post
+      h.add(part(UNIT_BOX, m.wood, [0.15, 0.06, 0], [0.06, 0.58, 0.06]).rotateZ(-0.15));        // right post (curved)
+      h.add(part(UNIT_BOX, m.wood, [0, 0.28, 0], [0.34, 0.06, 0.06]));                          // yoke
+      for (const x of [-0.09, -0.03, 0.03, 0.09]) h.add(part(UNIT_BOX, toon('#f2c14e'), [x, 0.03, 0], [0.012, 0.44, 0.012]));
+      handL.add(h);
+      break;
+    }
     case 'hoe': handR.add(part(UNIT_CYL, m.wood, [0, 0.2, 0.05], [0.05, 1.3, 0.05])); handR.add(part(UNIT_BOX, toon('#8e8e88'), [0, 0.82, 0.16], [0.06, 0.06, 0.3])); break;
     case 'broom': handR.add(part(UNIT_CYL, m.wood, [0, -0.1, 0.05], [0.05, 1.1, 0.05])); handR.add(part(UNIT_CONE, toon('#e8c86a'), [0, -0.68, 0.05], [0.24, 0.3, 0.16]).rotateX(Math.PI)); break;
     case 'basket': handL.add(part(UNIT_CYL, toon('#c48b4f'), [0, -0.08, 0.1], [0.34, 0.24, 0.34])); break;
