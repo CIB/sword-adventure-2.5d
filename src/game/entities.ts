@@ -153,9 +153,12 @@ export class Player {
           const len = Math.hypot(mx, mz);
           const dx = (mx / len) * speed * dt, dz = (mz / len) * speed * dt;
           this.game.world.moveBox(this.pos, dx, dz, this.HW, this.HH, speed * dt);
+          // facing: keep the current one while it still has a component along the movement (diagonals),
+          // otherwise turn to the dominant axis of the (world-space) move vector
           const fv = FACING_VEC[this.facing];
-          const keep = (fv[0] !== 0 && mx === fv[0]) || (fv[1] !== 0 && mz === fv[1]);
-          if (!keep) this.facing = mx !== 0 ? (mx > 0 ? 1 : 3) : mz > 0 ? 0 : 2;
+          const along = fv[0] * mx + fv[1] * mz;
+          const keep = along > 1e-6 && Math.abs(along) >= Math.max(Math.abs(mx), Math.abs(mz)) * 0.7 - 1e-6;
+          if (!keep) this.facing = Math.abs(mx) > Math.abs(mz) + 1e-6 ? (mx > 0 ? 1 : 3) : Math.abs(mz) > Math.abs(mx) + 1e-6 ? (mz > 0 ? 0 : 2) : (along > 0 ? this.facing : (mx > 0 ? 1 : 3));
           moving = true;
           this.animT += dt * speed * 2.6;
         }

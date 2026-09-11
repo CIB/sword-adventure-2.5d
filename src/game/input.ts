@@ -37,21 +37,19 @@ export class Input {
   justPressed(codes: string[]): boolean { return codes.some((c) => this.pressed.has(c)); }
   endFrame() { this.pressed.clear(); }
 
-  /** Camera-relative -> world mapping (set by the game when the view is rotated): world = R * screen */
-  viewQuarter = 0; // 0..3 quarter turns of the camera
+  /** Camera yaw in radians (set by the game when the view is rotated); movement keys are screen-relative */
+  viewAngle = 0;
   private get rawX(): number { return (this.down(['KeyD', 'ArrowRight']) ? 1 : 0) - (this.down(['KeyA', 'ArrowLeft']) ? 1 : 0); }
   private get rawZ(): number { return (this.down(['KeyS', 'ArrowDown']) ? 1 : 0) - (this.down(['KeyW', 'ArrowUp']) ? 1 : 0); }
   /** movement in world axes, so "up" on the keyboard is always "up" on the screen */
-  get moveX(): number { const [x] = rotateQuarter(this.rawX, this.rawZ, this.viewQuarter); return x; }
-  get moveZ(): number { const [, z] = rotateQuarter(this.rawX, this.rawZ, this.viewQuarter); return z; }
+  get moveX(): number { const [x] = rotateView(this.rawX, this.rawZ, this.viewAngle); return x; }
+  get moveZ(): number { const [, z] = rotateView(this.rawX, this.rawZ, this.viewAngle); return z; }
 }
 
-/** rotate a screen-space (x right, z down) vector into world space for a camera turned q quarter-turns */
-export function rotateQuarter(x: number, z: number, q: number): [number, number] {
-  switch (((q % 4) + 4) % 4) {
-    case 1: return [z, -x];
-    case 2: return [-x, -z];
-    case 3: return [-z, x];
-    default: return [x, z];
-  }
+/** rotate a screen-space (x right, z down) vector into world space for a camera yawed by `a` radians (about +Y) */
+export function rotateView(x: number, z: number, a: number): [number, number] {
+  const c = Math.cos(a), s = Math.sin(a);
+  // screen-up (0,-1) maps to world (-sin a, 0, -cos a): same rotation as camera.up in game.ts
+  const wx = x * c + z * s, wz = -x * s + z * c;
+  return [Math.abs(wx) < 1e-9 ? 0 : wx, Math.abs(wz) < 1e-9 ? 0 : wz];
 }
