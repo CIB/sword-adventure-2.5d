@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import {
-  VIEW_W, VIEW_H, VIEW_TILES_X, VIEW_TILES_Y, CAM_HEIGHT, CAM_PITCH, MAP_W, MAP_H, PX_PER_TILE, MAX_HP,
+  VIEW_W, VIEW_H, VIEW_TILES_X, VIEW_TILES_Y, CAM_HEIGHT, SHEAR, MAP_W, MAP_H, PX_PER_TILE, MAX_HP,
   Tile, RNG, inArc, FACING_VEC, clamp,
 } from './constants';
 import { World, type EnemyKind, type Vec2 } from './world';
@@ -100,18 +100,19 @@ export class Game implements GameCtx {
       uniforms: {
         tDiffuse: { value: this.rt.texture }, tDepth: { value: depthTex },
         texel: { value: new THREE.Vector2(1 / VIEW_W, 1 / VIEW_H) },
-        camNear: { value: 1 }, camFar: { value: 200 }, threshold: { value: 0.22 },
+        camNear: { value: 1 }, camFar: { value: 100 }, threshold: { value: 0.16 },
       },
       vertexShader: POST_VS, fragmentShader: POST_FS, depthTest: false, depthWrite: false,
     });
     this.postScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), postMat));
 
-    // Tilted orthographic camera (classic 3/4 view): x stays 1:1 with tiles, the ground is foreshortened by
-    // sin(pitch) so we widen the vertical frustum to keep the same number of visible rows.
-    const vh = VIEW_TILES_Y * Math.sin(CAM_PITCH);
-    this.camera = new THREE.OrthographicCamera(-VIEW_TILES_X / 2, VIEW_TILES_X / 2, vh / 2, -vh / 2, 1, 200);
-    this.camera.up.set(0, 1, 0);
+    // Top-down orthographic camera with an oblique shear: ground stays 1:1, fronts of objects become visible.
+    this.camera = new THREE.OrthographicCamera(-VIEW_TILES_X / 2, VIEW_TILES_X / 2, VIEW_TILES_Y / 2, -VIEW_TILES_Y / 2, 1, 100);
+    this.camera.up.set(0, 0, -1);
     this.camera.updateProjectionMatrix();
+    const shear = new THREE.Matrix4().set(1, 0, 0, 0, 0, 1, SHEAR, SHEAR * CAM_HEIGHT, 0, 0, 1, 0, 0, 0, 0, 1);
+    this.camera.projectionMatrix.multiply(shear);
+    this.camera.projectionMatrixInverse.copy(this.camera.projectionMatrix).invert();
 
     // lights
     this.scene.add(new THREE.AmbientLight(0xffffff, 1.15));
@@ -134,15 +135,16 @@ export class Game implements GameCtx {
   // ------------------------------------------------------------------ world building
   private buildStatic() {
     const w = this.world;
-    // heightmapped ground; lit (toon) so slopes read as shading, like the characters
-    const ground = new THREE.Mesh(w.createGroundGeometry(), new THREE.MeshToonMaterial({ map: w.createGroundTexture(), gradientMap: getGradientMap() }));
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(MAP_W, MAP_H), new THREE.MeshBasicMaterial({ map: w.createGroundTexture() }));
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.set(MAP_W / 2, 0, MAP_H / 2);
     this.scene.add(ground);
 
     // animated water overlay
     const quads: THREE.BufferGeometry[] = [];
     for (let z = 0; z < w.h; z++) for (let x = 0; x < w.w; x++) {
       if (w.tile(x, z) !== Tile.Water) continue;
-      const g = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2).translate(x + 0.5, w.tileH(x, z) + 0.1, z + 0.5);
+      const g = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2).translate(x + 0.5, 0.012, z + 0.5);
       const pos = g.attributes.position, uv = g.attributes.uv;
       for (let i = 0; i < pos.count; i++) uv.setXY(i, pos.getX(i) / 2, -pos.getZ(i) / 2);
       quads.push(g);
@@ -152,29 +154,41 @@ export class Game implements GameCtx {
       this.scene.add(water);
     }
 
+    // cliffs (instanced boxes: grass texture on top, rock texture on sides)
+    const cliffs: [number, number][] = [];
+    for (let z = 0; z < w.h; z++) for (let x = 0; x < w.w; x++) if (w.tile(x, z) === Tile.Cliff) cliffs.push([x, z]);
+    if (cliffs.length) {
+      const side = new THREE.MeshToonMaterial({ map: w.createCliffSideTexture(), gradientMap: getGradientMap() });
+      const top = new THREE.MeshBasicMaterial({ map: w.createGrassTileTexture() });
+      const inst = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), [side, side, top, top, side, side], cliffs.length);
+      const m = new THREE.Matrix4();
+      cliffs.forEach(([x, z], i) => { m.makeTranslation(x + 0.5, 0.5, z + 0.5); inst.setMatrixAt(i, m); });
+      inst.instanceMatrix.needsUpdate = true;
+      this.scene.add(inst);
+    }
+
     for (const o of buildTrees(w.trees)) this.scene.add(o);
     for (const b of w.bushes) {
       const mesh = buildBush();
-      mesh.position.set(b.tx + 0.5, w.tileH(b.tx, b.tz), b.tz + 0.5);
+      mesh.position.set(b.tx + 0.5, 0, b.tz + 0.5);
       mesh.rotation.y = ((b.tx * 7 + b.tz * 3) % 5) * 0.4;
       this.scene.add(mesh);
       this.bushes.push({ tx: b.tx, tz: b.tz, mesh, alive: true });
     }
     for (const r of w.rocks) {
       const mesh = buildRock();
-      mesh.position.set(r.tx + 0.5, w.tileH(r.tx, r.tz), r.tz + 0.5);
+      mesh.position.set(r.tx + 0.5, 0, r.tz + 0.5);
       mesh.rotation.y = ((r.tx * 5 + r.tz * 11) % 6) * 0.5;
       this.scene.add(mesh);
     }
     for (const f of w.fences) {
       const mesh = buildFence();
-      mesh.position.set(f.tx + 0.5, w.heightAt(f.tx + 0.5, f.tz + 0.5), f.tz + 0.5);
+      mesh.position.set(f.tx + 0.5, 0, f.tz + 0.5);
       this.scene.add(mesh);
     }
-    for (const hs of w.houses) { const m = buildHouse(hs); m.position.y = w.tileH(hs.x + Math.floor(hs.w / 2), hs.z + 1); this.scene.add(m); }
+    for (const hs of w.houses) this.scene.add(buildHouse(hs));
     for (const pr of w.props) {
       const mesh = buildProp(pr);
-      mesh.position.y = w.heightAt(pr.x, pr.z);
       this.scene.add(mesh);
       const sp = mesh.getObjectByName('spin');
       if (sp) this.spinners.push(sp);
@@ -193,7 +207,6 @@ export class Game implements GameCtx {
   }
 
   spawnEffect(e: Effect) {
-    if (e.groundAt) e.group.position.y = this.world.heightAt(e.groundAt.x, e.groundAt.z);
     this.effects.push(e);
     this.scene.add(e.group);
   }
@@ -422,7 +435,7 @@ export class Game implements GameCtx {
       if (d > 0.45 && !inArc(Math.atan2(dx, dz), sw.from, sw.to, 0.3)) continue;
       sw.hit.add(e);
       this.audio.hit();
-      this.spawnEffect(fxSpark(e.pos.x, 0.8, e.pos.z).at(e.pos.x, e.pos.z));
+      this.spawnEffect(fxSpark(e.pos.x, 0.8, e.pos.z));
       if (e.hurt(sw.dmg, p.x, p.z)) this.onEnemyDied(e);
     }
     for (const b of this.bushes) {
@@ -439,7 +452,7 @@ export class Game implements GameCtx {
     this.player.kills++;
     this.quests.kills++;
     this.audio.enemyDie();
-    this.spawnEffect(fxPuff(e.pos.x, e.pos.z).at(e.pos.x, e.pos.z));
+    this.spawnEffect(fxPuff(e.pos.x, e.pos.z));
     this.dropLoot(e.pos.x, e.pos.z, 0.35, 0.4);
     this.respawns.push({ kind: e.kind, spawn: e.spawn, t: 22 + this.rand() * 12 });
   }
@@ -450,10 +463,10 @@ export class Game implements GameCtx {
     this.scene.remove(b.mesh);
     this.world.setSolid(b.tx, b.tz, false);
     b.stump = buildStump();
-    b.stump.position.set(b.tx + 0.5, this.world.tileH(b.tx, b.tz), b.tz + 0.5);
+    b.stump.position.set(b.tx + 0.5, 0, b.tz + 0.5);
     this.scene.add(b.stump);
     this.audio.bushCut();
-    this.spawnEffect(fxLeaves(b.tx + 0.5, b.tz + 0.5).at(b.tx + 0.5, b.tz + 0.5));
+    this.spawnEffect(fxLeaves(b.tx + 0.5, b.tz + 0.5));
     this.dropLoot(b.tx + 0.5, b.tz + 0.5, 0.18, 0.3);
   }
 
@@ -501,26 +514,21 @@ export class Game implements GameCtx {
       if (r.t > 0) return true;
       if (Math.hypot(r.spawn.x - p.x, r.spawn.z - p.z) < 9) { r.t = 3; return true; }
       this.enemies.push(new Enemy(this, r.kind, r.spawn.x, r.spawn.z, r.spawn));
-      this.spawnEffect(fxPuff(r.spawn.x, r.spawn.z).at(r.spawn.x, r.spawn.z));
+      this.spawnEffect(fxPuff(r.spawn.x, r.spawn.z));
       return false;
     });
   }
 
-  private camY = 0;
   private placeCamera(dt: number) {
     const p = this.player.pos;
     const k = dt > 0 ? 1 - Math.exp(-dt * 9) : 1;
     this.cam.x += (p.x - this.cam.x) * k;
-    this.cam.z += (p.z - 0.6 - this.cam.z) * k;
-    const gy = this.world.heightAt(p.x, p.z);
-    this.camY += (gy - this.camY) * (dt > 0 ? 1 - Math.exp(-dt * 5) : 1);
+    this.cam.z += (p.z - 1.0 - this.cam.z) * k;
     const hx = VIEW_TILES_X / 2, hz = VIEW_TILES_Y / 2;
     const cx = clamp(this.cam.x, hx, MAP_W - hx), cz = clamp(this.cam.z, hz, MAP_H - hz);
     const sx = Math.round(cx * PX_PER_TILE) / PX_PER_TILE, sz = Math.round(cz * PX_PER_TILE) / PX_PER_TILE;
-    // camera sits back along -z (south is +z, towards the viewer) and above, looking down at CAM_PITCH
-    const dist = CAM_HEIGHT;
-    this.camera.position.set(sx, this.camY + Math.sin(CAM_PITCH) * dist, sz + Math.cos(CAM_PITCH) * dist);
-    this.camera.lookAt(sx, this.camY, sz);
+    this.camera.position.set(sx, CAM_HEIGHT, sz);
+    this.camera.lookAt(sx, 0, sz);
   }
 
   // ------------------------------------------------------------------ render

@@ -1,8 +1,8 @@
 import * as THREE from 'three';
-import { MAP_W, MAP_H, TEX_PX, Tile, RNG, hash2, LEVEL_H, MAX_WALK_SLOPE } from './constants';
+import { MAP_W, MAP_H, TEX_PX, Tile, RNG, hash2 } from './constants';
 
 export type EnemyKind = 'sword' | 'spear' | 'javelin' | 'archer';
-export interface TreeSpec { x: number; z: number; scale: number; y?: number }
+export interface TreeSpec { x: number; z: number; scale: number }
 export interface TileObj { tx: number; tz: number }
 export interface HouseSpec { x: number; z: number; w: number; d: number; roof?: string; wall?: string; door?: 'S' | 'E' | 'W'; sign?: 'shop' | 'inn' | 'none' }
 export interface PropSpec { kind: 'well' | 'sign' | 'stall' | 'bench' | 'weathercock' | 'lamp' | 'barrel' | 'crate' | 'flowerpot' | 'hedge'; x: number; z: number; rot?: number }
@@ -34,8 +34,6 @@ export class World {
   tall = new Uint8Array(MAP_W * MAP_H); // blocks projectiles
   treeCell = new Uint8Array(MAP_W * MAP_H);
   houseCell = new Uint8Array(MAP_W * MAP_H);
-  /** Terrain heights at tile corners, (MAP_W+1) x (MAP_H+1), in world units */
-  hmap = new Float32Array((MAP_W + 1) * (MAP_H + 1));
   trees: TreeSpec[] = [];
   bushes: TileObj[] = [];
   rocks: TileObj[] = [];
@@ -81,25 +79,6 @@ export class World {
     return !this.isSolidTile(Math.floor(x), Math.floor(z));
   }
 
-  // ---------------------------------------------------------------- terrain height
-  private hIdx(cx: number, cz: number) { return Math.min(this.h, Math.max(0, cz)) * (this.w + 1) + Math.min(this.w, Math.max(0, cx)); }
-  cornerH(cx: number, cz: number): number { return this.hmap[this.hIdx(cx, cz)]; }
-  /** Bilinear terrain height at a world position */
-  heightAt(x: number, z: number): number {
-    const tx = Math.floor(x), tz = Math.floor(z);
-    const fx = x - tx, fz = z - tz;
-    const h00 = this.cornerH(tx, tz), h10 = this.cornerH(tx + 1, tz), h01 = this.cornerH(tx, tz + 1), h11 = this.cornerH(tx + 1, tz + 1);
-    return (h00 * (1 - fx) + h10 * fx) * (1 - fz) + (h01 * (1 - fx) + h11 * fx) * fz;
-  }
-  /** Average height of a tile (used to place props/houses) */
-  tileH(tx: number, tz: number): number {
-    return (this.cornerH(tx, tz) + this.cornerH(tx + 1, tz) + this.cornerH(tx, tz + 1) + this.cornerH(tx + 1, tz + 1)) / 4;
-  }
-  /** Is the step from one point to another walkable (not a cliff face)? */
-  canStep(x0: number, z0: number, x1: number, z1: number): boolean {
-    return Math.abs(this.heightAt(x1, z1) - this.heightAt(x0, z0)) <= MAX_WALK_SLOPE * Math.max(0.05, Math.hypot(x1 - x0, z1 - z0)) / 0.5;
-  }
-
   boxCollides(x: number, z: number, hw: number, hh: number): boolean {
     const x0 = Math.floor(x - hw + 1e-4), x1 = Math.floor(x + hw - 1e-4);
     const z0 = Math.floor(z - hh + 1e-4), z1 = Math.floor(z + hh - 1e-4);
@@ -108,19 +87,10 @@ export class World {
   }
 
   /** Move an AABB through the tile map with axis separation + Zelda-style corner nudging. */
-  /** Would moving the box centre from (x0,z0) to (x1,z1) climb/drop a cliff face? Samples the box corners. */
-  private cliffBlocked(x0: number, z0: number, x1: number, z1: number, hw: number, hh: number): boolean {
-    const h0 = this.heightAt(x0, z0);
-    for (const [ox, oz] of [[0, 0], [-hw, -hh], [hw, -hh], [-hw, hh], [hw, hh]]) {
-      if (Math.abs(this.heightAt(x1 + ox, z1 + oz) - h0) > MAX_WALK_SLOPE) return true;
-    }
-    return false;
-  }
-
   moveBox(p: Vec2, dx: number, dz: number, hw: number, hh: number, nudge = 0): { bx: boolean; bz: boolean } {
     let bx = false, bz = false;
     if (dx !== 0) {
-      if (!this.boxCollides(p.x + dx, p.z, hw, hh) && !this.cliffBlocked(p.x, p.z, p.x + dx, p.z, hw, hh)) p.x += dx;
+      if (!this.boxCollides(p.x + dx, p.z, hw, hh)) p.x += dx;
       else {
         bx = true;
         const target = dx > 0 ? Math.floor(p.x + dx + hw) - hw - 0.002 : Math.ceil(p.x + dx - hw) + hw + 0.002;
@@ -143,7 +113,7 @@ export class World {
       }
     }
     if (dz !== 0) {
-      if (!this.boxCollides(p.x, p.z + dz, hw, hh) && !this.cliffBlocked(p.x, p.z, p.x, p.z + dz, hw, hh)) p.z += dz;
+      if (!this.boxCollides(p.x, p.z + dz, hw, hh)) p.z += dz;
       else {
         bz = true;
         const target = dz > 0 ? Math.floor(p.z + dz + hh) - hh - 0.002 : Math.ceil(p.z + dz - hh) + hh + 0.002;
@@ -201,7 +171,6 @@ export class World {
     const paths = [
       [[9.5, 17], [9.5, 20.5], [24.5, 20.5], [24.5, 15.5], [32.5, 15.5]],
       [[21, 8.5], [24.5, 8.5], [24.5, 15.5]],
-      [[45.5, 15.5], [45.5, 5.5], [43.5, 4.5]],
       [[33, 15.5], [45.5, 15.5], [45.5, 26.5], [40.5, 31.5], [37, 31.5]],
       [[34, 31.5], [20.5, 31.5], [20.5, 38.5]],
       [[9.5, 20.5], [9.5, 22.5], [15.5, 26.5]],
@@ -216,8 +185,9 @@ export class World {
     // 3. bridges
     for (const z of [14, 15, 16]) for (let x = 26; x < 40; x++) if (get(x, z) === Tile.Water) set(x, z, Tile.Bridge);
     for (const z of [30, 31, 32]) for (let x = 28; x < 44; x++) if (get(x, z) === Tile.Water) set(x, z, Tile.Bridge);
-    // 4. terrain heights (replaces the old flat cliff tiles): plateaus, hills and sunken river banks
-    this.generateHeights();
+    // 4. cliffs
+    const cliffRects = [[40, 2, 10, 5], [46, 7, 4, 4], [2, 36, 12, 6], [22, 40, 6, 2], [39, 40, 5, 2]];
+    for (const [rx, rz, rw, rd] of cliffRects) for (let z = rz; z < rz + rd; z++) for (let x = rx; x < rx + rw; x++) set(x, z, Tile.Cliff);
     // 5. village (houses, plaza, beds, paths)
     for (const hs of this.houses) for (let z = hs.z; z < hs.z + hs.d; z++) for (let x = hs.x; x < hs.x + hs.w; x++) {
       set(x, z, Tile.Grass); this.houseCell[this.idx(x, z)] = 1;
@@ -227,9 +197,7 @@ export class World {
     const v = this.village;
     const inYard = (x: number, z: number) => x >= v.x0 && x <= v.x1 && z >= v.z0 && z <= v.z1;
     const nearSpawn = (x: number, z: number) => Math.hypot(x + 0.5 - this.playerStart.x, z + 0.5 - this.playerStart.z) < 3;
-    // keep the slopes/ramps clear of objects so they stay walkable
-    const onRamp = (x: number, z: number) => (x >= 43 && x <= 46 && z >= 7 && z <= 13) || (x >= 7 && x <= 12 && z >= 17 && z <= 22) || (x >= 20 && x <= 26 && z >= 7 && z <= 10);
-    const treeOK = (x: number, z: number) => get(x, z) === Tile.Grass && !this.houseCell[this.idx(x, z)] && !inYard(x, z) && !nearSpawn(x, z) && !onRamp(x, z);
+    const treeOK = (x: number, z: number) => get(x, z) === Tile.Grass && !this.houseCell[this.idx(x, z)] && !inYard(x, z) && !nearSpawn(x, z);
     for (let z = 0; z < h; z++) for (let x = 0; x < w; x++) {
       const ring = Math.min(x, z, w - 1 - x, h - 1 - z);
       if (ring < 2) { if (get(x, z) !== Tile.Water) this.treeCell[this.idx(x, z)] = 1; continue; }
@@ -261,16 +229,16 @@ export class World {
         && !claimed[this.idx(x + 1, z)] && !claimed[this.idx(x, z + 1)] && !claimed[this.idx(x + 1, z + 1)];
       if (canBig) {
         claimed[i] = claimed[this.idx(x + 1, z)] = claimed[this.idx(x, z + 1)] = claimed[this.idx(x + 1, z + 1)] = 1;
-        this.trees.push({ x: x + 1, z: z + 1.55, scale: 1, y: this.heightAt(x + 1, z + 1) });
+        this.trees.push({ x: x + 1, z: z + 1.55, scale: 1 });
       } else {
         claimed[i] = 1;
-        this.trees.push({ x: x + 0.5, z: z + 0.8, scale: 0.6, y: this.heightAt(x + 0.5, z + 0.5) });
+        this.trees.push({ x: x + 0.5, z: z + 0.8, scale: 0.6 });
       }
     }
     // 7. bushes
     const bushClusters = [[27, 19], [40, 21], [27, 35], [15, 33], [37, 8], [6, 19], [30, 25], [22, 12], [44, 29], [12, 24], [33, 5]];
     const patterns = [[[0, 0], [1, 0], [2, 0]], [[0, 0], [0, 1], [0, 2]], [[0, 0], [1, 0], [0, 1], [1, 1]], [[0, 0], [1, 0], [2, 0], [0, 1]], [[0, 0], [2, 0], [1, 1]]];
-    const objFree = (x: number, z: number) => (get(x, z) === Tile.Grass || get(x, z) === Tile.Flowers) && !this.treeCell[this.idx(x, z)] && !this.houseCell[this.idx(x, z)] && !nearSpawn(x, z) && !onRamp(x, z);
+    const objFree = (x: number, z: number) => (get(x, z) === Tile.Grass || get(x, z) === Tile.Flowers) && !this.treeCell[this.idx(x, z)] && !this.houseCell[this.idx(x, z)] && !nearSpawn(x, z);
     const occupied = new Uint8Array(w * h);
     for (const [bx, bz] of bushClusters) {
       const pat = rng.pick(patterns);
@@ -316,79 +284,6 @@ export class World {
       { x: 43.5, z: 12.5, kind: 'archer' }, { x: 38.5, z: 35.5, kind: 'archer' }, { x: 26.5, z: 39.5, kind: 'archer' }, { x: 47.5, z: 33.5, kind: 'archer' },
     ];
     for (const s of raw) { const p = this.nearestFree(s.x, s.z); this.spawns.push({ x: p.x, z: p.z, kind: s.kind }); }
-  }
-
-  private generateHeights() {
-    const W = this.w + 1, H = this.h + 1;
-    const lvl = new Float32Array(W * H); // in levels
-    const rng = new RNG(777);
-    const smoothstep = (a: number, b: number, v: number) => { const t = Math.min(1, Math.max(0, (v - a) / (b - a))); return t * t * (3 - 2 * t); };
-    // rounded-rect plateau helper: full height inside, ramps down over `fall` tiles
-    const plateau = (x0: number, z0: number, x1: number, z1: number, levels: number, fall: number) => {
-      for (let cz = 0; cz < H; cz++) for (let cx = 0; cx < W; cx++) {
-        const dx = Math.max(x0 - cx, 0, cx - x1), dz = Math.max(z0 - cz, 0, cz - z1);
-        const d = Math.hypot(dx, dz);
-        lvl[cz * W + cx] = Math.max(lvl[cz * W + cx], levels * (1 - smoothstep(0, fall, d)));
-      }
-    };
-    // NE highland: two terraces with a walkable ramp on the west side (x 38..40) and cliff faces elsewhere
-    plateau(41, 0, 52, 8, 2, 1.2);
-    plateau(45, 0, 52, 4, 3, 1.2);
-    // SW hill (rounded)
-    for (let cz = 0; cz < H; cz++) for (let cx = 0; cx < W; cx++) {
-      const d = Math.hypot((cx - 7) / 6, (cz - 39) / 3.2);
-      lvl[cz * W + cx] = Math.max(lvl[cz * W + cx], 2 * (1 - smoothstep(0.5, 1.15, d)));
-    }
-    // south ridge
-    plateau(22, 41, 28, 44, 1.5, 1.6);
-    plateau(38, 41, 44, 44, 1.5, 1.6);
-    // gentle village rise
-    for (let cz = 0; cz < H; cz++) for (let cx = 0; cx < W; cx++) {
-      const d = Math.hypot((cx - 10) / 14, (cz - 8) / 12);
-      lvl[cz * W + cx] = Math.max(lvl[cz * W + cx], 0.8 * (1 - smoothstep(0.55, 1.1, d)));
-    }
-    // rolling meadow noise (small)
-    for (let cz = 0; cz < H; cz++) for (let cx = 0; cx < W; cx++) {
-      lvl[cz * W + cx] += 0.18 * Math.sin(cx * 0.55 + 1.3) * Math.cos(cz * 0.47 + 0.4) + (rng.next() - 0.5) * 0.05;
-    }
-    const cornerTiles = (cx: number, cz: number) => [[cx - 1, cz - 1], [cx, cz - 1], [cx - 1, cz], [cx, cz]];
-    // village: a raised terrace (1.6 levels) with gentle slopes down at the two gates; steep banks elsewhere
-    const v = this.village;
-    for (let cz = 0; cz < H; cz++) for (let cx = 0; cx < W; cx++) {
-      const i = cz * W + cx;
-      const inside = cx >= v.x0 && cx <= v.x1 + 1 && cz >= v.z0 && cz <= v.z1 + 1;
-      if (inside) { lvl[i] = 1.6; continue; }
-      // distance outside the terrace
-      const dx = Math.max(v.x0 - cx, 0, cx - (v.x1 + 1)), dz = Math.max(v.z0 - cz, 0, cz - (v.z1 + 1));
-      const d = Math.hypot(dx, dz);
-      // gate ramps: south gate (x 8..11) and east gate (z 8..10) fall over 4 tiles, the rest over 1.2 tiles (cliff)
-      const southGate = cx >= 8 && cx <= 11 && cz > v.z1 + 1;
-      const eastGate = cz >= 8 && cz <= 10 && cx > v.x1 + 1;
-      const fall = southGate || eastGate ? 4.5 : 1.3;
-      lvl[i] = Math.max(lvl[i], 1.6 * (1 - smoothstep(0, fall, d)));
-    }
-    // water sunk below the shore, bridges just above water
-    for (let cz = 0; cz < H; cz++) for (let cx = 0; cx < W; cx++) {
-      const ts = cornerTiles(cx, cz).map(([x, z]) => this.tile(x, z));
-      const i = cz * W + cx;
-      if (ts.some((t) => t === Tile.Water)) lvl[i] = Math.min(lvl[i], -0.6);
-      else if (ts.some((t) => t === Tile.Bridge)) lvl[i] = Math.min(lvl[i], 0.1);
-    }
-    // ramp for the NE plateau where the road climbs (x 43..47, z 8..13)
-    for (let cz = 8; cz <= 13; cz++) for (let cx = 43; cx <= 47; cx++) {
-      const t = smoothstep(13.5, 8, cz);
-      lvl[cz * W + cx] = 2 * t;
-    }
-    // make sure houses sit flat
-    for (const hs of this.houses) for (let cz = hs.z; cz <= hs.z + hs.d; cz++) for (let cx = hs.x; cx <= hs.x + hs.w; cx++) lvl[cz * W + cx] = 1.6;
-    for (let i = 0; i < lvl.length; i++) this.hmap[i] = lvl[i] * LEVEL_H;
-    // tiles that sit on the steep flanks become Cliff (rock texture on the slope, unwalkable)
-    for (let z = 0; z < this.h; z++) for (let x = 0; x < this.w; x++) {
-      const h00 = this.cornerH(x, z), h10 = this.cornerH(x + 1, z), h01 = this.cornerH(x, z + 1), h11 = this.cornerH(x + 1, z + 1);
-      const steep = Math.max(Math.abs(h10 - h00), Math.abs(h11 - h01), Math.abs(h01 - h00), Math.abs(h11 - h10)) > MAX_WALK_SLOPE;
-      const t = this.tile(x, z);
-      if (steep && t !== Tile.Water && t !== Tile.Bridge) this.tiles[this.idx(x, z)] = Tile.Cliff;
-    }
   }
 
   private beds(): [number, number][] {
@@ -528,15 +423,7 @@ export class World {
         if (N === Tile.Water) { g.fillStyle = C.plankD; g.fillRect(ox, oz, T, 2); g.fillStyle = C.plankL; g.fillRect(ox, oz + 2, T, 1); }
         if (S === Tile.Water) { g.fillStyle = C.plankD; g.fillRect(ox, oz + T - 2, T, 2); g.fillStyle = C.plankL; g.fillRect(ox, oz + T - 3, T, 1); }
       } else if (t === Tile.Cliff) {
-        // rocky slope face
-        g.fillStyle = '#a97a4c'; g.fillRect(ox, oz, T, T);
-        for (let i = 0; i < 7; i++) {
-          const x = ox + Math.floor(hash2(tx, tz, i) * T), y = oz + Math.floor(hash2(tx, tz, i + 2) * (T - 2)), len = 2 + Math.floor(hash2(tx, tz, i + 3) * 5);
-          g.fillStyle = '#7d5030'; g.fillRect(x, y, len, 1); g.fillRect(x + len, y + 1, 1, 1);
-          g.fillStyle = '#cf9e6c'; g.fillRect(x, y - 1, 1, 1);
-        }
-        for (let i = 0; i < 4; i++) { g.fillStyle = '#5a3a1e'; g.fillRect(ox + Math.floor(hash2(tx, tz, i + 8) * T), oz + Math.floor(hash2(tx, tz, i + 9) * T), 1, 1); }
-        if (hash2(tx, tz, 55) < 0.35) { g.fillStyle = C.grassD; const x = ox + Math.floor(hash2(tx, tz, 56) * (T - 3)), y = oz + Math.floor(hash2(tx, tz, 57) * (T - 3)); g.fillRect(x, y, 1, 2); g.fillRect(x + 2, y + 1, 1, 1); }
+        g.fillStyle = C.cliff; g.fillRect(ox, oz, T, T);
       } else if (t === Tile.Cobble) {
         // large flagstones with darker grout, LA-style plaza
         g.fillStyle = C.cobbleE; g.fillRect(ox, oz, T, T);
@@ -564,26 +451,6 @@ export class World {
     tex.magFilter = THREE.NearestFilter; tex.minFilter = THREE.NearestFilter; tex.generateMipmaps = false;
     tex.colorSpace = THREE.SRGBColorSpace;
     return tex;
-  }
-
-  /** Heightmapped ground mesh (one quad per tile, split along the shorter diagonal, UVs into the ground atlas) */
-  createGroundGeometry(): THREE.BufferGeometry {
-    const w = this.w, h = this.h;
-    const pos: number[] = [], uv: number[] = [], idx: number[] = [];
-    for (let z = 0; z < h; z++) for (let x = 0; x < w; x++) {
-      const base = pos.length / 3;
-      const cs = [[x, z], [x + 1, z], [x, z + 1], [x + 1, z + 1]];
-      for (const [cx, cz] of cs) { pos.push(cx, this.cornerH(cx, cz), cz); uv.push(cx / w, 1 - cz / h); }
-      const d1 = Math.abs(this.cornerH(x, z) - this.cornerH(x + 1, z + 1)), d2 = Math.abs(this.cornerH(x + 1, z) - this.cornerH(x, z + 1));
-      if (d1 <= d2) idx.push(base, base + 2, base + 3, base, base + 3, base + 1);
-      else idx.push(base, base + 2, base + 1, base + 1, base + 2, base + 3);
-    }
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-    g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
-    g.setIndex(idx);
-    g.computeVertexNormals();
-    return g;
   }
 
   createGrassTileTexture(): THREE.CanvasTexture {

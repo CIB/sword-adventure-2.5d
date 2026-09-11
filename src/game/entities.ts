@@ -189,14 +189,13 @@ export class Player {
     this.sweepR = SPIN_RADIUS;
     this.sweepActive = true;
     this.game.audio.spin();
-    this.game.spawnEffect(fxSpinWave(this, SPIN_DUR, SPIN_RADIUS).at(this.pos.x, this.pos.z));
+    this.game.spawnEffect(fxSpinWave(this, SPIN_DUR, SPIN_RADIUS));
   }
 
   /** Arc (world angles) swept by the sword since the last frame */
   getSweep(): { from: number; to: number; r: number; dmg: number; hit: Set<object> } | null {
     if (!this.sweepActive) return null;
-    // the model is mirrored (left-handed), so the blade's world angle is facing - sweep
-    return { from: normAngle(this.facingAngle - this.sweepPrev), to: normAngle(this.facingAngle - this.sweepCur), r: this.sweepR, dmg: this.sweepDmg, hit: this.sweepHit };
+    return { from: normAngle(this.facingAngle + this.sweepPrev), to: normAngle(this.facingAngle + this.sweepCur), r: this.sweepR, dmg: this.sweepDmg, hit: this.sweepHit };
   }
 
   hurt(dmg: number, sx: number, sz: number) {
@@ -253,7 +252,7 @@ export class Player {
     const idlePose: Pose = {
       rootYaw: 0, twist: 0, lean: 0,
       armX: st.x - Math.max(0, -swing) * 0.3 + (moving ? 0.1 : 0), armY: st.y, armZ: st.z, wrist: st.w,
-      armLX: -0.35 + swing * 0.3, armLY: 0.15, armLZ: -0.12, // shield arm held slightly forward so the shield clears the chest
+      armLX: 0.1 + swing * 0.3, armLY: 0, armLZ: -0.1,
     };
     let pose: Pose;
     if (this.state === 'swing') {
@@ -312,14 +311,14 @@ export class Player {
       m.shield!.rotation.set(1.0, 0.45, 0);
     } else {
       m.armL.rotation.set(pose.armLX, pose.armLY, pose.armLZ);
-      m.shield!.position.set(0, -0.04, 0.2);
+      m.shield!.position.set(0, -0.04, 0.14);
       m.shield!.rotation.set(0, 0, 0);
     }
   }
 
   private sync() {
-    this.model.root.position.set(this.pos.x, this.game.world.heightAt(this.pos.x, this.pos.z), this.pos.z);
-    this.model.root.rotation.y = this.facingAngle - this.rootYaw; // mirrored model: yaw runs the other way
+    this.model.root.position.set(this.pos.x, 0, this.pos.z);
+    this.model.root.rotation.y = this.facingAngle + this.rootYaw;
   }
 
   reset(x: number, z: number) {
@@ -421,7 +420,7 @@ export class Enemy {
   private becomeAlert() {
     this.state = 'alert';
     this.stateT = 0.4;
-    this.game.spawnEffect(fxAlert(this.pos.x, this.pos.z).at(this.pos.x, this.pos.z));
+    this.game.spawnEffect(fxAlert(this.pos.x, this.pos.z));
     this.game.audio.alert();
   }
 
@@ -634,7 +633,7 @@ export class Enemy {
   }
 
   private sync() {
-    this.model.root.position.set(this.pos.x, this.game.world.heightAt(this.pos.x, this.pos.z), this.pos.z);
+    this.model.root.position.set(this.pos.x, 0, this.pos.z);
     this.model.root.rotation.y = FACING_ANGLE[this.facing];
   }
 
@@ -758,7 +757,7 @@ export class Npc {
   }
 
   private sync() {
-    this.model.root.position.set(this.pos.x, this.game.world.heightAt(this.pos.x, this.pos.z), this.pos.z);
+    this.model.root.position.set(this.pos.x, 0, this.pos.z);
     this.model.root.rotation.y = this.facingAngle;
   }
 }
@@ -779,19 +778,16 @@ export class Projectile {
     game.scene.add(this.mesh);
     this.sync();
   }
-  private y = 0;
-  private sync() { this.mesh.position.set(this.pos.x, this.y, this.pos.z); }
+  private sync() { this.mesh.position.set(this.pos.x, 0.6, this.pos.z); }
   update(dt: number) {
     if (!this.alive) return;
-    if (this.life === 0) this.y = this.game.world.heightAt(this.pos.x, this.pos.z) + 0.6;
     this.life += dt;
     this.pos.x += this.dir.x * this.speed * dt;
     this.pos.z += this.dir.z * this.speed * dt;
     this.sync();
     const w = this.game.world;
-    const ground = w.heightAt(this.pos.x, this.pos.z);
-    if (this.life > 3 || w.blocksProjectile(this.pos.x, this.pos.z) || ground > this.y - 0.1 || ground < this.y - 1.4) {
-      this.game.spawnEffect(fxSpark(this.pos.x, this.y - ground - 0.1, this.pos.z, 0.5).at(this.pos.x, this.pos.z));
+    if (this.life > 3 || w.blocksProjectile(this.pos.x, this.pos.z)) {
+      this.game.spawnEffect(fxSpark(this.pos.x, 0.5, this.pos.z, 0.5));
       this.destroy();
       return;
     }
@@ -799,7 +795,7 @@ export class Projectile {
     if (!p.dead && Math.hypot(p.pos.x - this.pos.x, p.pos.z - this.pos.z) < 0.45) {
       const res = this.game.tryHitPlayer(this.dmg, this.pos.x - this.dir.x, this.pos.z - this.dir.z, { projectile: true });
       if (res !== 'immune') {
-        if (res === 'blocked') this.game.spawnEffect(fxSpark(this.pos.x, 0.7, this.pos.z, 0.6).at(this.pos.x, this.pos.z));
+        if (res === 'blocked') this.game.spawnEffect(fxSpark(this.pos.x, 0.7, this.pos.z, 0.6));
         this.destroy();
       }
     }
@@ -822,7 +818,7 @@ export class Pickup {
     if (!this.alive) return;
     this.t += dt; this.life -= dt;
     if (this.life <= 0) { this.destroy(); return; }
-    this.mesh.position.y = this.game.world.heightAt(this.pos.x, this.pos.z) + 0.35 + Math.sin(this.t * 4) * 0.06;
+    this.mesh.position.y = 0.35 + Math.sin(this.t * 4) * 0.06;
     if (this.kind !== 'heart') this.mesh.rotation.y += dt * 3;
     this.mesh.visible = this.life > 3 || Math.floor(this.life * 10) % 2 === 0;
     const p = this.game.player;
@@ -839,10 +835,7 @@ export class Pickup {
 export class Effect {
   group = new THREE.Group();
   t = 0;
-  /** if set, the effect group is lifted to the terrain height at this point when spawned */
-  groundAt: Vec2 | null = null;
   constructor(public dur: number, private fn: (p: number, t: number, g: THREE.Group) => void) {}
-  at(x: number, z: number): this { this.groundAt = { x, z }; return this; }
   update(dt: number): boolean {
     this.t += dt;
     this.fn(Math.min(1, this.t / this.dur), this.t, this.group);
@@ -886,21 +879,21 @@ export function fxSpinWave(player: { pos: Vec2; facingAngle: number; sweepCur: n
   // Blade trail: an arc of ~75 degrees behind the sword tip. RingGeometry's theta starts on local +x; after
   // rotateX(-90deg) local +y becomes world -z, so a ring point at theta sits at world angle (atan2(x,z)) = theta + 90deg.
   const TRAIL_ARC = 1.3;
-  const trail = new THREE.Mesh(new THREE.RingGeometry(0.62, 1, 16, 1, -TRAIL_ARC, TRAIL_ARC).rotateX(-Math.PI / 2), trailMat.clone());
+  const trail = new THREE.Mesh(new THREE.RingGeometry(0.62, 1, 16, 1, 0, TRAIL_ARC).rotateX(-Math.PI / 2), trailMat.clone());
   trail.position.y = 0.65;
   const dust: { m: THREE.Mesh; a: number; s: number }[] = [];
   const e = new Effect(dur + 0.25, (_p, t, g) => {
     const { x, z } = player.pos;
-    g.position.set(x, g.position.y, z);
+    g.position.set(x, 0, z);
     // ground shockwave: expands during the spin, then fades
     const rp = Math.min(1, t / dur);
     const rr = 0.4 + easeOutCubic(rp) * radius;
     ring.scale.set(rr, 1, rr);
     (ring.material as THREE.MeshBasicMaterial).opacity = 0.55 * (1 - Math.max(0, (t - dur * 0.5) / (dur * 0.5 + 0.25)));
-    // (mirrored model) the sword's world angle increases during the spin, so the trail occupies [tip - TRAIL_ARC, tip]
+    // the sword's world angle decreases during the spin, so the trail occupies [tip, tip + TRAIL_ARC]
     trail.visible = t < dur;
     if (trail.visible) {
-      const tipA = player.facingAngle - player.sweepCur;
+      const tipA = player.facingAngle + player.sweepCur;
       trail.rotation.y = tipA - Math.PI / 2;
       trail.scale.set(player.sweepR, 1, player.sweepR);
       (trail.material as THREE.MeshBasicMaterial).opacity = 0.7 * Math.sin(rp * Math.PI) ** 0.5;
