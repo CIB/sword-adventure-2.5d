@@ -41,6 +41,7 @@ void main(){
 
 /** Characters with hand-made (AI-generated, SNES-style) portraits in public/portraits/; everyone else gets a live render of their 3D head. */
 const PORTRAITS = new Set(['elder', 'bard', 'granny', 'aria']);
+const PORTRAIT_VERSION = 2; // bump when portrait images change (busts the browser cache)
 
 export interface DialogueView { id: string; name: string; color: string; text: string; chars: number; more: boolean; portrait: string }
 
@@ -299,7 +300,7 @@ export class Game implements GameCtx {
   private portrait(id: string): string {
     const hit = this.portraitCache.get(id);
     if (hit) return hit;
-    if (PORTRAITS.has(id)) { const url = `portraits/${id}.png`; this.portraitCache.set(id, url); return url; }
+    if (PORTRAITS.has(id)) { const url = `portraits/${id}.png?v=${PORTRAIT_VERSION}`; this.portraitCache.set(id, url); return url; }
     const npc = this.npcs.find((n) => n.spec.id === id);
     const isDog = id === 'dog';
     const model = isDog ? buildDog() : buildVillager(VILLAGER_LOOKS[id] ?? VILLAGER_LOOKS.farmer);
