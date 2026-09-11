@@ -235,13 +235,21 @@ export class Player {
     // Torso twist + wrist cock + a short recovery blend keep the swing from looking rigid.
     // Sword arm is held forward and slightly out (blade points ahead), pumping a bit with the stride
     // instead of trailing behind like a free-swinging arm.
-    // Facing down/right the forward-held sword reads well. Facing up/left the same pose looks like the
-    // arm is thrust up and ahead of her, so there the arm hangs lower and further out to her side.
-    const away = this.facing === 2 || this.facing === 3 ? 1 : 0;
+    // Per-facing idle sword stance (the arm is a single rigid segment, so poses are tuned per view):
+    //  down/right: sword held forward, blade ahead of her.
+    //  up:         arm hangs down at her side, blade angled slightly outward.
+    //  left:       the sword arm is on the far side of her body, so hold it a little forward
+    //              and across so arm + blade peek out ahead of her instead of hiding behind the torso.
+    const STANCE: Record<Facing, { x: number; y: number; z: number; w: number }> = {
+      0: { x: -0.85, y: -0.35, z: 0.15, w: -0.35 },
+      1: { x: -0.85, y: -0.35, z: 0.15, w: -0.35 },
+      2: { x: -0.3, y: 0.0, z: -0.3, w: -0.55 },
+      3: { x: -0.9, y: -0.3, z: 0.1, w: 0.0 },
+    };
+    const st = STANCE[this.facing];
     const idlePose: Pose = {
       rootYaw: 0, twist: 0, lean: 0,
-      armX: lerp(-0.85, -0.4, away) - Math.max(0, -swing) * 0.3 + (moving ? 0.1 : 0),
-      armY: lerp(-0.35, -0.1, away), armZ: lerp(0.15, -0.3, away), wrist: lerp(-0.35, -0.2, away),
+      armX: st.x - Math.max(0, -swing) * 0.3 + (moving ? 0.1 : 0), armY: st.y, armZ: st.z, wrist: st.w,
       armLX: 0.1 + swing * 0.3, armLY: 0, armLZ: -0.1,
     };
     let pose: Pose;
