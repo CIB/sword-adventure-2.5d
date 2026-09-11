@@ -48,8 +48,7 @@ export class World {
     { x: 4, z: 3, w: 5, d: 3, roof: '#b73c3c', wall: '#e8d6a8', sign: 'none' },       // elder's house
     { x: 12, z: 2, w: 5, d: 3, roof: '#3a5fd0', wall: '#e8d6a8', sign: 'none' },      // Marin & Tarin style cottage
     { x: 2, z: 9, w: 4, d: 3, roof: '#8a3fc4', wall: '#f0e2c0', sign: 'none' },       // library-ish
-    { x: 15, z: 8, w: 4, d: 3, roof: '#c82828', wall: '#f4ecd8', sign: 'shop' },      // shop
-    { x: 14, z: 13, w: 4, d: 3, roof: '#2f8f5a', wall: '#e8d6a8', sign: 'none' },     // granny
+    { x: 18, z: 4, w: 4, d: 3, roof: '#c82828', wall: '#f4ecd8', sign: 'shop' },      // shop (faces the main street)
     // east district
     { x: 23, z: 2, w: 5, d: 3, roof: '#c8862a', wall: '#f0e2c0', sign: 'inn' },       // the inn
     { x: 26, z: 12, w: 4, d: 3, roof: '#5a5a66', wall: '#d8c8a8', sign: 'none' },     // smithy
@@ -695,14 +694,12 @@ export class World {
     lane(6, 6, 6, 6); lane(7, 7, 6, 6);
     lane(13, 5, 14, 5); lane(12, 6, 14, 5);
     lane(6, 12, 4, 12); lane(7, 11, 4, 12);
-    lane(13, 11, 17, 11); lane(16, 11, 16, 12);
-    lane(15, 16, 16, 16);
+    lane(20, 7, 20, 7);           // shop doorstep
     lane(12, 9, 32, 9); lane(13, 8, 32, 8);
     // --- east district: inn + smithy
     lane(25, 5, 25, 7); lane(26, 5, 26, 7);
-    lane(28, 10, 28, 11); lane(27, 10, 27, 11);
     for (let z = 15; z <= 16; z++) for (let x = 26; x <= 29; x++) set(x, z, Tile.Cobble); // smithy yard
-    lane(28, 12, 28, 14); // (behind the smithy: not visible, keeps the yard joined)
+    lane(25, 10, 25, 16); // lane from the main street down the west side of the smithy into its yard
     // --- south district: lane down to the new south gate, two cottages, fields and an orchard
     lane(9, 17, 9, 28);
     lane(14, 24, 10, 24); lane(15, 24, 15, 24);
@@ -721,20 +718,20 @@ export class World {
       { kind: 'weathercock', x: 11.5, z: 6.5 },
       { kind: 'bench', x: 7.5, z: 9.5, rot: Math.PI / 2 }, { kind: 'bench', x: 11.5, z: 9.5, rot: -Math.PI / 2 },
       { kind: 'lamp', x: 7.5, z: 6.5 }, { kind: 'lamp', x: 12.5, z: 11.5 }, { kind: 'lamp', x: 7.5, z: 12.5 },
-      { kind: 'sign', x: 10.5, z: 27.5 }, { kind: 'sign', x: 12.5, z: 5.5 }, { kind: 'sign', x: 30.5, z: 10.5 },
+      { kind: 'sign', x: 10.5, z: 27.5 }, { kind: 'sign', x: 12.5, z: 5.5 }, { kind: 'sign', x: 29.5, z: 10.5 },
       // east district
       { kind: 'lamp', x: 22.5, z: 10.5 }, { kind: 'lamp', x: 30.5, z: 7.5 }, { kind: 'bench', x: 22.5, z: 5.5, rot: Math.PI / 2 }, { kind: 'barrel', x: 29.5, z: 4.5 }, { kind: 'barrel', x: 29.5, z: 5.5 }, { kind: 'crate', x: 21.5, z: 13.5 },
-      { kind: 'campfire', x: 25.5, z: 16.5 }, { kind: 'barrel', x: 30.5, z: 15.5 }, { kind: 'crate', x: 30.5, z: 16.5 }, { kind: 'log', x: 24.5, z: 14.5, rot: Math.PI / 2 }, { kind: 'flowerpot', x: 22.5, z: 3.5 },
+      { kind: 'campfire', x: 27.5, z: 17.5 }, { kind: 'barrel', x: 30.5, z: 15.5 }, { kind: 'crate', x: 30.5, z: 16.5 }, { kind: 'log', x: 23.5, z: 14.5, rot: Math.PI / 2 }, { kind: 'flowerpot', x: 22.5, z: 3.5 },
       // south district
       { kind: 'lamp', x: 10.5, z: 20.5 }, { kind: 'lamp', x: 8.5, z: 26.5 }, { kind: 'scarecrow', x: 4.5, z: 21.5 }, { kind: 'hay', x: 5.5, z: 28.5 }, { kind: 'hay', x: 3.5, z: 28.5 }, { kind: 'cart', x: 11.5, z: 27.5, rot: 0.2 },
       { kind: 'bench', x: 20.5, z: 24.5 }, { kind: 'flowerpot', x: 12.5, z: 24.5 }, { kind: 'flowerpot', x: 22.5, z: 25.5 }, { kind: 'barrel', x: 28.5, z: 23.5 },
-      { kind: 'stall', x: 17.5, z: 5.5, rot: Math.PI },
+      { kind: 'stall', x: 15.5, z: 6.5, rot: Math.PI },
       { kind: 'barrel', x: 19.5, z: 6.5 }, { kind: 'barrel', x: 19.5, z: 10.5 }, { kind: 'crate', x: 13.5, z: 14.5 }, { kind: 'crate', x: 2.5, z: 5.5 },
       { kind: 'flowerpot', x: 3.5, z: 12.5 }, { kind: 'flowerpot', x: 18.5, z: 11.5 }, { kind: 'flowerpot', x: 12.5, z: 4.5 },
     ];
     this.npcs = [
       { id: 'elder', x: 6.5, z: 7.5, facing: 0, wander: 0 },
-      { id: 'shopkeeper', x: 17.5, z: 6.6, facing: 0, wander: 0 },
+      { id: 'shopkeeper', x: 15.5, z: 7.6, facing: 0, wander: 0 },
       { id: 'kid', x: 10.5, z: 10.5, facing: 1, wander: 2.5 },
       { id: 'granny', x: 5.5, z: 12.5, facing: 1, wander: 0 },
       { id: 'bard', x: 8.5, z: 11.0, facing: 1, wander: 0 },
