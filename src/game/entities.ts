@@ -30,10 +30,13 @@ function setEmissive(mats: THREE.MeshToonMaterial[], on: boolean) {
 
 // ======================================================================= PLAYER
 export type PlayerState = 'idle' | 'walk' | 'swing' | 'spin' | 'hurt' | 'dead';
-const SWING_DUR = 0.2, SPIN_DUR = 0.45, SWING_START = -1.9, SWING_END = 1.15;
+const SWING_DUR = 0.2, SPIN_DUR = 0.5, SWING_START = -1.9, SWING_END = 1.15;
+const SPIN_RADIUS = 1.75; // spin attack AoE radius (normal swing: 1.05)
 const RECOVER_DUR = 0.14; // blend back to idle after an attack instead of snapping
 const easeOutCubic = (p: number) => 1 - (1 - p) ** 3;
 const smooth = (p: number) => p * p * (3 - 2 * p);
+// quick wind-up, then a fast full circle that decelerates on the follow-through
+const spinCurve = (p: number) => (p < 0.1 ? -0.12 * (p / 0.1) : -0.12 + 1.12 * easeOutCubic((p - 0.1) / 0.9));
 
 /** Upper-body pose used to blend attack poses back into idle */
 interface Pose { twist: number; lean: number; armX: number; armY: number; armZ: number; wrist: number; armLX: number; armLY: number; armLZ: number }
@@ -120,7 +123,7 @@ export class Player {
       const dur = this.state === 'swing' ? SWING_DUR : SPIN_DUR;
       const p = Math.min(1, this.stateT / dur);
       this.sweepPrev = this.sweepCur;
-      this.sweepCur = this.state === 'swing' ? lerp(SWING_START, SWING_END, easeOutCubic(p)) : SWING_END - Math.PI * 2 * easeOut(p);
+      this.sweepCur = this.state === 'swing' ? lerp(SWING_START, SWING_END, easeOutCubic(p)) : SWING_END - Math.PI * 2 * spinCurve(p);
       this.sweepActive = true;
       if (p >= 1) {
         this.state = 'idle';
@@ -179,9 +182,10 @@ export class Player {
     this.sweepPrev = this.sweepCur = SWING_END;
     this.sweepHit.clear();
     this.sweepDmg = 2;
-    this.sweepR = 1.25;
+    this.sweepR = SPIN_RADIUS;
     this.sweepActive = true;
     this.game.audio.spin();
+    this.game.spawnEffect(fxSpinWave(this, SPIN_DUR, SPIN_RADIUS));
   }
 
   /** Arc (world angles) swept by the sword since the last frame */
@@ -227,10 +231,12 @@ export class Player {
     // The right arm stays roughly horizontal so the blade sweeps a flat arc in front of the
     // heroine (the oblique camera turns any pitch change into an apparent vertical chop).
     // Torso twist + wrist cock + a short recovery blend keep the swing from looking rigid.
+    // Sword arm is held forward and slightly out (blade points ahead), pumping a bit with the stride
+    // instead of trailing behind like a free-swinging arm.
     const idlePose: Pose = {
       twist: 0, lean: 0,
-      armX: -swing * 0.35 + 0.65, armY: -0.15, armZ: 0.1, wrist: 0,
-      armLX: 0.1, armLY: 0, armLZ: -0.1,
+      armX: -0.85 - Math.max(0, -swing) * 0.3 + (moving ? 0.1 : 0), armY: -0.35, armZ: 0.15, wrist: -0.35,
+      armLX: 0.1 + swing * 0.3, armLY: 0, armLZ: -0.1,
     };
     let pose: Pose;
     if (this.state === 'swing') {
@@ -247,17 +253,21 @@ export class Player {
       };
     } else if (this.state === 'spin') {
       const p = Math.min(1, this.stateT / SPIN_DUR);
+      const arc = Math.sin(p * Math.PI);
       pose = {
-        twist: 0, lean: 0.1 + Math.sin(p * Math.PI) * 0.06,
-        armX: -Math.PI / 2 + 0.25, armY: this.sweepCur, armZ: 0, wrist: 0.35,
-        armLX: -0.6, armLY: 0.4, armLZ: -0.3,
+        twist: 0, lean: 0.12 * arc,
+        armX: -Math.PI / 2 + 0.1 - 0.2 * arc, armY: this.sweepCur, armZ: 0, wrist: 0.9 * arc, // arm extends fully, blade flung outward
+        armLX: -0.9 * arc - 0.1, armLY: 0.6 * arc, armLZ: -0.4 * arc - 0.1,               // shield arm flies out for balance
       };
+      m.body.position.y += arc * 0.16;                                                  // small hop
     } else if (this.charged || this.holding) {
-      const t = Math.min(1, this.chargeT / 0.25);
+      // wind-up: shoulders coil to the right, sword pulled in across the body with the blade still pointing forward
+      const t = smooth(Math.min(1, this.chargeT / 0.25));
+      const tremble = this.charged ? Math.sin(this.chargeT * 45) * 0.03 : 0;
       pose = {
-        twist: -0.35 * t, lean: -0.05 * t,
-        armX: -Math.PI / 2 - 0.2, armY: -1.9 + 0.35 * t, armZ: 0, wrist: -0.6,
-        armLX: 0.2, armLY: 0.2, armLZ: -0.2,
+        twist: -0.45 * t + tremble, lean: 0.06 * t,
+        armX: -0.85 - 0.5 * t, armY: -0.35 + 0.45 * t, armZ: 0.15 + 0.15 * t, wrist: -0.35 + 0.55 * t + tremble * 2,
+        armLX: -0.2 * t + 0.1, armLY: 0.3 * t, armLZ: -0.25 * t - 0.1,
       };
     } else {
       pose = idlePose;
@@ -712,6 +722,52 @@ export function fxSpark(x: number, y: number, z: number, size = 1): Effect {
   });
   e.group.add(core);
   for (let i = 0; i < 4; i++) { const m = part(UNIT_BOX, whiteMat, [x, y, z], [0.08, 0.08, 0.08]); e.group.add(m); bits.push({ m, a: (i / 4) * Math.PI * 2 + 0.4 }); }
+  return e;
+}
+
+const waveMat = new THREE.MeshBasicMaterial({ color: 0x9fe6ff, transparent: true, opacity: 0.55, depthWrite: false, side: THREE.DoubleSide });
+const trailMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.7, depthWrite: false, side: THREE.DoubleSide });
+const dustMat = new THREE.MeshBasicMaterial({ color: 0xd9cfb0, transparent: true, opacity: 0.8, depthWrite: false });
+
+/** Charge attack VFX: an expanding ground ring, a fading blade-trail arc that follows the sword, and kicked-up dust. */
+export function fxSpinWave(player: { pos: Vec2; facingAngle: number; sweepCur: number; sweepR: number }, dur: number, radius: number): Effect {
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.85, 1, 40).rotateX(-Math.PI / 2), waveMat.clone());
+  ring.position.y = 0.05;
+  // Blade trail: an arc of ~75 degrees behind the sword tip. RingGeometry's theta starts on local +x; after
+  // rotateX(-90deg) local +y becomes world -z, so a ring point at theta sits at world angle (atan2(x,z)) = theta + 90deg.
+  const TRAIL_ARC = 1.3;
+  const trail = new THREE.Mesh(new THREE.RingGeometry(0.62, 1, 16, 1, 0, TRAIL_ARC).rotateX(-Math.PI / 2), trailMat.clone());
+  trail.position.y = 0.65;
+  const dust: { m: THREE.Mesh; a: number; s: number }[] = [];
+  const e = new Effect(dur + 0.25, (_p, t, g) => {
+    const { x, z } = player.pos;
+    g.position.set(x, 0, z);
+    // ground shockwave: expands during the spin, then fades
+    const rp = Math.min(1, t / dur);
+    const rr = 0.4 + easeOutCubic(rp) * radius;
+    ring.scale.set(rr, 1, rr);
+    (ring.material as THREE.MeshBasicMaterial).opacity = 0.55 * (1 - Math.max(0, (t - dur * 0.5) / (dur * 0.5 + 0.25)));
+    // the sword's world angle decreases during the spin, so the trail occupies [tip, tip + TRAIL_ARC]
+    trail.visible = t < dur;
+    if (trail.visible) {
+      const tipA = player.facingAngle + player.sweepCur;
+      trail.rotation.y = tipA - Math.PI / 2;
+      trail.scale.set(player.sweepR, 1, player.sweepR);
+      (trail.material as THREE.MeshBasicMaterial).opacity = 0.7 * Math.sin(rp * Math.PI) ** 0.5;
+    }
+    for (const d of dust) {
+      const r = 0.45 + easeOutCubic(rp) * radius * 0.85;
+      d.m.position.set(Math.cos(d.a) * r, 0.1 + Math.sin(rp * Math.PI) * d.s * 1.2, Math.sin(d.a) * r * 0.7);
+      const sc = (1 - rp) * d.s;
+      d.m.scale.set(sc, sc, sc);
+    }
+  });
+  e.group.add(ring, trail);
+  for (let i = 0; i < 10; i++) {
+    const m = part(UNIT_SPHERE, dustMat, [0, 0, 0], [0.2, 0.2, 0.2]);
+    e.group.add(m);
+    dust.push({ m, a: (i / 10) * Math.PI * 2 + 0.2, s: 0.18 + (i % 3) * 0.06 });
+  }
   return e;
 }
 
