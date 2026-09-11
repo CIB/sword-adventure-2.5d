@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "viewer": "vite --open /viewer.html",
+    "viewer": "VIEWER=1 vite",
     "build:viewer": "VIEWER=1 vite build"
   },
   "dependencies": {
