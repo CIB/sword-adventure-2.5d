@@ -21,7 +21,7 @@ export function toon(color: string | number | THREE.Color): THREE.MeshToonMateri
 }
 
 /** Shared proportions for all humanoids (heroine, soldiers, villagers). Lower y to make everyone a bit stockier. */
-export const CHAR_SCALE = { x: 1.02, y: 0.92, z: 0.95 };
+export const CHAR_SCALE = { x: 1.04, y: 0.88, z: 0.96 };
 
 export const UNIT_BOX = new THREE.BoxGeometry(1, 1, 1);
 export const UNIT_SPHERE = new THREE.SphereGeometry(0.5, 14, 10);
