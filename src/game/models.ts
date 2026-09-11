@@ -279,7 +279,7 @@ export function buildTrees(trees: TreeSpec[]): THREE.Object3D[] {
   const pos = new THREE.Vector3();
   const scl = new THREE.Vector3();
   trees.forEach((t, i) => {
-    pos.set(t.x, 0, t.z);
+    pos.set(t.x, t.y ?? 0, t.z);
     scl.set(t.scale, t.scale, t.scale);
     q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), ((i * 37) % 7) * 0.3);
     mat.compose(pos, q, scl);

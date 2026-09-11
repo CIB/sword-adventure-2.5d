@@ -189,7 +189,7 @@ export class Player {
     this.sweepR = SPIN_RADIUS;
     this.sweepActive = true;
     this.game.audio.spin();
-    this.game.spawnEffect(fxSpinWave(this, SPIN_DUR, SPIN_RADIUS));
+    this.game.spawnEffect(fxSpinWave(this, SPIN_DUR, SPIN_RADIUS).at(this.pos.x, this.pos.z));
   }
 
   /** Arc (world angles) swept by the sword since the last frame */
@@ -317,7 +317,7 @@ export class Player {
   }
 
   private sync() {
-    this.model.root.position.set(this.pos.x, 0, this.pos.z);
+    this.model.root.position.set(this.pos.x, this.game.world.heightAt(this.pos.x, this.pos.z), this.pos.z);
     this.model.root.rotation.y = this.facingAngle + this.rootYaw;
   }
 
@@ -420,7 +420,7 @@ export class Enemy {
   private becomeAlert() {
     this.state = 'alert';
     this.stateT = 0.4;
-    this.game.spawnEffect(fxAlert(this.pos.x, this.pos.z));
+    this.game.spawnEffect(fxAlert(this.pos.x, this.pos.z).at(this.pos.x, this.pos.z));
     this.game.audio.alert();
   }
 
@@ -633,7 +633,7 @@ export class Enemy {
   }
 
   private sync() {
-    this.model.root.position.set(this.pos.x, 0, this.pos.z);
+    this.model.root.position.set(this.pos.x, this.game.world.heightAt(this.pos.x, this.pos.z), this.pos.z);
     this.model.root.rotation.y = FACING_ANGLE[this.facing];
   }
 
@@ -757,7 +757,7 @@ export class Npc {
   }
 
   private sync() {
-    this.model.root.position.set(this.pos.x, 0, this.pos.z);
+    this.model.root.position.set(this.pos.x, this.game.world.heightAt(this.pos.x, this.pos.z), this.pos.z);
     this.model.root.rotation.y = this.facingAngle;
   }
 }
@@ -778,16 +778,19 @@ export class Projectile {
     game.scene.add(this.mesh);
     this.sync();
   }
-  private sync() { this.mesh.position.set(this.pos.x, 0.6, this.pos.z); }
+  private y = 0;
+  private sync() { this.mesh.position.set(this.pos.x, this.y, this.pos.z); }
   update(dt: number) {
     if (!this.alive) return;
+    if (this.life === 0) this.y = this.game.world.heightAt(this.pos.x, this.pos.z) + 0.6;
     this.life += dt;
     this.pos.x += this.dir.x * this.speed * dt;
     this.pos.z += this.dir.z * this.speed * dt;
     this.sync();
     const w = this.game.world;
-    if (this.life > 3 || w.blocksProjectile(this.pos.x, this.pos.z)) {
-      this.game.spawnEffect(fxSpark(this.pos.x, 0.5, this.pos.z, 0.5));
+    const ground = w.heightAt(this.pos.x, this.pos.z);
+    if (this.life > 3 || w.blocksProjectile(this.pos.x, this.pos.z) || ground > this.y - 0.1 || ground < this.y - 1.4) {
+      this.game.spawnEffect(fxSpark(this.pos.x, this.y - ground - 0.1, this.pos.z, 0.5).at(this.pos.x, this.pos.z));
       this.destroy();
       return;
     }
@@ -795,7 +798,7 @@ export class Projectile {
     if (!p.dead && Math.hypot(p.pos.x - this.pos.x, p.pos.z - this.pos.z) < 0.45) {
       const res = this.game.tryHitPlayer(this.dmg, this.pos.x - this.dir.x, this.pos.z - this.dir.z, { projectile: true });
       if (res !== 'immune') {
-        if (res === 'blocked') this.game.spawnEffect(fxSpark(this.pos.x, 0.7, this.pos.z, 0.6));
+        if (res === 'blocked') this.game.spawnEffect(fxSpark(this.pos.x, 0.7, this.pos.z, 0.6).at(this.pos.x, this.pos.z));
         this.destroy();
       }
     }
@@ -818,7 +821,7 @@ export class Pickup {
     if (!this.alive) return;
     this.t += dt; this.life -= dt;
     if (this.life <= 0) { this.destroy(); return; }
-    this.mesh.position.y = 0.35 + Math.sin(this.t * 4) * 0.06;
+    this.mesh.position.y = this.game.world.heightAt(this.pos.x, this.pos.z) + 0.35 + Math.sin(this.t * 4) * 0.06;
     if (this.kind !== 'heart') this.mesh.rotation.y += dt * 3;
     this.mesh.visible = this.life > 3 || Math.floor(this.life * 10) % 2 === 0;
     const p = this.game.player;
@@ -835,7 +838,10 @@ export class Pickup {
 export class Effect {
   group = new THREE.Group();
   t = 0;
+  /** if set, the effect group is lifted to the terrain height at this point when spawned */
+  groundAt: Vec2 | null = null;
   constructor(public dur: number, private fn: (p: number, t: number, g: THREE.Group) => void) {}
+  at(x: number, z: number): this { this.groundAt = { x, z }; return this; }
   update(dt: number): boolean {
     this.t += dt;
     this.fn(Math.min(1, this.t / this.dur), this.t, this.group);
@@ -884,7 +890,7 @@ export function fxSpinWave(player: { pos: Vec2; facingAngle: number; sweepCur: n
   const dust: { m: THREE.Mesh; a: number; s: number }[] = [];
   const e = new Effect(dur + 0.25, (_p, t, g) => {
     const { x, z } = player.pos;
-    g.position.set(x, 0, z);
+    g.position.set(x, g.position.y, z);
     // ground shockwave: expands during the spin, then fades
     const rp = Math.min(1, t / dur);
     const rr = 0.4 + easeOutCubic(rp) * radius;

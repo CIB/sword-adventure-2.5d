@@ -5,7 +5,9 @@ export const PX_PER_TILE = 20;
 export const VIEW_TILES_X = VIEW_W / PX_PER_TILE; // 16 tiles wide
 export const VIEW_TILES_Y = VIEW_H / PX_PER_TILE; // 12 tiles tall
 export const CAM_HEIGHT = 40;
-export const SHEAR = 0.85; // oblique projection factor: 1 unit of height = 0.85 tiles of screen space
+export const CAM_PITCH = 0.98; // camera tilt in radians (~56 deg from horizontal). 90 deg = straight down
+export const LEVEL_H = 0.5;   // world units per terrain level
+export const MAX_WALK_SLOPE = 0.45; // max height difference per tile step that can be walked (steeper = cliff)
 export const MAP_W = 52;
 export const MAP_H = 44;
 export const TEX_PX = 20; // ground texture pixels per tile
