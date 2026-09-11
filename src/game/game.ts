@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import {
-  VIEW_W, VIEW_H, VIEW_TILES_X, VIEW_TILES_Y, CAM_HEIGHT, SHEAR, MAP_W, MAP_H, PX_PER_TILE, MAX_HP,
-  Tile, RNG, inArc, FACING_VEC, clamp,
+  VIEW_W, VIEW_H, VIEW_TILES_X, VIEW_TILES_Y, CAM_HEIGHT, SHEAR, WATER_DEPTH, MAP_W, MAP_H, PX_PER_TILE, MAX_HP,
+  RNG, inArc, FACING_VEC, clamp,
 } from './constants';
 import { World, type EnemyKind, type Vec2 } from './world';
 import { AudioEngine } from './audio';
@@ -143,8 +143,8 @@ export class Game implements GameCtx {
     // animated water overlay
     const quads: THREE.BufferGeometry[] = [];
     for (let z = 0; z < w.h; z++) for (let x = 0; x < w.w; x++) {
-      if (w.tile(x, z) !== Tile.Water) continue;
-      const g = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2).translate(x + 0.5, w.tileH(x, z) + 0.1, z + 0.5);
+      if (!w.isWaterUnder(x, z)) continue;
+      const g = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2).translate(x + 0.5, -WATER_DEPTH + 0.02, z + 0.5);
       const pos = g.attributes.position, uv = g.attributes.uv;
       for (let i = 0; i < pos.count; i++) uv.setXY(i, pos.getX(i) / 2, -pos.getZ(i) / 2);
       quads.push(g);
@@ -155,6 +155,7 @@ export class Game implements GameCtx {
     }
 
     for (const o of buildTrees(w.trees)) this.scene.add(o);
+    for (const o of w.createBridgeMeshes()) this.scene.add(o);
     for (const b of w.bushes) {
       const mesh = buildBush();
       mesh.position.set(b.tx + 0.5, w.tileH(b.tx, b.tz), b.tz + 0.5);
@@ -176,7 +177,7 @@ export class Game implements GameCtx {
     for (const hs of w.houses) { const m = buildHouse(hs); m.position.y = w.tileH(hs.x + Math.floor(hs.w / 2), hs.z + 1); this.scene.add(m); }
     for (const pr of w.props) {
       const mesh = buildProp(pr);
-      mesh.position.y = w.heightAt(pr.x, pr.z);
+      mesh.position.y = w.surfaceAt(pr.x, pr.z);
       this.scene.add(mesh);
       const sp = mesh.getObjectByName('spin');
       if (sp) this.spinners.push(sp);
@@ -195,7 +196,7 @@ export class Game implements GameCtx {
   }
 
   spawnEffect(e: Effect) {
-    if (e.groundAt) e.group.position.y = this.world.heightAt(e.groundAt.x, e.groundAt.z);
+    if (e.groundAt) e.group.position.y = this.world.surfaceAt(e.groundAt.x, e.groundAt.z);
     this.effects.push(e);
     this.scene.add(e.group);
   }
@@ -515,7 +516,7 @@ export class Game implements GameCtx {
     this.cam.x += (p.x - this.cam.x) * k;
     this.cam.z += (p.z - 1.0 - this.cam.z) * k;
     // follow the player's altitude so the shear offset stays centred on the ground she stands on
-    const gy = this.world.heightAt(p.x, p.z);
+    const gy = this.world.surfaceAt(p.x, p.z);
     this.camY += (gy - this.camY) * (dt > 0 ? 1 - Math.exp(-dt * 5) : 1);
     const hx = VIEW_TILES_X / 2, hz = VIEW_TILES_Y / 2;
     const cx = clamp(this.cam.x, hx, MAP_W - hx), cz = clamp(this.cam.z, hz, MAP_H - hz);

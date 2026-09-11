@@ -318,7 +318,7 @@ export class Player {
   }
 
   private sync() {
-    this.model.root.position.set(this.pos.x, this.game.world.heightAt(this.pos.x, this.pos.z), this.pos.z);
+    this.model.root.position.set(this.pos.x, this.game.world.surfaceAt(this.pos.x, this.pos.z), this.pos.z);
     this.model.root.rotation.y = this.facingAngle - this.rootYaw; // mirrored model: yaw runs the other way
   }
 
@@ -634,7 +634,7 @@ export class Enemy {
   }
 
   private sync() {
-    this.model.root.position.set(this.pos.x, this.game.world.heightAt(this.pos.x, this.pos.z), this.pos.z);
+    this.model.root.position.set(this.pos.x, this.game.world.surfaceAt(this.pos.x, this.pos.z), this.pos.z);
     this.model.root.rotation.y = FACING_ANGLE[this.facing];
   }
 
@@ -758,7 +758,7 @@ export class Npc {
   }
 
   private sync() {
-    this.model.root.position.set(this.pos.x, this.game.world.heightAt(this.pos.x, this.pos.z), this.pos.z);
+    this.model.root.position.set(this.pos.x, this.game.world.surfaceAt(this.pos.x, this.pos.z), this.pos.z);
     this.model.root.rotation.y = this.facingAngle;
   }
 }
@@ -783,7 +783,7 @@ export class Projectile {
   private sync() { this.mesh.position.set(this.pos.x, this.y, this.pos.z); }
   update(dt: number) {
     if (!this.alive) return;
-    if (this.life === 0) this.y = this.game.world.heightAt(this.pos.x, this.pos.z) + 0.6;
+    if (this.life === 0) this.y = this.game.world.surfaceAt(this.pos.x, this.pos.z) + 0.6;
     this.life += dt;
     this.pos.x += this.dir.x * this.speed * dt;
     this.pos.z += this.dir.z * this.speed * dt;
@@ -822,7 +822,7 @@ export class Pickup {
     if (!this.alive) return;
     this.t += dt; this.life -= dt;
     if (this.life <= 0) { this.destroy(); return; }
-    this.mesh.position.y = this.game.world.heightAt(this.pos.x, this.pos.z) + 0.35 + Math.sin(this.t * 4) * 0.06;
+    this.mesh.position.y = this.game.world.surfaceAt(this.pos.x, this.pos.z) + 0.35 + Math.sin(this.t * 4) * 0.06;
     if (this.kind !== 'heart') this.mesh.rotation.y += dt * 3;
     this.mesh.visible = this.life > 3 || Math.floor(this.life * 10) % 2 === 0;
     const p = this.game.player;

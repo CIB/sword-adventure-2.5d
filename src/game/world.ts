@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { MAP_W, MAP_H, TEX_PX, Tile, RNG, hash2, LEVEL_H, MAX_WALK_SLOPE } from './constants';
+import { getGradientMap as getGradientMapRef } from './models';
+import { MAP_W, MAP_H, TEX_PX, Tile, RNG, hash2, LEVEL_H, MAX_WALK_SLOPE, WATER_DEPTH, BRIDGE_H } from './constants';
 
 export type EnemyKind = 'sword' | 'spear' | 'javelin' | 'archer';
 export interface TreeSpec { x: number; z: number; scale: number; y?: number }
@@ -8,6 +9,7 @@ export interface HouseSpec { x: number; z: number; w: number; d: number; roof?: 
 export interface PropSpec { kind: 'well' | 'sign' | 'stall' | 'bench' | 'weathercock' | 'lamp' | 'barrel' | 'crate' | 'flowerpot' | 'hedge'; x: number; z: number; rot?: number }
 export interface NpcSpec { id: string; x: number; z: number; facing?: 0 | 1 | 2 | 3; wander?: number }
 export interface SpawnSpec { x: number; z: number; kind: EnemyKind }
+export interface BridgeSpec { x0: number; z0: number; x1: number; z1: number; y: number } // tile-inclusive rect + deck height
 export interface Vec2 { x: number; z: number }
 
 function distToSeg(px: number, pz: number, ax: number, az: number, bx: number, bz: number): number {
@@ -110,9 +112,9 @@ export class World {
   /** Move an AABB through the tile map with axis separation + Zelda-style corner nudging. */
   /** Would moving the box centre from (x0,z0) to (x1,z1) climb/drop a cliff face? Samples the box corners. */
   private cliffBlocked(x0: number, z0: number, x1: number, z1: number, hw: number, hh: number): boolean {
-    const h0 = this.heightAt(x0, z0);
+    const h0 = this.surfaceAt(x0, z0);
     for (const [ox, oz] of [[0, 0], [-hw, -hh], [hw, -hh], [-hw, hh], [hw, hh]]) {
-      if (Math.abs(this.heightAt(x1 + ox, z1 + oz) - h0) > MAX_WALK_SLOPE) return true;
+      if (Math.abs(this.surfaceAt(x1 + ox, z1 + oz) - h0) > MAX_WALK_SLOPE) return true;
     }
     return false;
   }
@@ -183,72 +185,132 @@ export class World {
   }
 
   // ---------------------------------------------------------------- generation
+  bridges: BridgeSpec[] = [];
+  /** distance from each tile centre to the nearest water polyline centre-line (for banks) */
+  private riverDist = new Float32Array(MAP_W * MAP_H).fill(1e9);
+  private riverHalfW = new Float32Array(MAP_W * MAP_H);
+
   private generate() {
     const { w, h, rng } = this;
     const set = (x: number, z: number, t: Tile) => { if (x >= 0 && z >= 0 && x < w && z < h) this.tiles[z * w + x] = t; };
     const get = (x: number, z: number) => this.tile(x, z);
 
-    // 1. water: river + pond
-    const river = [[30, -3], [29, 7], [33, 13], [31, 21], [35, 29], [33, 38], [36, 47]];
+    // 1. water ------------------------------------------------------------------------------------------
+    // main river: enters at the top around x=120, wanders south, exits at the bottom around x=140
+    const river = [[118, -6], [116, 22], [124, 44], [122, 68], [130, 92], [128, 118], [136, 142], [134, 160], [140, 182]];
+    // tributary from the western lake into the river
+    const brook = [[48, 122], [70, 118], [92, 112], [110, 100], [124, 96]];
+    // eastern stream from the highland
+    const stream = [[206, 40], [186, 48], [170, 58], [150, 66], [128, 72]];
+    const waters: { pts: number[][]; w: number }[] = [{ pts: river, w: 3.4 }, { pts: brook, w: 1.9 }, { pts: stream, w: 1.6 }];
+    const lake = { x: 40, z: 126, rx: 13, rz: 8 };
+    const pond = { x: 24, z: 62, rx: 6, rz: 4 };
     for (let z = 0; z < h; z++) for (let x = 0; x < w; x++) {
       const cx = x + 0.5, cz = z + 0.5;
-      const d = polyDist(cx, cz, river) + (rng.next() - 0.5) * 0.5;
-      if (d < 1.7) set(x, z, Tile.Water);
-      const ex = (cx - 10.5) / 4.3, ez = (cz - 30.5) / 3.1;
-      if (ex * ex + ez * ez < 1 + (rng.next() - 0.5) * 0.3) set(x, z, Tile.Water);
+      const i = this.idx(x, z);
+      let best = 1e9, bw = 0;
+      for (const wt of waters) { const d = polyDist(cx, cz, wt.pts); if (d - wt.w < best - bw) { best = d; bw = wt.w; } }
+      for (const el of [lake, pond]) {
+        const ex = (cx - el.x) / el.rx, ez = (cz - el.z) / el.rz;
+        const r = Math.hypot(ex, ez); // 1 at the shore
+        const d = (r - 1) * Math.min(el.rx, el.rz); // approx distance to shore (negative inside)
+        if (d + 0 < best - bw) { best = d + 0; bw = 0; }
+      }
+      const wobble = (hash2(x, z, 3) - 0.5) * 0.6;
+      this.riverDist[i] = best - bw + wobble; // <0 = water, 0..~3 = bank
+      this.riverHalfW[i] = bw;
+      if (this.riverDist[i] < 0) set(x, z, Tile.Water);
     }
-    // 2. paths
-    const paths = [
-      [[9.5, 17], [9.5, 20.5], [24.5, 20.5], [24.5, 15.5], [32.5, 15.5]],
-      [[21, 8.5], [24.5, 8.5], [24.5, 15.5]],
-      [[45.5, 15.5], [45.5, 5.5], [43.5, 4.5]],
-      [[33, 15.5], [45.5, 15.5], [45.5, 26.5], [40.5, 31.5], [37, 31.5]],
-      [[34, 31.5], [20.5, 31.5], [20.5, 38.5]],
-      [[9.5, 20.5], [9.5, 22.5], [15.5, 26.5]],
-      [[20.5, 31.5], [18.5, 24.5]],
+
+    // 2. roads ------------------------------------------------------------------------------------------
+    const roads = [
+      // from the village south gate down to the crossroads, then east to the great bridge
+      [[9.5, 17], [9.5, 30.5], [40.5, 30.5], [40.5, 46.5], [96.5, 46.5], [121.5, 46.5]],
+      // east gate road to the north bridge
+      [[21, 8.5], [60.5, 8.5], [60.5, 20.5], [114.5, 20.5]],
+      // beyond the great bridge to the highland ramp and the far east
+      [[125.5, 46.5], [160.5, 46.5], [160.5, 80.5], [190.5, 80.5]],
+      // south road: crossroads -> lake -> brook bridge -> southern bridge
+      [[40.5, 46.5], [40.5, 100.5], [62.5, 100.5], [62.5, 140.5], [100.5, 140.5], [100.5, 128.5], [132.5, 128.5]],
+      // east bank south
+      [[140.5, 128.5], [170.5, 128.5], [170.5, 150.5]],
+      [[160.5, 80.5], [160.5, 110.5], [140.5, 110.5]],
     ];
     for (let z = 0; z < h; z++) for (let x = 0; x < w; x++) {
       if (get(x, z) !== Tile.Grass) continue;
       const cx = x + 0.5, cz = z + 0.5;
       if (x >= this.village.x0 && x <= this.village.x1 && z >= this.village.z0 && z <= this.village.z1 - 1) continue;
-      for (const p of paths) if (polyDist(cx, cz, p) < 1.1) { set(x, z, Tile.Path); break; }
+      for (const p of roads) if (polyDist(cx, cz, p) < 1.1) { set(x, z, Tile.Path); break; }
     }
-    // 3. bridges
-    for (const z of [14, 15, 16]) for (let x = 26; x < 40; x++) if (get(x, z) === Tile.Water) set(x, z, Tile.Bridge);
-    for (const z of [30, 31, 32]) for (let x = 28; x < 44; x++) if (get(x, z) === Tile.Water) set(x, z, Tile.Bridge);
-    // 4. terrain heights (replaces the old flat cliff tiles): plateaus, hills and sunken river banks
+
+    // 3. bridges (raised wooden decks; the terrain underneath stays sunk) --------------------------------
+    const bridgeAt = (x: number, z: number, along: 'x' | 'z') => {
+      // find the water crossing on this row/column nearest to (x,z), then span it with 1 tile of abutment each side
+      const isW = (k: number) => along === 'x' ? get(k, z) === Tile.Water : get(x, k) === Tile.Water;
+      let start = along === 'x' ? x : z;
+      if (!isW(start)) { let f = -1; for (let d = 1; d < 30 && f < 0; d++) { if (isW(start + d)) f = start + d; else if (isW(start - d)) f = start - d; } if (f < 0) return; start = f; }
+      let a = start, b = start;
+      while (isW(a - 1)) a--;
+      while (isW(b + 1)) b++;
+      a -= 1; b += 1;
+      const spec: BridgeSpec = along === 'x' ? { x0: a, z0: z - 1, x1: b, z1: z + 1, y: BRIDGE_H } : { x0: x - 1, z0: a, x1: x + 1, z1: b, y: BRIDGE_H };
+      this.bridges.push(spec);
+      for (let bz = spec.z0; bz <= spec.z1; bz++) for (let bx = spec.x0; bx <= spec.x1; bx++) set(bx, bz, Tile.Bridge);
+    };
+    bridgeAt(122, 46, 'x');  // great bridge (east road)
+    bridgeAt(116, 20, 'x');  // north bridge
+    bridgeAt(134, 128, 'x'); // south bridge
+    bridgeAt(62, 118, 'z');  // brook bridge (south road)
+    bridgeAt(160, 62, 'z');  // eastern stream bridge
+
+    // 4. terrain heights ------------------------------------------------------------------------------
     this.generateHeights();
-    // 5. village (houses, plaza, beds, paths)
+
+    // 5. village ---------------------------------------------------------------------------------------
     for (const hs of this.houses) for (let z = hs.z; z < hs.z + hs.d; z++) for (let x = hs.x; x < hs.x + hs.w; x++) {
       set(x, z, Tile.Grass); this.houseCell[this.idx(x, z)] = 1;
     }
     this.generateVillage(set);
-    // 6. trees
+
+    // 6. trees -----------------------------------------------------------------------------------------
     const v = this.village;
     const inYard = (x: number, z: number) => x >= v.x0 && x <= v.x1 && z >= v.z0 && z <= v.z1;
     const nearSpawn = (x: number, z: number) => Math.hypot(x + 0.5 - this.playerStart.x, z + 0.5 - this.playerStart.z) < 3;
-    // keep the slopes/ramps clear of objects so they stay walkable
-    const onRamp = (x: number, z: number) => (x >= 43 && x <= 46 && z >= 7 && z <= 13) || (x >= 7 && x <= 12 && z >= 17 && z <= 22) || (x >= 20 && x <= 26 && z >= 7 && z <= 10);
-    const treeOK = (x: number, z: number) => get(x, z) === Tile.Grass && !this.houseCell[this.idx(x, z)] && !inYard(x, z) && !nearSpawn(x, z) && !onRamp(x, z);
+    const nearRoad = (x: number, z: number) => { for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) { const t = get(x + dx, z + dz); if (t === Tile.Path || t === Tile.Bridge) return true; } return false; };
+    const flat = (x: number, z: number) => {
+      const hs = [this.cornerH(x, z), this.cornerH(x + 1, z), this.cornerH(x, z + 1), this.cornerH(x + 1, z + 1)];
+      return Math.max(...hs) - Math.min(...hs) < 0.3;
+    };
+    const treeOK = (x: number, z: number) => get(x, z) === Tile.Grass && !this.houseCell[this.idx(x, z)] && !inYard(x, z) && !nearSpawn(x, z) && !nearRoad(x, z) && flat(x, z) && this.riverDist[this.idx(x, z)] > 1.5;
+    // border forest
     for (let z = 0; z < h; z++) for (let x = 0; x < w; x++) {
       const ring = Math.min(x, z, w - 1 - x, h - 1 - z);
       if (ring < 2) { if (get(x, z) !== Tile.Water) this.treeCell[this.idx(x, z)] = 1; continue; }
-      if (ring <= 4 && treeOK(x, z)) {
-        const p = [0.6, 0.32, 0.12][ring - 2];
+      if (ring <= 6 && treeOK(x, z)) {
+        const p = [0.7, 0.5, 0.35, 0.22, 0.12][ring - 2] ?? 0.08;
         if (rng.next() < p) this.treeCell[this.idx(x, z)] = 1;
       }
     }
+    // forests: low-frequency value noise decides woodland regions, groves add dense clumps
+    const noise = (x: number, z: number, f: number, seed: number) => {
+      const gx = x / f, gz = z / f, x0 = Math.floor(gx), z0 = Math.floor(gz), fx = gx - x0, fz = gz - z0;
+      const sm = (t: number) => t * t * (3 - 2 * t);
+      const n00 = hash2(x0, z0, seed), n10 = hash2(x0 + 1, z0, seed), n01 = hash2(x0, z0 + 1, seed), n11 = hash2(x0 + 1, z0 + 1, seed);
+      return (n00 * (1 - sm(fx)) + n10 * sm(fx)) * (1 - sm(fz)) + (n01 * (1 - sm(fx)) + n11 * sm(fx)) * sm(fz);
+    };
+    for (let z = 0; z < h; z++) for (let x = 0; x < w; x++) {
+      if (!treeOK(x, z)) continue;
+      const n = noise(x, z, 18, 11) * 0.7 + noise(x, z, 7, 12) * 0.3;
+      if (n > 0.62 && rng.next() < (n - 0.62) * 3.2) this.treeCell[this.idx(x, z)] = 1;
+      else if (rng.next() < 0.012) this.treeCell[this.idx(x, z)] = 1; // lone trees
+    }
     const groves = [
-      { x: 21, z: 23, r: 5.5, p: 0.55 }, { x: 43, z: 37, r: 4.5, p: 0.55 }, { x: 24, z: 5, r: 4, p: 0.5 },
-      { x: 6, z: 22, r: 3.5, p: 0.55 }, { x: 16, z: 40, r: 3, p: 0.5 }, { x: 34, z: 22, r: 3, p: 0.4 },
+      { x: 84, z: 92, r: 9, p: 0.55 }, { x: 172, z: 148, r: 8, p: 0.55 }, { x: 96, z: 20, r: 7, p: 0.5 }, { x: 24, z: 88, r: 7, p: 0.55 },
+      { x: 64, z: 160, r: 8, p: 0.5 }, { x: 136, z: 88, r: 6, p: 0.4 }, { x: 180, z: 20, r: 7, p: 0.5 }, { x: 150, z: 160, r: 7, p: 0.5 }, { x: 30, z: 40, r: 5, p: 0.5 },
     ];
-    for (const g of groves) for (let z = 0; z < h; z++) for (let x = 0; x < w; x++) {
+    for (const g of groves) for (let z = g.z - g.r - 2; z <= g.z + g.r + 2; z++) for (let x = g.x - g.r - 2; x <= g.x + g.r + 2; x++) {
       const d = Math.hypot(x - g.x, z - g.z) + (rng.next() - 0.5) * 1.5;
       if (d < g.r && treeOK(x, z) && rng.next() < g.p) this.treeCell[this.idx(x, z)] = 1;
-    }
-    for (let i = 0; i < 30; i++) {
-      const x = rng.int(3, w - 4), z = rng.int(3, h - 4);
-      if (treeOK(x, z)) this.treeCell[this.idx(x, z)] = 1;
     }
     // village trees: framing corners + a big one by the plaza
     for (const [x, z] of [[2, 2], [3, 2], [2, 3], [3, 3], [18, 14], [19, 14], [18, 15], [19, 15], [19, 1], [1, 16], [2, 16], [17, 1], [12, 16], [1, 6], [1, 7]]) if (get(x, z) === Tile.Grass && !this.houseCell[this.idx(x, z)]) this.treeCell[this.idx(x, z)] = 1;
@@ -267,55 +329,66 @@ export class World {
         this.trees.push({ x: x + 0.5, z: z + 0.8, scale: 0.6, y: this.heightAt(x + 0.5, z + 0.5) });
       }
     }
-    // 7. bushes
-    const bushClusters = [[27, 19], [40, 21], [27, 35], [15, 33], [37, 8], [6, 19], [30, 25], [22, 12], [44, 29], [12, 24], [33, 5]];
-    const patterns = [[[0, 0], [1, 0], [2, 0]], [[0, 0], [0, 1], [0, 2]], [[0, 0], [1, 0], [0, 1], [1, 1]], [[0, 0], [1, 0], [2, 0], [0, 1]], [[0, 0], [2, 0], [1, 1]]];
-    const objFree = (x: number, z: number) => (get(x, z) === Tile.Grass || get(x, z) === Tile.Flowers) && !this.treeCell[this.idx(x, z)] && !this.houseCell[this.idx(x, z)] && !nearSpawn(x, z) && !onRamp(x, z);
+
+    // 7. bushes / rocks ---------------------------------------------------------------------------------
+    const objFree = (x: number, z: number) => (get(x, z) === Tile.Grass || get(x, z) === Tile.Flowers) && !this.treeCell[this.idx(x, z)] && !this.houseCell[this.idx(x, z)] && !nearSpawn(x, z) && flat(x, z) && this.riverDist[this.idx(x, z)] > 1.2;
     const occupied = new Uint8Array(w * h);
-    for (const [bx, bz] of bushClusters) {
+    const patterns = [[[0, 0], [1, 0], [2, 0]], [[0, 0], [0, 1], [0, 2]], [[0, 0], [1, 0], [0, 1], [1, 1]], [[0, 0], [1, 0], [2, 0], [0, 1]], [[0, 0], [2, 0], [1, 1]]];
+    for (let i = 0; i < 190; i++) {
+      const bx = rng.int(3, w - 6), bz = rng.int(3, h - 6);
+      if (inYard(bx, bz)) continue;
       const pat = rng.pick(patterns);
       for (const [ox, oz] of pat) {
         const x = bx + ox, z = bz + oz;
         if (objFree(x, z) && !inYard(x, z) && !occupied[this.idx(x, z)]) { this.bushes.push({ tx: x, tz: z }); occupied[this.idx(x, z)] = 1; }
       }
     }
-    // 8. rocks
-    for (let i = 0; i < 26; i++) {
+    // a few guaranteed bushes near the village for Granny's quest
+    for (const [x, z] of [[6, 20], [7, 20], [13, 21], [14, 21], [15, 21], [4, 25], [5, 25], [16, 25], [17, 26], [11, 27], [12, 27]]) if (objFree(x, z) && !occupied[this.idx(x, z)]) { this.bushes.push({ tx: x, tz: z }); occupied[this.idx(x, z)] = 1; }
+    for (let i = 0; i < 380; i++) {
       const x = rng.int(3, w - 4), z = rng.int(3, h - 4);
       if (objFree(x, z) && !occupied[this.idx(x, z)] && !inYard(x, z)) { this.rocks.push({ tx: x, tz: z }); occupied[this.idx(x, z)] = 1; }
     }
-    // 9. village fence ring with a gate on the south side and hedges
+
+    // 8. village fence ring with gates ------------------------------------------------------------------
     const fenceAt = (x: number, z: number) => { if (objFree(x, z) && !occupied[this.idx(x, z)]) { this.fences.push({ tx: x, tz: z }); occupied[this.idx(x, z)] = 1; } };
     for (let x = v.x0; x <= v.x1; x++) { if (x < 8 || x > 10) fenceAt(x, v.z1); }
-    for (let z = v.z0 + 1; z <= v.z1; z++) { if (z < 8 || z > 9) fenceAt(v.x1, z); }  // east gate too
-    for (const b of this.beds()) { const i = this.idx(b[0], b[1]); if (!occupied[i]) occupied[i] = 2; } // beds: solid-ish (2 = not for objects, still blocks walking)
+    for (let z = v.z0 + 1; z <= v.z1; z++) { if (z < 8 || z > 9) fenceAt(v.x1, z); }
+    for (const b of this.beds()) { const i = this.idx(b[0], b[1]); if (!occupied[i]) occupied[i] = 2; }
     for (const pr of this.props) {
       if (pr.kind === 'lamp' || pr.kind === 'sign' || pr.kind === 'flowerpot') continue;
       const tx = Math.floor(pr.x), tz = Math.floor(pr.z);
       if (!this.houseCell[this.idx(tx, tz)]) occupied[this.idx(tx, tz)] = 1;
       if (pr.kind === 'stall') { occupied[this.idx(tx - 1, tz)] = 1; occupied[this.idx(tx + 1, tz)] = 1; }
     }
-    // 10. flowers
+
+    // 9. flowers ---------------------------------------------------------------------------------------
     for (let z = 0; z < h; z++) for (let x = 0; x < w; x++) {
       if (get(x, z) === Tile.Grass && !this.treeCell[this.idx(x, z)] && !occupied[this.idx(x, z)] && rng.next() < 0.05) set(x, z, Tile.Flowers);
     }
-    // solidity
+
+    // solidity ----------------------------------------------------------------------------------------
     for (let z = 0; z < h; z++) for (let x = 0; x < w; x++) {
       const i = this.idx(x, z);
       const t = this.tiles[i];
       const s = t === Tile.Water || t === Tile.Cliff || this.treeCell[i] === 1 || this.houseCell[i] === 1 || occupied[i] >= 1;
       this.solid[i] = s ? 1 : 0;
-      this.tall[i] = (t === Tile.Cliff || this.treeCell[i] === 1 || this.houseCell[i] === 1 || occupied[i] === 1) ? 1 : 0;
+      this.tall[i] = (t === Tile.Cliff || this.treeCell[i] === 1 || this.houseCell[i] === 1 || occupied[i] >= 1) ? 1 : 0;
     }
-    // 11. enemy spawns
-    const raw: SpawnSpec[] = [
-      { x: 22.5, z: 13.5, kind: 'sword' }, { x: 28.5, z: 20.5, kind: 'sword' }, { x: 14.5, z: 23.5, kind: 'sword' },
-      { x: 24.5, z: 33.5, kind: 'sword' }, { x: 44.5, z: 19.5, kind: 'sword' }, { x: 36.5, z: 18.5, kind: 'sword' },
-      { x: 37.5, z: 11.5, kind: 'spear' }, { x: 43.5, z: 24.5, kind: 'spear' }, { x: 30.5, z: 36.5, kind: 'spear' }, { x: 19.5, z: 21.5, kind: 'spear' },
-      { x: 18.5, z: 29.5, kind: 'javelin' }, { x: 40.5, z: 27.5, kind: 'javelin' }, { x: 12.5, z: 22.5, kind: 'javelin' },
-      { x: 43.5, z: 12.5, kind: 'archer' }, { x: 38.5, z: 35.5, kind: 'archer' }, { x: 26.5, z: 39.5, kind: 'archer' }, { x: 47.5, z: 33.5, kind: 'archer' },
-    ];
-    for (const s of raw) { const p = this.nearestFree(s.x, s.z); this.spawns.push({ x: p.x, z: p.z, kind: s.kind }); }
+
+    // 10. enemy spawns: procedural, denser further from the village ---------------------------------------
+    const kinds: EnemyKind[] = ['sword', 'sword', 'sword', 'spear', 'spear', 'javelin', 'archer'];
+    let tries = 0;
+    while (this.spawns.length < 110 && tries++ < 20000) {
+      const x = rng.int(4, w - 5), z = rng.int(4, h - 5);
+      const dv = Math.hypot(x - 10, z - 9);
+      if (dv < 26) continue;
+      if (this.isSolidTile(x, z) || get(x, z) === Tile.Water || get(x, z) === Tile.Bridge) continue;
+      if (this.spawns.some((s) => Math.hypot(s.x - x, s.z - z) < 7)) continue;
+      const far = Math.min(1, (dv - 26) / 120);
+      const kind = far > rng.next() * 1.4 ? rng.pick(kinds) : rng.pick(['sword', 'sword', 'spear'] as EnemyKind[]);
+      this.spawns.push({ x: x + 0.5, z: z + 0.5, kind });
+    }
   }
 
   private generateHeights() {
@@ -323,72 +396,120 @@ export class World {
     const lvl = new Float32Array(W * H); // in levels
     const rng = new RNG(777);
     const smoothstep = (a: number, b: number, v: number) => { const t = Math.min(1, Math.max(0, (v - a) / (b - a))); return t * t * (3 - 2 * t); };
-    // rounded-rect plateau helper: full height inside, ramps down over `fall` tiles
     const plateau = (x0: number, z0: number, x1: number, z1: number, levels: number, fall: number) => {
-      for (let cz = 0; cz < H; cz++) for (let cx = 0; cx < W; cx++) {
+      for (let cz = Math.max(0, z0 - fall - 2); cz < Math.min(H, z1 + fall + 3); cz++) for (let cx = Math.max(0, x0 - fall - 2); cx < Math.min(W, x1 + fall + 3); cx++) {
         const dx = Math.max(x0 - cx, 0, cx - x1), dz = Math.max(z0 - cz, 0, cz - z1);
         const d = Math.hypot(dx, dz);
         lvl[cz * W + cx] = Math.max(lvl[cz * W + cx], levels * (1 - smoothstep(0, fall, d)));
       }
     };
-    // NE highland: two terraces with a walkable ramp on the west side (x 38..40) and cliff faces elsewhere
-    plateau(41, 0, 52, 8, 2, 1.2);
-    plateau(45, 0, 52, 4, 3, 1.2);
-    // SW hill (rounded)
+    const hill = (x: number, z: number, rx: number, rz: number, levels: number) => {
+      for (let cz = Math.max(0, z - rz - 2); cz < Math.min(H, z + rz + 3); cz++) for (let cx = Math.max(0, x - rx - 2); cx < Math.min(W, x + rx + 3); cx++) {
+        const d = Math.hypot((cx - x) / rx, (cz - z) / rz);
+        lvl[cz * W + cx] = Math.max(lvl[cz * W + cx], levels * (1 - smoothstep(0.45, 1.05, d)));
+      }
+    };
+    // NE highland: broad terraces with cliff faces; the road climbs it at x~160 (ramp carved below)
+    plateau(150, 0, 208, 40, 2, 1.4);
+    plateau(168, 0, 208, 24, 3.5, 1.4);
+    plateau(186, 0, 208, 12, 5, 1.4);
+    // SE ridge and south hills
+    plateau(150, 160, 208, 176, 2, 1.6);
+    hill(28, 158, 14, 7, 2); hill(96, 166, 12, 6, 1.5); hill(120, 158, 8, 5, 1.2);
+    // western hills
+    hill(18, 44, 7, 5, 1.6); hill(70, 70, 10, 7, 1.4); hill(20, 100, 8, 6, 1.6); hill(84, 34, 8, 5, 1.2);
+    // mid-map mesa (between the roads)
+    plateau(76, 56, 96, 68, 1.5, 2.2);
+    // rolling meadow noise
     for (let cz = 0; cz < H; cz++) for (let cx = 0; cx < W; cx++) {
-      const d = Math.hypot((cx - 7) / 6, (cz - 39) / 3.2);
-      lvl[cz * W + cx] = Math.max(lvl[cz * W + cx], 2 * (1 - smoothstep(0.5, 1.15, d)));
+      lvl[cz * W + cx] += 0.22 * Math.sin(cx * 0.31 + 1.3) * Math.cos(cz * 0.27 + 0.4) + 0.12 * Math.sin(cx * 0.9) * Math.cos(cz * 0.8) + (rng.next() - 0.5) * 0.05;
     }
-    // south ridge
-    plateau(22, 41, 28, 44, 1.5, 1.6);
-    plateau(38, 41, 44, 44, 1.5, 1.6);
-    // gentle village rise
-    for (let cz = 0; cz < H; cz++) for (let cx = 0; cx < W; cx++) {
-      const d = Math.hypot((cx - 10) / 14, (cz - 8) / 12);
-      lvl[cz * W + cx] = Math.max(lvl[cz * W + cx], 0.8 * (1 - smoothstep(0.55, 1.1, d)));
-    }
-    // rolling meadow noise (small)
-    for (let cz = 0; cz < H; cz++) for (let cx = 0; cx < W; cx++) {
-      lvl[cz * W + cx] += 0.18 * Math.sin(cx * 0.55 + 1.3) * Math.cos(cz * 0.47 + 0.4) + (rng.next() - 0.5) * 0.05;
-    }
-    const cornerTiles = (cx: number, cz: number) => [[cx - 1, cz - 1], [cx, cz - 1], [cx - 1, cz], [cx, cz]];
-    // village: a raised terrace (1.6 levels) with gentle slopes down at the two gates; steep banks elsewhere
+    // village terrace
     const v = this.village;
     for (let cz = 0; cz < H; cz++) for (let cx = 0; cx < W; cx++) {
       const i = cz * W + cx;
       const inside = cx >= v.x0 && cx <= v.x1 + 1 && cz >= v.z0 && cz <= v.z1 + 1;
       if (inside) { lvl[i] = 1.6; continue; }
-      // distance outside the terrace
       const dx = Math.max(v.x0 - cx, 0, cx - (v.x1 + 1)), dz = Math.max(v.z0 - cz, 0, cz - (v.z1 + 1));
       const d = Math.hypot(dx, dz);
-      // gate ramps: south gate (x 8..11) and east gate (z 8..10) fall over 4 tiles, the rest over 1.2 tiles (cliff)
+      if (d > 8) continue;
       const southGate = cx >= 8 && cx <= 11 && cz > v.z1 + 1;
       const eastGate = cz >= 8 && cz <= 10 && cx > v.x1 + 1;
       const fall = southGate || eastGate ? 4.5 : 1.3;
       lvl[i] = Math.max(lvl[i], 1.6 * (1 - smoothstep(0, fall, d)));
     }
-    // water sunk below the shore, bridges just above water
-    for (let cz = 0; cz < H; cz++) for (let cx = 0; cx < W; cx++) {
-      const ts = cornerTiles(cx, cz).map(([x, z]) => this.tile(x, z));
+    // ramp for the NE highland where the road climbs (x 158..163, z 40..48)
+    for (let cz = 40; cz <= 48; cz++) for (let cx = 157; cx <= 164; cx++) lvl[cz * W + cx] = 2 * smoothstep(48.5, 40, cz);
+    // roads: keep them gentle (relax steep local bumps) by blending toward the neighbourhood average
+    // (a cheap smoothing pass on corners adjacent to path tiles)
+    for (let pass = 0; pass < 2; pass++) for (let cz = 1; cz < H - 1; cz++) for (let cx = 1; cx < W - 1; cx++) {
+      const onRoad = [[cx - 1, cz - 1], [cx, cz - 1], [cx - 1, cz], [cx, cz]].some(([x, z]) => this.tile(x, z) === Tile.Path);
+      if (!onRoad) continue;
       const i = cz * W + cx;
-      if (ts.some((t) => t === Tile.Water)) lvl[i] = Math.min(lvl[i], -0.6);
-      else if (ts.some((t) => t === Tile.Bridge)) lvl[i] = Math.min(lvl[i], 0.1);
+      const avg = (lvl[i - 1] + lvl[i + 1] + lvl[i - W] + lvl[i + W]) / 4;
+      lvl[i] = lvl[i] * 0.4 + avg * 0.6;
     }
-    // ramp for the NE plateau where the road climbs (x 43..47, z 8..13)
-    for (let cz = 8; cz <= 13; cz++) for (let cx = 43; cx <= 47; cx++) {
-      const t = smoothstep(13.5, 8, cz);
-      lvl[cz * W + cx] = 2 * t;
-    }
-    // make sure houses sit flat
-    for (const hs of this.houses) for (let cz = hs.z; cz <= hs.z + hs.d; cz++) for (let cx = hs.x; cx <= hs.x + hs.w; cx++) lvl[cz * W + cx] = 1.6;
+    // convert to world units
     for (let i = 0; i < lvl.length; i++) this.hmap[i] = lvl[i] * LEVEL_H;
-    // tiles that sit on the steep flanks become Cliff (rock texture on the slope, unwalkable)
+    // river banks: carve a smooth channel. Corners near water slope down to the river bed over ~3 tiles.
+    const bankW = 3.0;
+    for (let cz = 0; cz < H; cz++) for (let cx = 0; cx < W; cx++) {
+      // corner distance = min of the 4 adjacent tile centre distances (+0.5 tile offset compensation)
+      let d = 1e9;
+      for (const [x, z] of [[cx - 1, cz - 1], [cx, cz - 1], [cx - 1, cz], [cx, cz]]) if (x >= 0 && z >= 0 && x < this.w && z < this.h) d = Math.min(d, this.riverDist[this.idx(x, z)]);
+      if (d > bankW) continue;
+      const i = cz * W + cx;
+      const t = smoothstep(-0.6, bankW, d); // 0 in the water, 1 at the top of the bank
+      const bed = -WATER_DEPTH - 0.15;
+      const eased = t * t * (3 - 2 * t);
+      // bank height eases from the local meadow height down to the bed; extra dip in the middle of the river
+      const meadow = Math.min(this.hmap[i], 0.6); // banks never start higher than a low meadow level
+      this.hmap[i] = Math.min(this.hmap[i], bed + (meadow - bed) * eased);
+    }
+    // bridges: the deck is a separate mesh, so terrain under the deck stays sunk. The abutment tiles and a short
+    // causeway on each side are raised so the road climbs gently out of the bank onto the deck.
+    for (const b of this.bridges) {
+      const alongX = b.x1 - b.x0 > b.z1 - b.z0;
+      const lo = alongX ? b.x0 : b.z0, hi = alongX ? b.x1 + 1 : b.z1 + 1;
+      const cLo = alongX ? b.z0 : b.x0, cHi = alongX ? b.z1 + 1 : b.x1 + 1;
+      for (let a = lo - 4; a <= hi + 4; a++) for (let c = cLo - 1; c <= cHi + 1; c++) {
+        const cx = alongX ? a : c, cz = alongX ? c : a;
+        if (cx < 0 || cz < 0 || cx > W - 1 || cz > H - 1) continue;
+        const i = cz * W + cx;
+        const inner = a > lo + 1 && a < hi - 1; // corners over the water span: leave sunk
+        if (inner) continue;
+        const dist = Math.max(0, lo - a, a - hi);       // tiles away from the abutment
+        const side = Math.max(0, cLo - c, c - cHi);      // beside the causeway: half-height shoulder
+        const lift = -dist * 0.18 - side * 0.3;
+        this.hmap[i] = Math.max(this.hmap[i], Math.min(lift, 0));
+      }
+    }
+    // tiles on steep flanks become Cliff (rock texture, unwalkable); banks stay grass unless very steep
     for (let z = 0; z < this.h; z++) for (let x = 0; x < this.w; x++) {
       const h00 = this.cornerH(x, z), h10 = this.cornerH(x + 1, z), h01 = this.cornerH(x, z + 1), h11 = this.cornerH(x + 1, z + 1);
       const steep = Math.max(Math.abs(h10 - h00), Math.abs(h11 - h01), Math.abs(h01 - h00), Math.abs(h11 - h10)) > MAX_WALK_SLOPE;
       const t = this.tile(x, z);
       if (steep && t !== Tile.Water && t !== Tile.Bridge) this.tiles[this.idx(x, z)] = Tile.Cliff;
     }
+  }
+
+  isWaterUnder(tx: number, tz: number): boolean { return this.riverDist[this.idx(tx, tz)] < 0; }
+
+  /** Height of the walkable surface (terrain, or the bridge deck when standing on a bridge) */
+  surfaceAt(x: number, z: number): number {
+    const tx = Math.floor(x), tz = Math.floor(z);
+    if (this.tile(tx, tz) === Tile.Bridge) {
+      for (const b of this.bridges) if (tx >= b.x0 && tx <= b.x1 && tz >= b.z0 && tz <= b.z1) {
+        // ramp up over the abutment tile
+        const alongX = b.x1 - b.x0 > b.z1 - b.z0;
+        const p = alongX ? x : z, p0 = alongX ? b.x0 : b.z0, p1 = alongX ? b.x1 + 1 : b.z1 + 1;
+        const ramp = Math.min(1, Math.min(p - p0, p1 - p));
+        const ground0 = this.heightAt(alongX ? p0 : x, alongX ? z : p0), ground1 = this.heightAt(alongX ? p1 : x, alongX ? z : p1);
+        const ground = p - p0 < p1 - p ? ground0 : ground1;
+        return ground + (b.y - ground + 0.0) * ramp + (ramp >= 1 ? 0 : 0);
+      }
+    }
+    return this.heightAt(x, z);
   }
 
   private beds(): [number, number][] {
@@ -486,7 +607,12 @@ export class World {
       const t = this.tile(tx, tz);
       const ox = tx * T, oz = tz * T;
       const N = this.tile(tx, tz - 1), S = this.tile(tx, tz + 1), E = this.tile(tx + 1, tz), W = this.tile(tx - 1, tz);
-      if (t === Tile.Grass || t === Tile.Flowers) {
+      if ((t === Tile.Grass || t === Tile.Flowers) && this.riverDist[tz * this.w + tx] < 0.9) {
+        // sandy river bank strip
+        g.fillStyle = '#d9c48c'; g.fillRect(ox, oz, T, T);
+        for (let i = 0; i < 6; i++) { g.fillStyle = i % 2 ? '#e8d6a2' : '#bfa66c'; g.fillRect(ox + Math.floor(hash2(tx, tz, i) * T), oz + Math.floor(hash2(tx, tz, i + 20) * T), 1, 1); }
+        if (hash2(tx, tz, 44) < 0.3) { g.fillStyle = '#9aa0a8'; const x = ox + Math.floor(hash2(tx, tz, 45) * (T - 3)), y = oz + Math.floor(hash2(tx, tz, 46) * (T - 2)); g.fillRect(x, y, 3, 2); g.fillStyle = '#c9ced4'; g.fillRect(x, y, 1, 1); }
+      } else if (t === Tile.Grass || t === Tile.Flowers) {
         this.paintGrass(g, ox, oz, tx, tz, t === Tile.Flowers);
       } else if (t === Tile.Path) {
         g.fillStyle = C.path; g.fillRect(ox, oz, T, T);
@@ -521,6 +647,10 @@ export class World {
         if (!land(N) && !land(E) && land(this.tile(tx + 1, tz - 1))) g.fillRect(ox + T - 2, oz, 2, 2);
         if (!land(S) && !land(W) && land(this.tile(tx - 1, tz + 1))) g.fillRect(ox, oz + T - 2, 2, 2);
         if (!land(S) && !land(E) && land(this.tile(tx + 1, tz + 1))) g.fillRect(ox + T - 2, oz + T - 2, 2, 2);
+      } else if (t === Tile.Bridge && this.riverDist[tz * this.w + tx] >= 0) {
+        // bridge abutment on land: packed earth
+        g.fillStyle = C.pathD; g.fillRect(ox, oz, T, T);
+        for (let i = 0; i < 5; i++) { g.fillStyle = i % 2 ? C.path : C.pathE; g.fillRect(ox + Math.floor(hash2(tx, tz, i) * T), oz + Math.floor(hash2(tx, tz, i + 20) * T), 2, 1); }
       } else if (t === Tile.Bridge) {
         g.fillStyle = C.plank; g.fillRect(ox, oz, T, T);
         for (let x = 0; x < T; x += 5) { g.fillStyle = C.plankD; g.fillRect(ox + x, oz, 1, T); g.fillStyle = C.plankL; g.fillRect(ox + x + 1, oz, 1, T); }
@@ -584,6 +714,77 @@ export class World {
     g.setIndex(idx);
     g.computeVertexNormals();
     return g;
+  }
+
+  /** Wooden bridge decks with side rails, built as one merged geometry per material */
+  createBridgeMeshes(): THREE.Object3D[] {
+    const plank = new THREE.MeshToonMaterial({ color: '#b98450', gradientMap: getGradientMapRef() });
+    const dark = new THREE.MeshToonMaterial({ color: '#7e5230', gradientMap: getGradientMapRef() });
+    const group = new THREE.Group();
+    for (const b of this.bridges) {
+      const alongX = b.x1 - b.x0 > b.z1 - b.z0;
+      const len = alongX ? b.x1 - b.x0 + 1 : b.z1 - b.z0 + 1;
+      const wid = alongX ? b.z1 - b.z0 + 1 : b.x1 - b.x0 + 1;
+      const cx = (b.x0 + b.x1 + 1) / 2, cz = (b.z0 + b.z1 + 1) / 2;
+      const g = new THREE.Group();
+      g.position.set(cx, 0, cz);
+      g.rotation.y = alongX ? 0 : Math.PI / 2;
+      // deck: slightly arched (3 segments), planks across
+      const segs = 3;
+      for (let i = 0; i < segs; i++) {
+        const t0 = i / segs, t1 = (i + 1) / segs;
+        const x0 = -len / 2 + len * t0, x1 = -len / 2 + len * t1;
+        const arch = (t: number) => b.y + Math.sin(t * Math.PI) * 0.12;
+        const y0 = arch(t0), y1 = arch(t1);
+        const segLen = Math.hypot(x1 - x0, y1 - y0);
+        const deck = new THREE.Mesh(new THREE.BoxGeometry(segLen, 0.12, wid - 0.1), plank);
+        deck.position.set((x0 + x1) / 2, (y0 + y1) / 2 - 0.06, 0);
+        deck.rotation.z = Math.atan2(y1 - y0, x1 - x0);
+        g.add(deck);
+        // plank grooves
+        for (let k = 0; k < Math.floor(segLen / 0.5); k++) {
+          const groove = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.02, wid - 0.1), dark);
+          const t = (k + 0.5) / Math.floor(segLen / 0.5);
+          groove.position.set(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t + 0.005, 0);
+          groove.rotation.z = deck.rotation.z;
+          g.add(groove);
+        }
+      }
+      // rails & posts on both sides
+      for (const side of [-1, 1]) {
+        const zr = side * (wid / 2 - 0.12);
+        const n = Math.round(len / 1.5);
+        for (let k = 0; k <= n; k++) {
+          const t = k / n, x = -len / 2 + 0.15 + (len - 0.3) * t;
+          const y = b.y + Math.sin(t * Math.PI) * 0.12;
+          const post = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.55, 0.12), dark);
+          post.position.set(x, y + 0.27, zr);
+          g.add(post);
+        }
+        for (let i = 0; i < segs; i++) {
+          const t0 = i / segs, t1 = (i + 1) / segs;
+          const x0 = -len / 2 + 0.15 + (len - 0.3) * t0, x1 = -len / 2 + 0.15 + (len - 0.3) * t1;
+          const y0 = b.y + Math.sin(t0 * Math.PI) * 0.12 + 0.5, y1 = b.y + Math.sin(t1 * Math.PI) * 0.12 + 0.5;
+          const rail = new THREE.Mesh(new THREE.BoxGeometry(Math.hypot(x1 - x0, y1 - y0), 0.07, 0.1), plank);
+          rail.position.set((x0 + x1) / 2, (y0 + y1) / 2, zr);
+          rail.rotation.z = Math.atan2(y1 - y0, x1 - x0);
+          g.add(rail);
+        }
+      }
+      // support pillars into the water
+      for (let k = 1; k < Math.round(len / 3); k++) {
+        const x = -len / 2 + (len / Math.round(len / 3)) * k;
+        for (const side of [-1, 1]) {
+          const px = alongX ? cx + x : cx + side * (wid / 2 - 0.3), pz = alongX ? cz + side * (wid / 2 - 0.3) : cz + x;
+          const ground = this.heightAt(px, pz);
+          const pil = new THREE.Mesh(new THREE.BoxGeometry(0.2, b.y - ground + 0.3, 0.2), dark);
+          pil.position.set(x, (b.y + ground) / 2 - 0.05, side * (wid / 2 - 0.3));
+          g.add(pil);
+        }
+      }
+      group.add(g);
+    }
+    return [group];
   }
 
   createGrassTileTexture(): THREE.CanvasTexture {

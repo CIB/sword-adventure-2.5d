@@ -8,9 +8,11 @@ export const CAM_HEIGHT = 40;
 export const SHEAR = 0.85; // oblique projection factor: 1 unit of height = 0.85 tiles of screen space
 export const LEVEL_H = 0.5;   // world units per terrain level
 export const MAX_WALK_SLOPE = 0.45; // max height difference per tile step that can be walked (steeper = cliff)
-export const MAP_W = 52;
-export const MAP_H = 44;
+export const MAP_W = 208;
+export const MAP_H = 176;
 export const TEX_PX = 20; // ground texture pixels per tile
+export const WATER_DEPTH = 0.75; // how far the river bed sits below the meadow (world units)
+export const BRIDGE_H = 0.22;    // bridge deck height above the meadow level
 
 export const MAX_HP = 12; // 6 hearts, 2 hp per heart
 
