@@ -252,7 +252,7 @@ export class Player {
     const idlePose: Pose = {
       rootYaw: 0, twist: 0, lean: 0,
       armX: st.x - Math.max(0, -swing) * 0.3 + (moving ? 0.1 : 0), armY: st.y, armZ: st.z, wrist: st.w,
-      armLX: 0.1 + swing * 0.3, armLY: 0, armLZ: -0.1,
+      armLX: -0.35 + swing * 0.3, armLY: 0.15, armLZ: -0.12, // shield arm held slightly forward so the shield clears the chest
     };
     let pose: Pose;
     if (this.state === 'swing') {
@@ -311,7 +311,7 @@ export class Player {
       m.shield!.rotation.set(1.0, 0.45, 0);
     } else {
       m.armL.rotation.set(pose.armLX, pose.armLY, pose.armLZ);
-      m.shield!.position.set(0, -0.04, 0.14);
+      m.shield!.position.set(0, -0.04, 0.2);
       m.shield!.rotation.set(0, 0, 0);
     }
   }

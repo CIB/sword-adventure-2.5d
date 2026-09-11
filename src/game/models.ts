@@ -140,7 +140,7 @@ export function buildHeroine(): Humanoid {
   shield.add(part(UNIT_BOX, m.shieldRim, [0, 0, 0], [0.36, 0.42, 0.05]));
   shield.add(part(UNIT_BOX, m.shieldBlue, [0, 0, 0.02], [0.3, 0.36, 0.04]));
   shield.add(part(UNIT_CONE, m.gold, [0, 0.03, 0.05], [0.16, 0.16, 0.02]));
-  shield.position.set(0, -0.04, 0.14);
+  shield.position.set(0, -0.04, 0.2);
   handL.add(shield);
 
   const head = new THREE.Group();
