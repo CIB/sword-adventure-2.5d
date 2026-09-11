@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import {
-  VIEW_W, VIEW_H, VIEW_TILES_X, VIEW_TILES_Y, CAM_HEIGHT, CAM_PITCH, MAP_W, MAP_H, PX_PER_TILE, MAX_HP,
+  VIEW_W, VIEW_H, VIEW_TILES_X, VIEW_TILES_Y, CAM_HEIGHT, SHEAR, MAP_W, MAP_H, PX_PER_TILE, MAX_HP,
   Tile, RNG, inArc, FACING_VEC, clamp,
 } from './constants';
 import { World, type EnemyKind, type Vec2 } from './world';
@@ -100,18 +100,20 @@ export class Game implements GameCtx {
       uniforms: {
         tDiffuse: { value: this.rt.texture }, tDepth: { value: depthTex },
         texel: { value: new THREE.Vector2(1 / VIEW_W, 1 / VIEW_H) },
-        camNear: { value: 1 }, camFar: { value: 200 }, threshold: { value: 0.22 },
+        camNear: { value: 1 }, camFar: { value: 200 }, threshold: { value: 0.16 },
       },
       vertexShader: POST_VS, fragmentShader: POST_FS, depthTest: false, depthWrite: false,
     });
     this.postScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), postMat));
 
-    // Tilted orthographic camera (classic 3/4 view): x stays 1:1 with tiles, the ground is foreshortened by
-    // sin(pitch) so we widen the vertical frustum to keep the same number of visible rows.
-    const vh = VIEW_TILES_Y * Math.sin(CAM_PITCH);
-    this.camera = new THREE.OrthographicCamera(-VIEW_TILES_X / 2, VIEW_TILES_X / 2, vh / 2, -vh / 2, 1, 200);
-    this.camera.up.set(0, 1, 0);
+    // Top-down orthographic camera with an oblique shear: ground stays 1:1, height becomes a vertical screen
+    // offset so fronts of objects (and terrain slopes) are visible.
+    this.camera = new THREE.OrthographicCamera(-VIEW_TILES_X / 2, VIEW_TILES_X / 2, VIEW_TILES_Y / 2, -VIEW_TILES_Y / 2, 1, 200);
+    this.camera.up.set(0, 0, -1);
     this.camera.updateProjectionMatrix();
+    const shear = new THREE.Matrix4().set(1, 0, 0, 0, 0, 1, SHEAR, SHEAR * CAM_HEIGHT, 0, 0, 1, 0, 0, 0, 0, 1);
+    this.camera.projectionMatrix.multiply(shear);
+    this.camera.projectionMatrixInverse.copy(this.camera.projectionMatrix).invert();
 
     // lights
     this.scene.add(new THREE.AmbientLight(0xffffff, 1.15));
@@ -511,15 +513,14 @@ export class Game implements GameCtx {
     const p = this.player.pos;
     const k = dt > 0 ? 1 - Math.exp(-dt * 9) : 1;
     this.cam.x += (p.x - this.cam.x) * k;
-    this.cam.z += (p.z - 0.6 - this.cam.z) * k;
+    this.cam.z += (p.z - 1.0 - this.cam.z) * k;
+    // follow the player's altitude so the shear offset stays centred on the ground she stands on
     const gy = this.world.heightAt(p.x, p.z);
     this.camY += (gy - this.camY) * (dt > 0 ? 1 - Math.exp(-dt * 5) : 1);
     const hx = VIEW_TILES_X / 2, hz = VIEW_TILES_Y / 2;
     const cx = clamp(this.cam.x, hx, MAP_W - hx), cz = clamp(this.cam.z, hz, MAP_H - hz);
     const sx = Math.round(cx * PX_PER_TILE) / PX_PER_TILE, sz = Math.round(cz * PX_PER_TILE) / PX_PER_TILE;
-    // camera sits back along -z (south is +z, towards the viewer) and above, looking down at CAM_PITCH
-    const dist = CAM_HEIGHT;
-    this.camera.position.set(sx, this.camY + Math.sin(CAM_PITCH) * dist, sz + Math.cos(CAM_PITCH) * dist);
+    this.camera.position.set(sx, this.camY + CAM_HEIGHT, sz);
     this.camera.lookAt(sx, this.camY, sz);
   }
 

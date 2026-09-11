@@ -21,7 +21,7 @@ export function toon(color: string | number | THREE.Color): THREE.MeshToonMateri
 }
 
 /** Shared proportions for all humanoids (heroine, soldiers, villagers). Lower y to make everyone a bit stockier. */
-export const CHAR_SCALE = { x: 1.04, y: 0.88, z: 0.96 };
+export const CHAR_SCALE = { x: 1.08, y: 0.86, z: 0.92 }; // pre-squash tuned for the oblique (sheared) projection
 
 export const UNIT_BOX = new THREE.BoxGeometry(1, 1, 1);
 export const UNIT_SPHERE = new THREE.SphereGeometry(0.5, 14, 10);
@@ -108,11 +108,10 @@ function makeArm(x: number, sleeve: THREE.Material, skin: THREE.Material): { arm
 }
 
 export function buildHeroine(): Humanoid {
-  // Aria: green torso armour and a plain green helm, bare legs with boots, blonde hair flowing out the back.
   const m = {
-    skin: toon('#f3bd92'), hair: toon('#f5cf46'), plate: toon('#3fb04a'), plateD: toon('#2d8c3a'), plateL: toon('#6fd06a'),
-    belt: toon('#5a3a1e'), boots: toon('#7b4a22'), eye: toon('#1d2b5a'), mouth: toon('#c8705a'),
-    steel: toon('#dfe6f4'), steelD: toon('#9aa6ba'), hilt: toon('#3557c9'), gold: toon('#f2c14e'),
+    skin: toon('#f3bd92'), hair: toon('#f5cf46'), tunic: toon('#3fb04a'), tunicD: toon('#2d8c3a'),
+    belt: toon('#6b4423'), boots: toon('#7b4a22'), tights: toon('#f6ebd8'), eye: toon('#1d2b5a'),
+    cap: toon('#2f9038'), steel: toon('#dfe6f4'), hilt: toon('#3557c9'), gold: toon('#f2c14e'),
     shieldBlue: toon('#2f57c4'), shieldRim: toon('#cfd7e6'),
   };
   const root = new THREE.Group();
@@ -120,40 +119,18 @@ export function buildHeroine(): Humanoid {
   root.add(body);
   root.add(blobShadow(0.34));
 
-  // bare legs + tall boots
-  const mkLeg = (x: number) => {
-    const leg = new THREE.Group();
-    leg.position.set(x, 0.34, 0);
-    leg.add(part(UNIT_BOX, m.skin, [0, -0.08, 0], [0.13, 0.2, 0.14]));
-    leg.add(part(UNIT_BOX, m.boots, [0, -0.24, 0.0], [0.15, 0.14, 0.16]));
-    leg.add(part(UNIT_BOX, m.boots, [0, -0.29, 0.03], [0.16, 0.1, 0.22]));
-    return leg;
-  };
-  const legL = mkLeg(0.11), legR = mkLeg(-0.11);
+  const legL = makeLeg(0.11, m.tights, m.boots);
+  const legR = makeLeg(-0.11, m.tights, m.boots);
   root.add(legL, legR);
 
-  // one-piece cuirass reaching just past the waist; bare hips/legs below
-  body.add(part(UNIT_BOX, m.plate, [0, 0.6, 0], [0.52, 0.5, 0.32]));
-  body.add(part(UNIT_BOX, m.plateL, [0, 0.66, 0.15], [0.34, 0.24, 0.04]));
-  body.add(part(UNIT_BOX, m.gold, [0, 0.79, 0], [0.54, 0.04, 0.34]));
-  body.add(part(UNIT_BOX, m.plateD, [0, 0.36, 0], [0.54, 0.04, 0.34]));   // lower rim
-  body.add(part(UNIT_BOX, m.skin, [0, 0.82, 0], [0.16, 0.08, 0.14]));     // neck
-  // arms: pauldron + plate sleeve, bare forearm, gauntlet
-  const mkArm = (x: number) => {
-    const arm = new THREE.Group();
-    arm.position.set(x, 0.74, 0);
-    arm.rotation.order = 'YXZ';
-    arm.add(part(UNIT_SPHERE, m.plate, [0, 0.02, 0], [0.24, 0.2, 0.24]));
-    arm.add(part(UNIT_BOX, m.plate, [0, -0.09, 0], [0.13, 0.16, 0.13]));
-    arm.add(part(UNIT_BOX, m.skin, [0, -0.2, 0], [0.11, 0.12, 0.11]));
-    const hand = new THREE.Group();
-    hand.position.set(0, -0.29, 0);
-    hand.add(part(UNIT_SPHERE, m.steelD, [0, 0, 0], [0.14, 0.14, 0.14]));
-    arm.add(hand);
-    return { arm, hand };
-  };
-  const { arm: armR, hand: handR } = mkArm(-0.3);
-  const { arm: armL, hand: handL } = mkArm(0.3);
+  body.add(part(UNIT_BOX, m.tunic, [0, 0.58, 0], [0.5, 0.42, 0.3]));
+  body.add(part(UNIT_BOX, m.tunicD, [0, 0.37, 0], [0.56, 0.12, 0.36]));
+  body.add(part(UNIT_BOX, m.belt, [0, 0.49, 0], [0.52, 0.06, 0.32]));
+  body.add(part(UNIT_BOX, m.gold, [0, 0.49, 0.16], [0.1, 0.06, 0.02]));
+  body.add(part(UNIT_BOX, m.skin, [0, 0.8, 0], [0.16, 0.08, 0.14]));
+
+  const { arm: armR, hand: handR } = makeArm(-0.3, m.tunic, m.skin);
+  const { arm: armL, hand: handL } = makeArm(0.3, m.tunic, m.skin);
   body.add(armR, armL);
 
   const weapon = buildSword(m);
@@ -166,38 +143,30 @@ export function buildHeroine(): Humanoid {
   shield.position.set(0, -0.04, 0.2);
   handL.add(shield);
 
-  // head: plain green helm covering the top half of the face (down to the eyes), face visible below,
-  // blonde hair spilling out at the sides and a long ponytail at the back
   const head = new THREE.Group();
   head.position.set(0, 1.0, 0);
   body.add(head);
   head.add(part(UNIT_SPHERE, m.skin, [0, 0, 0], [0.64, 0.5, 0.52]));
-  head.add(part(UNIT_BOX, m.eye, [-0.11, -0.05, 0.24], [0.07, 0.09, 0.04]));
-  head.add(part(UNIT_BOX, m.eye, [0.11, -0.05, 0.24], [0.07, 0.09, 0.04]));
-  head.add(part(UNIT_BOX, m.mouth, [0, -0.16, 0.25], [0.08, 0.02, 0.02]));
-  // Tall green helm (the silhouette her old cap had from above): high dome with a slight backwards
-  // point, resting just above the eyes. A blonde fringe shows as a band beneath the rim all the way
-  // round, hair tufts hang at the cheeks and a ponytail at the back.
-  head.add(part(UNIT_HEMI, m.plate, [0, 0.04, -0.02], [0.72, 0.84, 0.66]));           // tall dome
-  head.add(part(UNIT_CYL, m.plate, [0, 0.06, -0.02], [0.74, 0.08, 0.68]));            // rim
-  const tip = part(UNIT_CONE, m.plate, [0, 0.5, -0.1], [0.34, 0.22, 0.34]);           // gentle point, leaning back
-  tip.rotation.x = -0.55;
-  head.add(tip);
-  head.add(part(UNIT_CYL, m.hair, [0, 0.0, -0.01], [0.7, 0.08, 0.62]));               // fringe band under the rim
-  head.add(part(UNIT_BOX, m.hair, [-0.29, -0.1, 0.04], [0.09, 0.28, 0.26]));          // cheek tufts
-  head.add(part(UNIT_BOX, m.hair, [0.29, -0.1, 0.04], [0.09, 0.28, 0.26]));
-  head.add(part(UNIT_BOX, m.hair, [0, -0.08, -0.26], [0.5, 0.26, 0.12]));             // back
+  head.add(part(UNIT_BOX, m.eye, [-0.11, -0.04, 0.24], [0.07, 0.1, 0.04]));
+  head.add(part(UNIT_BOX, m.eye, [0.11, -0.04, 0.24], [0.07, 0.1, 0.04]));
+  head.add(part(UNIT_HEMI, m.hair, [0, 0.0, -0.02], [0.68, 0.5, 0.56]));
+  head.add(part(UNIT_BOX, m.hair, [0, 0.12, 0.2], [0.5, 0.12, 0.2]));
+  head.add(part(UNIT_BOX, m.hair, [-0.29, -0.06, 0.04], [0.09, 0.32, 0.26]));
+  head.add(part(UNIT_BOX, m.hair, [0.29, -0.06, 0.04], [0.09, 0.32, 0.26]));
+  const cap = part(UNIT_CONE, m.cap, [0, 0.3, -0.08], [0.6, 0.5, 0.6]);
+  cap.rotation.x = -0.95;
+  head.add(cap);
+  head.add(part(UNIT_CYL, m.cap, [0, 0.14, -0.02], [0.68, 0.08, 0.62]));
 
   const ponytail = new THREE.Group();
-  ponytail.position.set(0, -0.02, -0.3);
+  ponytail.position.set(0, 0.02, -0.28);
   ponytail.add(part(UNIT_SPHERE, m.hair, [0, 0, -0.04], [0.2, 0.2, 0.2]));
   ponytail.add(part(UNIT_BOX, m.belt, [0, -0.02, -0.06], [0.2, 0.06, 0.18]));
-  ponytail.add(part(UNIT_BOX, m.hair, [0, -0.26, -0.06], [0.17, 0.44, 0.15]));
-  ponytail.add(part(UNIT_SPHERE, m.hair, [0, -0.48, -0.06], [0.2, 0.16, 0.18]));
+  ponytail.add(part(UNIT_BOX, m.hair, [0, -0.3, -0.06], [0.17, 0.52, 0.15]));
+  ponytail.add(part(UNIT_SPHERE, m.hair, [0, -0.56, -0.06], [0.2, 0.16, 0.18]));
   head.add(ponytail);
 
-  // Left-handed: mirror the whole figure. Animation code keeps driving armR as the sword arm; the
-  // mirror puts that arm on her left side and flips the swing direction with it.
+  // Left-handed: mirror the whole figure (animation keeps driving armR as the sword arm).
   root.scale.set(-CHAR_SCALE.x, CHAR_SCALE.y, CHAR_SCALE.z);
   const materials = collectMaterials(root);
   for (const mat of materials) mat.side = THREE.DoubleSide; // negative scale flips winding
