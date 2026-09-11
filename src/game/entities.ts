@@ -31,6 +31,7 @@ function setEmissive(mats: THREE.MeshToonMaterial[], on: boolean) {
 // ======================================================================= PLAYER
 export type PlayerState = 'idle' | 'walk' | 'swing' | 'spin' | 'hurt' | 'dead';
 const SWING_DUR = 0.2, SPIN_DUR = 0.5, SWING_START = -1.9, SWING_END = 1.15;
+const SPIN_START = -0.35; // spin begins with the blade front-right, where the charge pose holds it
 const SPIN_RADIUS = 1.75; // spin attack AoE radius (normal swing: 1.05)
 const RECOVER_DUR = 0.14; // blend back to idle after an attack instead of snapping
 const easeOutCubic = (p: number) => 1 - (1 - p) ** 3;
@@ -39,9 +40,9 @@ const smooth = (p: number) => p * p * (3 - 2 * p);
 const spinCurve = (p: number) => (p < 0.1 ? -0.12 * (p / 0.1) : -0.12 + 1.12 * easeOutCubic((p - 0.1) / 0.9));
 
 /** Upper-body pose used to blend attack poses back into idle */
-interface Pose { twist: number; lean: number; armX: number; armY: number; armZ: number; wrist: number; armLX: number; armLY: number; armLZ: number }
+interface Pose { rootYaw: number; twist: number; lean: number; armX: number; armY: number; armZ: number; wrist: number; armLX: number; armLY: number; armLZ: number }
 const lerpPose = (a: Pose, b: Pose, t: number): Pose => ({
-  twist: lerp(a.twist, b.twist, t), lean: lerp(a.lean, b.lean, t),
+  rootYaw: lerp(a.rootYaw, b.rootYaw, t), twist: lerp(a.twist, b.twist, t), lean: lerp(a.lean, b.lean, t),
   armX: lerp(a.armX, b.armX, t), armY: lerp(a.armY, b.armY, t), armZ: lerp(a.armZ, b.armZ, t), wrist: lerp(a.wrist, b.wrist, t),
   armLX: lerp(a.armLX, b.armLX, t), armLY: lerp(a.armLY, b.armLY, t), armLZ: lerp(a.armLZ, b.armLZ, t),
 });
@@ -70,6 +71,7 @@ export class Player {
   sweepR = 1.05;
   sweepActive = false;
   recoverT = 0;
+  rootYaw = 0; // extra model yaw from the spin attack (visual only; facing/hit arcs are unaffected)
   lastPose: Pose | null = null;
   sparkle: THREE.Mesh;
   readonly HW = 0.3;
@@ -123,7 +125,7 @@ export class Player {
       const dur = this.state === 'swing' ? SWING_DUR : SPIN_DUR;
       const p = Math.min(1, this.stateT / dur);
       this.sweepPrev = this.sweepCur;
-      this.sweepCur = this.state === 'swing' ? lerp(SWING_START, SWING_END, easeOutCubic(p)) : SWING_END - Math.PI * 2 * spinCurve(p);
+      this.sweepCur = this.state === 'swing' ? lerp(SWING_START, SWING_END, easeOutCubic(p)) : SPIN_START - Math.PI * 2 * spinCurve(p);
       this.sweepActive = true;
       if (p >= 1) {
         this.state = 'idle';
@@ -179,7 +181,7 @@ export class Player {
   private startSpin() {
     this.state = 'spin';
     this.stateT = 0;
-    this.sweepPrev = this.sweepCur = SWING_END;
+    this.sweepPrev = this.sweepCur = SPIN_START;
     this.sweepHit.clear();
     this.sweepDmg = 2;
     this.sweepR = SPIN_RADIUS;
@@ -234,7 +236,7 @@ export class Player {
     // Sword arm is held forward and slightly out (blade points ahead), pumping a bit with the stride
     // instead of trailing behind like a free-swinging arm.
     const idlePose: Pose = {
-      twist: 0, lean: 0,
+      rootYaw: 0, twist: 0, lean: 0,
       armX: -0.85 - Math.max(0, -swing) * 0.3 + (moving ? 0.1 : 0), armY: -0.35, armZ: 0.15, wrist: -0.35,
       armLX: 0.1 + swing * 0.3, armLY: 0, armLZ: -0.1,
     };
@@ -244,7 +246,7 @@ export class Player {
       const e = easeOutCubic(p);
       const twist = lerp(-0.55, 0.45, e);            // shoulders wind up to the right, follow through left
       pose = {
-        twist, lean: lerp(-0.08, 0.16, e),
+        rootYaw: 0, twist, lean: lerp(-0.08, 0.16, e),
         armX: -Math.PI / 2 + lerp(0.12, 0.38, e),   // slight downward tilt, stays near horizontal
         armY: this.sweepCur - twist,                 // world-space yaw == hit arc; torso does part of the work
         armZ: 0,
@@ -252,20 +254,24 @@ export class Player {
         armLX: lerp(0.35, -0.25, e), armLY: lerp(0.3, -0.35, e), armLZ: -0.25,
       };
     } else if (this.state === 'spin') {
+      // Whole body pirouettes: the sword arm stays locked out to the front-right and the
+      // entire model (torso, legs, head) rotates so the blade sweeps the full circle.
       const p = Math.min(1, this.stateT / SPIN_DUR);
       const arc = Math.sin(p * Math.PI);
+      const armY = SPIN_START;
       pose = {
-        twist: 0, lean: 0.12 * arc,
-        armX: -Math.PI / 2 + 0.1 - 0.2 * arc, armY: this.sweepCur, armZ: 0, wrist: 0.9 * arc, // arm extends fully, blade flung outward
-        armLX: -0.9 * arc - 0.1, armLY: 0.6 * arc, armLZ: -0.4 * arc - 0.1,               // shield arm flies out for balance
+        rootYaw: this.sweepCur - armY, twist: 0.25 * arc, lean: 0.14 * arc,
+        armX: -Math.PI / 2 + 0.1 - 0.2 * arc, armY, armZ: 0, wrist: 0.9 * arc,   // arm extends fully, blade flung outward
+        armLX: -0.9 * arc - 0.1, armLY: 0.6 * arc, armLZ: -0.4 * arc - 0.1,     // shield arm flies out for balance
       };
-      m.body.position.y += arc * 0.16;                                                  // small hop
+      m.body.position.y += arc * 0.16;                                        // small hop
+      m.legL.rotation.x = -0.35 * arc; m.legR.rotation.x = 0.45 * arc;         // legs tuck during the jump-spin
     } else if (this.charged || this.holding) {
       // wind-up: shoulders coil to the right, sword pulled in across the body with the blade still pointing forward
       const t = smooth(Math.min(1, this.chargeT / 0.25));
       const tremble = this.charged ? Math.sin(this.chargeT * 45) * 0.03 : 0;
       pose = {
-        twist: -0.45 * t + tremble, lean: 0.06 * t,
+        rootYaw: -0.2 * t, twist: -0.3 * t + tremble, lean: 0.06 * t,
         armX: -0.85 - 0.5 * t, armY: -0.35 + 0.45 * t, armZ: 0.15 + 0.15 * t, wrist: -0.35 + 0.55 * t + tremble * 2,
         armLX: -0.2 * t + 0.1, armLY: 0.3 * t, armLZ: -0.25 * t - 0.1,
       };
@@ -274,12 +280,13 @@ export class Player {
     }
 
     if (this.attacking) {
-      this.lastPose = pose;
+      this.lastPose = { ...pose, rootYaw: normAngle(pose.rootYaw) };
     } else if (this.recoverT > 0 && this.lastPose) {
       // ease out of the follow-through pose instead of snapping to idle
       pose = lerpPose(this.lastPose, pose, smooth(1 - this.recoverT / RECOVER_DUR));
     }
 
+    this.rootYaw = pose.rootYaw;
     m.body.rotation.set(pose.lean, pose.twist, 0);
     m.head.rotation.y = -pose.twist * 0.6; // keep looking roughly where she's facing
     m.armR.rotation.set(pose.armX, pose.armY, pose.armZ);
@@ -297,7 +304,7 @@ export class Player {
 
   private sync() {
     this.model.root.position.set(this.pos.x, 0, this.pos.z);
-    this.model.root.rotation.y = this.facingAngle;
+    this.model.root.rotation.y = this.facingAngle + this.rootYaw;
   }
 
   reset(x: number, z: number) {
@@ -305,7 +312,7 @@ export class Player {
     this.hp = MAX_HP; this.rupees = 0; this.kills = 0;
     this.state = 'idle'; this.stateT = 0; this.invuln = 0; this.deadT = 0; this.facing = 0;
     this.charged = false; this.holding = false; this.chargeT = 0; this.blocking = false;
-    this.recoverT = 0; this.lastPose = null;
+    this.recoverT = 0; this.lastPose = null; this.rootYaw = 0;
     this.model.root.scale.set(1, 1, 1); this.model.root.visible = true;
     this.sync();
   }
