@@ -54,8 +54,10 @@ export class Hud {
 
   /** Resize the HUD backing store to the game's new internal resolution. */
   resize(w: number, h: number) {
-    this.w = Math.max(1, Math.round(w));
-    this.h = Math.max(1, Math.round(h));
+    const nw = Math.max(1, Math.round(w)), nh = Math.max(1, Math.round(h));
+    if (nw === this.w && nh === this.h) return; // assigning canvas.width clears the canvas — only do it on a real change
+    this.w = nw;
+    this.h = nh;
     this.g.canvas.width = this.w;
     this.g.canvas.height = this.h;
     this.g.imageSmoothingEnabled = false; // resizing the canvas resets context state

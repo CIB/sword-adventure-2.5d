@@ -2,9 +2,19 @@ import { useEffect, useRef, useState } from 'react';
 import { Game, type Phase, type DialogueView } from './game/game';
 import { AudioEngine } from './game/audio';
 import { Input } from './game/input';
-import { VIEW_W, VIEW_H } from './game/constants';
+import { VIEW_W, VIEW_H, PX_PER_TILE, ZOOM_TARGET_CSS_PX, ZOOM_MIN_TILES_X } from './game/constants';
 
-export interface Viewport { scale: number; vw: number; vh: number }
+export interface Viewport {
+  scale: number;
+  /** integer magnification of the 3D view only (1 = render 1:1, 2 = render half size and upscale) */
+  zoom: number;
+  /** HUD / CSS layout resolution in game pixels — the whole window */
+  vw: number;
+  vh: number;
+  /** 3D view resolution in game pixels: `vw / zoom` */
+  worldW: number;
+  worldH: number;
+}
 
 /**
  * Fit the game to the whole browser window.
@@ -13,15 +23,21 @@ export interface Viewport { scale: number; vw: number; vh: number }
  * grows to cover the window (`ceil`), which shows *more map* on wide/tall screens instead of letterboxing.
  * The canvas is drawn at `vw x vh` game pixels and displayed at `vw*scale x vh*scale` CSS pixels — a pixel or two
  * of overshoot is cropped by the overflow-hidden wrapper.
+ *
+ * On windows too small for that to reach `ZOOM_TARGET_CSS_PX` per pixel — handhelds, phones — `zoom` adds a second
+ * integer magnification that applies to the 3D view alone: the world renders at `vw/zoom x vh/zoom` and the CSS
+ * upscale magnifies it, so texture pixels *and* the outline pass go chunky together (and a quarter of the
+ * fragments get shaded at zoom 2). The HUD keeps `vw x vh`, since its layout is built for 320x240.
  */
 function calcViewport(): Viewport {
   const iw = Math.max(1, window.innerWidth), ih = Math.max(1, window.innerHeight);
   const scale = Math.max(1, Math.floor(Math.min(iw / VIEW_W, ih / VIEW_H)));
-  return {
-    scale,
-    vw: Math.max(VIEW_W, Math.ceil(iw / scale)),
-    vh: Math.max(VIEW_H, Math.ceil(ih / scale)),
-  };
+  const vw = Math.max(VIEW_W, Math.ceil(iw / scale));
+  const vh = Math.max(VIEW_H, Math.ceil(ih / scale));
+  // never trade away more map than ZOOM_MIN_TILES_X allows; stay integral so pixels stay even and the camera's
+  // 1/20-tile snap doesn't shimmer
+  const zoom = Math.max(1, Math.min(Math.round(ZOOM_TARGET_CSS_PX / scale), Math.floor(vw / PX_PER_TILE / ZOOM_MIN_TILES_X)));
+  return { scale, zoom, vw, vh, worldW: Math.floor(vw / zoom), worldH: Math.floor(vh / zoom) };
 }
 
 function useViewport(): Viewport {
@@ -126,7 +142,7 @@ export default function App() {
     game.onFullscreen = toggleFullscreen;
     game.onHelp = () => setHelp((h) => !h);
     input.onGamepadUse(() => setGamepad(true));
-    game.resize(vp.vw, vp.vh);
+    game.resize(vp.worldW, vp.worldH, vp.vw, vp.vh);
     game.start();
     return () => {
       game.dispose();
@@ -138,8 +154,8 @@ export default function App() {
 
   // keep the game's internal resolution (and HUD) in sync with the window
   useEffect(() => {
-    gameRef.current?.resize(vp.vw, vp.vh);
-  }, [vp.vw, vp.vh]);
+    gameRef.current?.resize(vp.worldW, vp.worldH, vp.vw, vp.vh);
+  }, [vp.worldW, vp.worldH, vp.vw, vp.vh]);
 
   // the user can leave fullscreen with Esc / the OS gesture — mirror that in our state
   useEffect(() => {
