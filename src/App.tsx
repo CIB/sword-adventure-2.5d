@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Game, type Phase } from './game/game';
+import { Game, type Phase, type DialogueView } from './game/game';
 import { AudioEngine } from './game/audio';
 import { Input } from './game/input';
 import { VIEW_W, VIEW_H } from './game/constants';
@@ -18,6 +18,33 @@ function useScale() {
   return scale;
 }
 
+/** Dialogue overlay: rendered at screen resolution with a readable font, portrait from the NPC's 3D model. */
+function DialogueBox({ d, scale }: { d: DialogueView; scale: number }) {
+  const shown = d.text.slice(0, d.chars);
+  const done = d.chars >= d.text.length;
+  const u = Math.max(1, scale); // layout unit: 1 game pixel
+  return (
+    <div className="absolute left-0 right-0 flex justify-center pointer-events-none" style={{ bottom: 10 * u, paddingLeft: 10 * u, paddingRight: 10 * u }}>
+      <div className="relative w-full flex items-stretch font-dialogue" style={{ maxWidth: 300 * u, minHeight: 66 * u, background: '#101820', border: `${Math.max(2, u)}px solid #f8f0d8`, boxShadow: `0 0 0 ${Math.max(2, u)}px #000, inset 0 0 0 ${Math.max(1, u * 0.6)}px #000, inset 0 0 0 ${Math.max(2, u * 1.4)}px #f8f0d8`, borderRadius: 2 * u }}>
+        <div className="flex-none flex items-center justify-center" style={{ width: 58 * u, padding: 6 * u }}>
+          <div className="pixelated overflow-hidden" style={{ width: 46 * u, height: 46 * u, background: 'linear-gradient(#2b3a5a,#16202f)', border: `${Math.max(1, u * 0.6)}px solid ${d.color}`, borderRadius: 2 * u }}>
+            <img src={d.portrait} alt="" className="pixelated" style={{ width: '100%', height: '100%', display: 'block' }} draggable={false} />
+          </div>
+        </div>
+        <div className="flex-1 flex flex-col" style={{ padding: `${7 * u}px ${10 * u}px ${7 * u}px 0` }}>
+          <div className="font-bold tracking-wide" style={{ color: d.color, fontSize: 7 * u, lineHeight: 1.2, marginBottom: 3 * u, textShadow: `0 ${Math.max(1, u * 0.5)}px 0 #000` }}>{d.name}</div>
+          <div className="text-[#f8f8f8]" style={{ fontSize: 8 * u, lineHeight: 1.35, textShadow: `0 ${Math.max(1, u * 0.5)}px 0 #000` }}>
+            {shown}<span className="opacity-0">{d.text.slice(d.chars)}</span>
+          </div>
+        </div>
+        {done && (
+          <div className="absolute animate-bounce" style={{ right: 8 * u, bottom: 4 * u, color: '#f8d848', fontSize: 8 * u, lineHeight: 1 }}>{d.more ? '▼' : '■'}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const glRef = useRef<HTMLCanvasElement>(null);
   const hudRef = useRef<HTMLCanvasElement>(null);
@@ -25,6 +52,7 @@ export default function App() {
   const [phase, setPhase] = useState<Phase>('title');
   const [muted, setMuted] = useState(false);
   const [stats, setStats] = useState({ kills: 0, rupees: 0 });
+  const [dialogue, setDialogue] = useState<DialogueView | null>(null);
   const scale = useScale();
 
   useEffect(() => {
@@ -38,6 +66,7 @@ export default function App() {
       if (p === 'gameover') setStats({ kills: game.player.kills, rupees: game.player.rupees });
     };
     game.onMute = setMuted;
+    game.onDialogue = setDialogue;
     game.start();
     return () => {
       game.dispose();
@@ -80,6 +109,8 @@ export default function App() {
             </div>
           </div>
         )}
+
+        {dialogue && <DialogueBox d={dialogue} scale={scale} />}
 
         {phase === 'paused' && (
           <div className="absolute inset-0 flex items-center justify-center bg-black/40">

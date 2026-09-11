@@ -32,7 +32,8 @@ export interface HudState {
   blocking: boolean;
   attacking: boolean;
   time: number;
-  dialogue?: { name: string; color: string; text: string; chars: number; more: boolean } | null;
+  /** true while the dialogue overlay is open (HUD hides the talk hint) */
+  dialogue?: boolean;
   toast?: string;
   canTalk?: boolean;
 }
@@ -122,54 +123,10 @@ export class Hud {
     this.g.fillRect(x - 1, y + 1, 1, 5); this.g.fillRect(x + 7, y + 1, 1, 5); this.g.fillRect(x + 1, y - 1, 5, 1); this.g.fillRect(x + 1, y + 7, 5, 1);
   }
 
-  private wrap(text: string, maxChars: number): string[] {
-    const words = text.split(' ');
-    const lines: string[] = [];
-    let cur = '';
-    for (const w of words) {
-      if ((cur + (cur ? ' ' : '') + w).length > maxChars) { lines.push(cur); cur = w; } else cur = cur ? cur + ' ' + w : w;
-    }
-    if (cur) lines.push(cur);
-    return lines;
-  }
-
-  /** Link's Awakening-style dialogue box: dark panel with a light double border at the bottom of the screen. */
-  private dialogueBox(d: NonNullable<HudState['dialogue']>, time: number) {
-    const g = this.g;
-    const x = 12, y = VIEW_H - 74, w = VIEW_W - 24, h = 62;
-    g.fillStyle = '#000'; g.fillRect(x - 2, y - 2, w + 4, h + 4);
-    g.fillStyle = '#f8f0d8'; g.fillRect(x, y, w, h);
-    g.fillStyle = '#000'; g.fillRect(x + 2, y + 2, w - 4, h - 4);
-    g.fillStyle = '#f8f0d8'; g.fillRect(x + 3, y + 3, w - 6, h - 6);
-    g.fillStyle = '#101820'; g.fillRect(x + 5, y + 5, w - 10, h - 10);
-    // name tag
-    const tagW = d.name.length * 8 + 10;
-    g.fillStyle = '#000'; g.fillRect(x + 8, y - 8, tagW + 4, 14);
-    g.fillStyle = d.color; g.fillRect(x + 10, y - 6, tagW, 10);
-    this.text(d.name, x + 15, y - 4, '#101820', 1, false);
-    // body text (typewriter)
-    const shown = d.text.slice(0, d.chars);
-    const lines = this.wrap(d.text, 34);
-    let count = 0;
-    lines.forEach((ln, i) => {
-      const remain = shown.length - count;
-      if (remain > 0) this.text(ln.slice(0, remain), x + 12, y + 12 + i * 14, '#f8f8f8', 2, false);
-      count += ln.length + 1;
-    });
-    // continue arrow
-    if (d.chars >= d.text.length && Math.floor(time * 3) % 2 === 0) {
-      const ax = x + w - 18, ay = y + h - 14 + (Math.floor(time * 6) % 2);
-      g.fillStyle = '#f8d848';
-      g.fillRect(ax, ay, 7, 1); g.fillRect(ax + 1, ay + 1, 5, 1); g.fillRect(ax + 2, ay + 2, 3, 1); g.fillRect(ax + 3, ay + 3, 1, 1);
-      if (!d.more) { g.fillStyle = '#f8f8f8'; g.fillRect(ax + 3, ay - 4, 1, 3); }
-    }
-  }
-
   draw(s: HudState) {
     const g = this.g;
     g.clearRect(0, 0, VIEW_W, VIEW_H);
-    if (s.dialogue) this.dialogueBox(s.dialogue, s.time);
-    else if (s.canTalk && Math.floor(s.time * 2) % 2 === 0) this.text('E - TALK', VIEW_W / 2 - 16, VIEW_H - 14, '#f8f8f8');
+    if (!s.dialogue && s.canTalk && Math.floor(s.time * 2) % 2 === 0) this.text('E - TALK', VIEW_W / 2 - 16, VIEW_H - 14, '#f8f8f8');
     if (s.toast) this.text(s.toast, VIEW_W / 2 - s.toast.length * 4, VIEW_H / 2 - 30, '#f8d848', 2);
     // charge meter (spin attack)
     this.frame(8, 8, 12, 38, '#f0f0f0', '#101820');

@@ -9,7 +9,7 @@ import { AudioEngine } from './audio';
 import { Input, PAUSE_KEYS, MUTE_KEYS, ATTACK_KEYS, TALK_KEYS } from './input';
 import { Player, Enemy, Npc, Projectile, Pickup, Effect, fxSpark, fxPuff, fxLeaves, type GameCtx } from './entities';
 import { NPC_TALK, newQuestState, type Conversation, type QuestState, type TalkCtx } from './dialogue';
-import { buildTrees, buildBush, buildStump, buildRock, buildFence, buildHouse, buildProp, getGradientMap } from './models';
+import { buildTrees, buildBush, buildStump, buildRock, buildFence, buildHouse, buildProp, getGradientMap, buildVillager, buildDog, VILLAGER_LOOKS } from './models';
 import { Hud } from './hud';
 
 export type Phase = 'title' | 'playing' | 'paused' | 'gameover';
@@ -39,6 +39,8 @@ void main(){
   gl_FragColor = vec4(c, 1.0);
 }`;
 
+export interface DialogueView { id: string; name: string; color: string; text: string; chars: number; more: boolean; portrait: string }
+
 export class Game implements GameCtx {
   renderer: THREE.WebGLRenderer;
   scene = new THREE.Scene();
@@ -62,6 +64,7 @@ export class Game implements GameCtx {
   talking = false;
   private convo: Conversation | null = null;
   private convoPage = 0;
+  private convoId = '';
   private convoChars = 0; // typewriter progress on the current page
   private toastMsg = '';
   private toastT = 0;
@@ -77,6 +80,10 @@ export class Game implements GameCtx {
   private deathTimer = 0;
   onPhase: (p: Phase) => void = () => {};
   onMute: (m: boolean) => void = () => {};
+  /** Dialogue state for the React overlay (null when not talking) */
+  onDialogue: (d: DialogueView | null) => void = () => {};
+  private lastDialogueKey = '';
+  private portraitCache = new Map<string, string>();
 
   constructor(canvas: HTMLCanvasElement, hudCanvas: HTMLCanvasElement, audio: AudioEngine, input: Input) {
     this.audio = audio;
@@ -248,6 +255,7 @@ export class Game implements GameCtx {
     if (!talker) return;
     best.facePlayer();
     this.convo = talker(this.quests, this.talkCtx());
+    this.convoId = best.spec.id;
     this.convoPage = 0; this.convoChars = 0;
     this.talking = true;
     this.quests.talked.add(best.spec.id);
@@ -273,6 +281,55 @@ export class Game implements GameCtx {
         c.onEnd?.(this.quests, this.talkCtx());
       } else this.audio.blip();
     }
+  }
+
+  private publishDialogue() {
+    if (!this.convo) { if (this.lastDialogueKey) { this.lastDialogueKey = ''; this.onDialogue(null); } return; }
+    const chars = Math.floor(this.convoChars);
+    const key = this.convoId + '|' + this.convoPage + '|' + chars;
+    if (key === this.lastDialogueKey) return;
+    this.lastDialogueKey = key;
+    this.onDialogue({ id: this.convoId, name: this.convo.name, color: this.convo.color, text: this.convo.pages[this.convoPage], chars, more: this.convoPage < this.convo.pages.length - 1, portrait: this.portrait(this.convoId) });
+  }
+
+  /** Render a character's head (from its real 3D model) into a small portrait image (data URL), cached per NPC id. */
+  private portrait(id: string): string {
+    const hit = this.portraitCache.get(id);
+    if (hit) return hit;
+    const npc = this.npcs.find((n) => n.spec.id === id);
+    const isDog = id === 'dog';
+    const model = isDog ? buildDog() : buildVillager(VILLAGER_LOOKS[id] ?? VILLAGER_LOOKS.farmer);
+    void npc;
+    const S = 96;
+    const scene = new THREE.Scene();
+    scene.add(new THREE.AmbientLight(0xffffff, 1.2));
+    const sun = new THREE.DirectionalLight(0xffffff, 1.9); sun.position.set(-0.4, 1, 1.2); scene.add(sun);
+    model.root.scale.set(1, 1, 1); model.root.rotation.y = 0.35; // three-quarter view, unsquashed
+    scene.add(model.root);
+    // frame the head and shoulders
+    const headY = isDog ? 0.5 : 1.0, half = isDog ? 0.45 : 0.55;
+    const cam = new THREE.OrthographicCamera(-half, half, half, -half, 0.1, 20);
+    cam.position.set(0, headY - (isDog ? 0.05 : 0.08), 5); cam.lookAt(0, headY - (isDog ? 0.05 : 0.08), 0);
+    const rt = new THREE.WebGLRenderTarget(S, S, { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
+    rt.texture.colorSpace = THREE.SRGBColorSpace;
+    const prevClear = this.renderer.getClearColor(new THREE.Color()), prevAlpha = this.renderer.getClearAlpha();
+    this.renderer.setRenderTarget(rt);
+    this.renderer.setClearColor(0x000000, 0);
+    this.renderer.clear();
+    this.renderer.render(scene, cam);
+    const buf = new Uint8Array(S * S * 4);
+    this.renderer.readRenderTargetPixels(rt, 0, 0, S, S, buf);
+    this.renderer.setRenderTarget(null);
+    this.renderer.setClearColor(prevClear, prevAlpha);
+    rt.dispose();
+    const cv = document.createElement('canvas'); cv.width = S; cv.height = S;
+    const g = cv.getContext('2d')!;
+    const img = g.createImageData(S, S);
+    for (let y = 0; y < S; y++) img.data.set(buf.subarray((S - 1 - y) * S * 4, (S - y) * S * 4), y * S * 4); // flip Y
+    g.putImageData(img, 0, 0);
+    const url = cv.toDataURL();
+    this.portraitCache.set(id, url);
+    return url;
   }
 
   // ------------------------------------------------------------------ phases
@@ -532,11 +589,12 @@ export class Game implements GameCtx {
     this.renderer.setRenderTarget(null);
     this.renderer.render(this.postScene, this.postCam);
     const p = this.player;
+    this.publishDialogue();
     this.hud.draw({
       hp: p.hp, rupees: p.rupees, kills: p.kills,
       charge: p.charged ? 1 : p.holding ? Math.min(1, p.chargeT / 0.75) : 0,
       charged: p.charged, blocking: p.blocking, attacking: p.attacking, time: this.time,
-      dialogue: this.convo ? { name: this.convo.name, color: this.convo.color, text: this.convo.pages[this.convoPage], chars: Math.floor(this.convoChars), more: this.convoPage < this.convo.pages.length - 1 } : null,
+      dialogue: !!this.convo,
       toast: this.toastT > 0 ? this.toastMsg : '',
       canTalk: !this.talking && this.phase === 'playing' && this.npcs.some((n) => n.canTalk()),
     });
