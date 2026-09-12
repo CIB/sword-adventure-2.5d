@@ -17,6 +17,22 @@ export function getGradientMap(): THREE.DataTexture {
   return gradientMap;
 }
 
+let groundGradientMap: THREE.DataTexture | null = null;
+/** Fine toon ramp for the ground mesh: with only 5 bands the gentle meadow slopes snap between
+ *  light and dark shading in broad flat patches; 16 close-spaced steps read as a smooth ramp
+ *  while slopes still catch the sun. Characters and props keep the punchier 5-step map. */
+export function getGroundGradientMap(): THREE.DataTexture {
+  if (groundGradientMap) return groundGradientMap;
+  const n = 16, lo = 0.62;
+  const data = new Uint8Array(Array.from({ length: n }, (_, i) => Math.round((lo + (1 - lo) * (i / (n - 1))) * 255)));
+  groundGradientMap = new THREE.DataTexture(data, n, 1, THREE.RedFormat);
+  groundGradientMap.minFilter = THREE.NearestFilter;
+  groundGradientMap.magFilter = THREE.NearestFilter;
+  groundGradientMap.generateMipmaps = false;
+  groundGradientMap.needsUpdate = true;
+  return groundGradientMap;
+}
+
 export function toon(color: string | number | THREE.Color): THREE.MeshToonMaterial {
   return new THREE.MeshToonMaterial({ color, gradientMap: getGradientMap() });
 }

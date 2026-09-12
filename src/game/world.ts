@@ -1128,7 +1128,7 @@ export class World {
       const ca = World.parseColor(a), cb = World.parseColor(b);
       return Math.max(Math.abs(ca[0] - cb[0]), Math.abs(ca[1] - cb[1]), Math.abs(ca[2] - cb[2]));
     };
-    const FEATHER_MIN = 10;
+    const FEATHER_MIN = 4;
     for (let tz = 0; tz < this.h; tz++) for (let tx = 0; tx < this.w; tx++) {
       const t = this.tile(tx, tz);
       const ox = tx * T, oz = tz * T;
@@ -1294,43 +1294,36 @@ export class World {
         }
         g.fillStyle = '#5a3a1e'; g.fillRect(ox, oz, T, 1); g.fillRect(ox, oz, 1, T);
       }
-      // feather this tile's edges into differently-typed natural neighbours (2-3px soft step, no hard seam)
+      // feather this tile's edges into differently-coloured natural neighbours: a wavy, dithered
+      // gradient band (pure neighbour colour at the seam, stepping back into own with dither),
+      // so surfaces melt into each other instead of drawing an outline
       if (natural(t)) {
         const own = natBase(t, tx, tz);
         if (own) {
           const nN = natBase(N, tx, tz - 1), nS = natBase(S, tx, tz + 1), nE = natBase(E, tx + 1, tz), nW = natBase(W, tx - 1, tz);
-          if (nN && colDiff(nN, own) > FEATHER_MIN) {
-            const hN = blendCss(own, nN, 0.5);
+          const featherEdge = (n: string, seed: number, put: (i: number, d: number) => [number, number]) => {
+            const c1 = blendCss(own, n, 0.65), c2 = blendCss(own, n, 0.35), c3 = blendCss(own, n, 0.15);
+            const paint = (i: number, d: number, col: string) => {
+              if (d < 0 || d >= T) return;
+              const [x, y] = put(i, d);
+              g.fillStyle = col; g.fillRect(x, y, 1, 1);
+            };
             for (let i = 0; i < T; i++) {
-              g.fillStyle = nN; g.fillRect(ox + i, oz, 1, 1);
-              g.fillStyle = hN; g.fillRect(ox + i, oz + 1, 1, 1);
-              if (hash2(tx * T + i, tz * 7 + 8) < 0.4) { g.fillStyle = nN; g.fillRect(ox + i, oz + 2, 1, 1); }
+              // wavy seam: the band's depth wanders 0..2 px, changing every 3 px along the edge
+              const wob = Math.floor(hash2(Math.floor(i / 3) + seed * 131 + tx * 4 + tz * 4, seed + 7, 2) * 3);
+              paint(i, 0, n);
+              if (wob >= 1) paint(i, 1, n);
+              if (wob >= 2) paint(i, 2, n);
+              const p = 1 + wob;
+              if (hash2(i + seed * 17, tx + tz, 81) < 0.85) paint(i, p, c1);
+              if (hash2(i + seed * 17, tx + tz, 82) < 0.6) paint(i, p + 1, c2);
+              if (hash2(i + seed * 17, tx + tz, 83) < 0.3) paint(i, p + 2, c3);
             }
-          }
-          if (nS && colDiff(nS, own) > FEATHER_MIN) {
-            const hS = blendCss(own, nS, 0.5);
-            for (let i = 0; i < T; i++) {
-              g.fillStyle = nS; g.fillRect(ox + i, oz + T - 1, 1, 1);
-              g.fillStyle = hS; g.fillRect(ox + i, oz + T - 2, 1, 1);
-              if (hash2(tx * T + i, tz * 7 + 9) < 0.4) { g.fillStyle = nS; g.fillRect(ox + i, oz + T - 3, 1, 1); }
-            }
-          }
-          if (nW && colDiff(nW, own) > FEATHER_MIN) {
-            const hW = blendCss(own, nW, 0.5);
-            for (let i = 0; i < T; i++) {
-              g.fillStyle = nW; g.fillRect(ox, oz + i, 1, 1);
-              g.fillStyle = hW; g.fillRect(ox + 1, oz + i, 1, 1);
-              if (hash2(tz * T + i, tx * 7 + 8) < 0.4) { g.fillStyle = nW; g.fillRect(ox + 2, oz + i, 1, 1); }
-            }
-          }
-          if (nE && colDiff(nE, own) > FEATHER_MIN) {
-            const hE = blendCss(own, nE, 0.5);
-            for (let i = 0; i < T; i++) {
-              g.fillStyle = nE; g.fillRect(ox + T - 1, oz + i, 1, 1);
-              g.fillStyle = hE; g.fillRect(ox + T - 2, oz + i, 1, 1);
-              if (hash2(tz * T + i, tx * 7 + 9) < 0.4) { g.fillStyle = nE; g.fillRect(ox + T - 3, oz + i, 1, 1); }
-            }
-          }
+          };
+          if (nN && colDiff(nN, own) > FEATHER_MIN) featherEdge(nN, 0, (i, d) => [ox + i, oz + d]);
+          if (nS && colDiff(nS, own) > FEATHER_MIN) featherEdge(nS, 1, (i, d) => [ox + i, oz + T - 1 - d]);
+          if (nW && colDiff(nW, own) > FEATHER_MIN) featherEdge(nW, 2, (i, d) => [ox + d, oz + i]);
+          if (nE && colDiff(nE, own) > FEATHER_MIN) featherEdge(nE, 3, (i, d) => [ox + T - 1 - d, oz + i]);
         }
       }
     }
