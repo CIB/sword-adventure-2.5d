@@ -186,7 +186,7 @@ if (g) {
     let kept = 0;
     for (let i = s2; i < s2 + n2; i++) if (attr2.getX(i) >= 0) kept++;
     check('cut survives a chunk rebuild', kept === n2);
-    check('still cut while airborne', (cg.update(10 + CUT_FLY * 0.5, 41.5, 41.5, 16, 41.5, 41.5), !cg.hasTufts(cx, cz)));
+    check('cut stubble is immediate while blades fly', (cg.update(10 + CUT_FLY * 0.5, 41.5, 41.5, 16, 41.5, 41.5), !cg.hasTufts(cx, cz)));
     cg.update(10 + CUT_REGROW + 2, 41.5, 41.5, 16, 41.5, 41.5);
     check('never regrows while in view', !cg.hasTufts(cx, cz));
     cg.update(10 + CUT_REGROW / 2, 141.5, 41.5, 16, 141.5, 41.5);
