@@ -14,6 +14,7 @@ import {
   buildFernGeo, buildTallGrassGeo, buildBriarGeo, buildLilyGeo, buildBoulderGeo, makeVegInstances,
 } from './models';
 import { GrassSystem } from './grass';
+import { updateFoliage, makeVegInstancesWind } from './foliage';
 import { Hud } from './hud';
 
 export type Phase = 'title' | 'playing' | 'paused' | 'gameover';
@@ -232,15 +233,19 @@ export class Game implements GameCtx {
       this.scene.add(mesh);
     }
     // undergrowth: one instanced draw call per type (ferns, tall grass, briars, boulders, lily pads)
-    const veg = (geo: THREE.BufferGeometry, list: TileObj[], seed: number, onWater = false) => {
+    const veg = (geo: THREE.BufferGeometry, list: TileObj[], seed: number, onWater = false, wind = false) => {
       if (!list.length) return;
       // +0.012 on land keeps the base off the ground quad (no z-fighting); lilies sit on the water surface
       const spots = list.map((t) => ({ x: t.tx + 0.5, y: onWater ? -WATER_DEPTH + 0.06 : w.tileH(t.tx, t.tz) + 0.012, z: t.tz + 0.5 }));
-      this.scene.add(makeVegInstances(geo, spots, seed));
+      if (wind) {
+        this.scene.add(makeVegInstancesWind(geo, spots, seed));
+      } else {
+        this.scene.add(makeVegInstances(geo, spots, seed));
+      }
     };
-    veg(buildFernGeo(), w.ferns, 901);
-    veg(buildTallGrassGeo(), w.tallgrass, 902);
-    veg(buildBriarGeo(), w.briars, 903);
+    veg(buildFernGeo(), w.ferns, 901, false, true);
+    veg(buildTallGrassGeo(), w.tallgrass, 902, false, true);
+    veg(buildBriarGeo(), w.briars, 903, false, true);
     veg(buildBoulderGeo(), w.boulders, 904);
     veg(buildLilyGeo(), w.lilies, 905, true);
     for (const f of w.fences) {
@@ -716,6 +721,8 @@ export class Game implements GameCtx {
       this.player.pos.x, this.player.pos.z,
       this.viewAngle,
     );
+    // BotW-inspired particle foliage wind
+    updateFoliage(this.time);
     this.renderer.setRenderTarget(this.rt);
     this.renderer.render(this.scene, this.camera);
     this.renderer.setRenderTarget(null);

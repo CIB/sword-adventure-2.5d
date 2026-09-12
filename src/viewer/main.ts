@@ -12,6 +12,7 @@ import {
 import type { PropKind, HouseSpec, EnemyKind } from '../game/world';
 import { World } from '../game/world';
 import { GrassSystem } from '../game/grass';
+import { updateFoliage } from '../game/foliage';
 import { POST_VS, POST_FS } from '../game/game';
 import { VIEW_W, VIEW_H, VIEW_TILES_X, VIEW_TILES_Y, CAM_HEIGHT, SHEAR, FACING_ANGLE } from '../game/constants';
 
@@ -211,6 +212,7 @@ function frame(now: number) {
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
   grassTime += dt;
   grass.setTime(grassTime); // keep the wind blowing even on non-grass entries (it's one uniform)
+  updateFoliage(grassTime);
   animate(dt);
   gridHelper.visible = gridCb.checked && mode === 'free';
   if (mode === 'game') {
