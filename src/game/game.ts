@@ -4,12 +4,15 @@ import {
   VIEW_W, VIEW_H, VIEW_TILES_X, VIEW_TILES_Y, CAM_HEIGHT, SHEAR, WATER_DEPTH, MAP_W, MAP_H, PX_PER_TILE, MAX_HP,
   RNG, inArc, FACING_VEC, clamp,
 } from './constants';
-import { World, type EnemyKind, type Vec2 } from './world';
+import { World, type EnemyKind, type Vec2, type TileObj } from './world';
 import { AudioEngine } from './audio';
 import { Input, PAUSE_KEYS, MUTE_KEYS, ATTACK_KEYS, TALK_KEYS, ROTATE_CCW_KEYS, ROTATE_CW_KEYS, FULLSCREEN_KEYS, HELP_KEYS, rotateView } from './input';
 import { Player, Enemy, Npc, Projectile, Pickup, Effect, fxSpark, fxPuff, fxLeaves, type GameCtx } from './entities';
 import { NPC_TALK, newQuestState, type Conversation, type QuestState, type TalkCtx } from './dialogue';
-import { buildTrees, buildBush, buildStump, buildRock, buildFence, buildHouse, buildProp, getGradientMap, buildVillager, buildDog, VILLAGER_LOOKS } from './models';
+import {
+  buildTrees, buildBush, buildBerryBush, buildStump, buildRock, buildFence, buildHouse, buildProp, getGroundGradientMap, buildVillager, buildDog, VILLAGER_LOOKS,
+  buildFernGeo, buildTallGrassGeo, buildBriarGeo, buildLilyGeo, buildBoulderGeo, makeVegInstances,
+} from './models';
 import { Hud } from './hud';
 
 export type Phase = 'title' | 'playing' | 'paused' | 'gameover';
@@ -83,6 +86,8 @@ export class Game implements GameCtx {
   private toastMsg = '';
   private toastT = 0;
   private spinners: THREE.Object3D[] = [];
+  /** windmill sails: spun about their local Z axis (the 'spin' objects turn about Y) */
+  private millSpinners: THREE.Object3D[] = [];
   phase: Phase = 'title';
   time = 0;
   private lastNow = 0;
@@ -192,7 +197,7 @@ export class Game implements GameCtx {
   private buildStatic() {
     const w = this.world;
     // heightmapped ground; lit (toon) so slopes read as shading, like the characters
-    const ground = new THREE.Mesh(w.createGroundGeometry(), new THREE.MeshToonMaterial({ map: w.createGroundTexture(), gradientMap: getGradientMap() }));
+    const ground = new THREE.Mesh(w.createGroundGeometry(), new THREE.MeshToonMaterial({ map: w.createGroundTexture(), gradientMap: getGroundGradientMap() }));
     this.scene.add(ground);
 
     // animated water overlay
@@ -212,18 +217,30 @@ export class Game implements GameCtx {
     for (const o of buildTrees(w.trees)) this.scene.add(o);
     for (const o of w.createBridgeMeshes()) this.scene.add(o);
     for (const b of w.bushes) {
-      const mesh = buildBush();
+      const mesh = (b.tx * 31 + b.tz * 17) % 5 === 0 ? buildBerryBush() : buildBush(); // ~20% berry bushes
       mesh.position.set(b.tx + 0.5, w.tileH(b.tx, b.tz), b.tz + 0.5);
       mesh.rotation.y = ((b.tx * 7 + b.tz * 3) % 5) * 0.4;
       this.scene.add(mesh);
       this.bushes.push({ tx: b.tx, tz: b.tz, mesh, alive: true });
     }
     for (const r of w.rocks) {
-      const mesh = buildRock();
+      const mesh = buildRock(r.v ?? 0);
       mesh.position.set(r.tx + 0.5, w.tileH(r.tx, r.tz), r.tz + 0.5);
       mesh.rotation.y = ((r.tx * 5 + r.tz * 11) % 6) * 0.5;
       this.scene.add(mesh);
     }
+    // undergrowth: one instanced draw call per type (ferns, tall grass, briars, boulders, lily pads)
+    const veg = (geo: THREE.BufferGeometry, list: TileObj[], seed: number, onWater = false) => {
+      if (!list.length) return;
+      // +0.012 on land keeps the base off the ground quad (no z-fighting); lilies sit on the water surface
+      const spots = list.map((t) => ({ x: t.tx + 0.5, y: onWater ? -WATER_DEPTH + 0.06 : w.tileH(t.tx, t.tz) + 0.012, z: t.tz + 0.5 }));
+      this.scene.add(makeVegInstances(geo, spots, seed));
+    };
+    veg(buildFernGeo(), w.ferns, 901);
+    veg(buildTallGrassGeo(), w.tallgrass, 902);
+    veg(buildBriarGeo(), w.briars, 903);
+    veg(buildBoulderGeo(), w.boulders, 904);
+    veg(buildLilyGeo(), w.lilies, 905, true);
     for (const f of w.fences) {
       const mesh = buildFence();
       mesh.position.set(f.tx + 0.5, w.heightAt(f.tx + 0.5, f.tz + 0.5), f.tz + 0.5);
@@ -236,6 +253,8 @@ export class Game implements GameCtx {
       this.scene.add(mesh);
       const sp = mesh.getObjectByName('spin');
       if (sp) this.spinners.push(sp);
+      const mill = mesh.getObjectByName('mill');
+      if (mill) this.millSpinners.push(mill);
     }
   }
 
@@ -475,6 +494,7 @@ export class Game implements GameCtx {
     this.time += dt;
     this.waveTex.offset.set(this.time * 0.05, -this.time * 0.02);
     for (const sp of this.spinners) sp.rotation.y += dt * 1.5;
+    for (const ms of this.millSpinners) ms.rotation.z += dt * 0.9;
     if (this.toastT > 0) this.toastT -= dt;
 
     // NPCs (they idle/wander even mid-conversation freeze of the player)
