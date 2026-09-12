@@ -57,7 +57,7 @@ if (g) {
   check('unit blade base geometry', base.count === 3);
   check('instance attributes match', a0.count === a1.count && a0.count === a2.count, `${n} blades`);
   check('instance count flag set', g.instanceCount === n);
-  check('tufted Zelda-style coverage (patchy, not a carpet)', n >= 256 * 3 && n <= 256 * 14, `${n} blades (~${(n / 256).toFixed(1)}/tile)`);
+  check('tufted Zelda-style coverage (patchy, not a carpet)', n >= 256 * 3 && n <= 256 * 24, `${n} blades (~${(n / 256).toFixed(1)}/tile)`);
   const cutAttr = g.getAttribute('aCut') as THREE.InstancedBufferAttribute;
   let standing = 0;
   for (let i = 0; i < cutAttr.count; i++) if (cutAttr.getX(i) < 0) standing++;
@@ -89,7 +89,14 @@ if (g) {
 
 // ---- biome response: the amber highland grows sparse, bleached blades
 {
-  const hg = (grass as any).buildGeometry(176, 16, GRASS_CHUNK, GRASS_CHUNK) as THREE.InstancedBufferGeometry | null;
+  // pick the highland chunk with the most tufts (patches there are few and small, so don't hardcode one)
+  let best: [number, number] = [176, 16], bestN = -1;
+  for (let cz = 0; cz < 48; cz += GRASS_CHUNK) for (let cx = 160; cx < MAP_W; cx += GRASS_CHUNK) {
+    let n = 0;
+    for (let z = cz; z < cz + GRASS_CHUNK; z++) for (let x = cx; x < cx + GRASS_CHUNK; x++) n += tuftCount(world, x, z);
+    if (n > bestN) { bestN = n; best = [cx, cz]; }
+  }
+  const hg = (grass as any).buildGeometry(best[0], best[1], GRASS_CHUNK, GRASS_CHUNK) as THREE.InstancedBufferGeometry | null;
   const mg = (grass as any).buildGeometry(33, 33, GRASS_CHUNK, GRASS_CHUNK) as THREE.InstancedBufferGeometry | null;
   check('highland chunk produces geometry', !!hg);
   if (hg && mg) {
@@ -109,7 +116,7 @@ if (g) {
   let flowerTile: [number, number] | null = null;
   outer:
   for (let z = 0; z < MAP_H; z++) for (let x = 0; x < MAP_W; x++) {
-    if (world.tile(x, z) === Tile.Flowers && world.canGrowGrass(x, z) && x < 60 && z < 50) { flowerTile = [x, z]; break outer; }
+    if (world.tile(x, z) === Tile.Flowers && tuftCount(world, x, z) > 0) { flowerTile = [x, z]; break outer; }
   }
   if (flowerTile) {
     const [fx, fz] = flowerTile;
@@ -125,15 +132,25 @@ if (g) {
   }
 }
 
-// ---- tuft distribution: discrete tufts, lush cores, bare fringes, some green tiles bare
+// ---- tuft distribution: solid organised patches with clean edges, bare green elsewhere
 {
-  const hist = [0, 0, 0, 0, 0];
-  let growable = 0;
-  for (let z = 0; z < MAP_H; z++) for (let x = 0; x < MAP_W; x++) if (world.canGrowGrass(x, z)) { growable++; hist[tuftCount(world, x, z)]++; }
-  const bare = hist[0] / growable, full = hist[4] / growable;
-  console.log(`INFO tufts per growable tile: ${hist.map((h, i) => `${i}:${(100 * h / growable).toFixed(1)}%`).join(' ')}`);
-  check('a good share of green tiles have no tufts', bare > 0.3 && bare < 0.7, `${(100 * bare).toFixed(1)}% bare`);
-  check('lush cores exist but are rare', full > 0.01 && full < 0.2, `${(100 * full).toFixed(1)}% full`);
+  let growable = 0, tufted = 0, partial = 0, lone = 0;
+  for (let z = 0; z < MAP_H; z++) for (let x = 0; x < MAP_W; x++) {
+    if (!world.canGrowGrass(x, z)) continue;
+    growable++;
+    const n = tuftCount(world, x, z);
+    if (n === 0) continue;
+    tufted++;
+    if (n !== 4) partial++; // inside a patch every tile is fully tufted (no half-density fringe)
+    let nb = 0;
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) if (tuftCount(world, x + dx, z + dz)) nb++;
+    if (nb === 0) lone++;
+  }
+  const share = tufted / growable;
+  console.log(`INFO tufted green tiles: ${(100 * share).toFixed(1)}%, partial ${partial}, isolated ${lone}`);
+  check('patches cover a minority of the green', share > 0.15 && share < 0.55, `${(100 * share).toFixed(1)}%`);
+  check('tiles are either fully tufted or bare', partial === 0);
+  check('no isolated single-tile tufts', lone === 0, `${lone}`);
   check('non-growable tiles never tuft', tuftCount(world, 120, 50) === 0 && tuftCount(world, 9, 8) === 0);
 }
 
@@ -170,8 +187,19 @@ if (g) {
     for (let i = s2; i < s2 + n2; i++) if (attr2.getX(i) >= 0) kept++;
     check('cut survives a chunk rebuild', kept === n2);
     check('still cut while airborne', (cg.update(10 + CUT_FLY * 0.5, 41.5, 41.5, 16, 41.5, 41.5), !cg.hasTufts(cx, cz)));
-    cg.update(10 + CUT_REGROW + 1, 41.5, 41.5, 16, 41.5, 41.5);
-    check('tufts regrow after CUT_REGROW', cg.hasTufts(cx, cz));
+    cg.update(10 + CUT_REGROW + 2, 41.5, 41.5, 16, 41.5, 41.5);
+    check('never regrows while in view', !cg.hasTufts(cx, cz));
+    cg.update(10 + CUT_REGROW / 2, 141.5, 41.5, 16, 141.5, 41.5);
+    check('does not regrow early even off-screen', !cg.hasTufts(cx, cz));
+    cg.update(10 + CUT_REGROW + 4, 141.5, 41.5, 16, 141.5, 41.5);
+    check('regrows once old and off-screen', cg.hasTufts(cx, cz));
+    for (let i = 0; i < 6; i++) cg.update(10 + CUT_REGROW + 5 + i * 0.016, 41.5, 41.5, 16, 41.5, 41.5);
+    const geo3 = ((cg as any).chunks.get(key) as THREE.Mesh).geometry as THREE.InstancedBufferGeometry;
+    const attr3 = geo3.getAttribute('aCut') as THREE.InstancedBufferAttribute;
+    const [s3, n3] = (geo3.userData.tileRanges as Map<number, [number, number]>).get(cz * MAP_W + cx)!;
+    let up = 0;
+    for (let i = s3; i < s3 + n3; i++) if (attr3.getX(i) < 0) up++;
+    check('regrown tile stands again in the buffer', up === n3);
     cg.cut(cx, cz);
     cg.resetCuts();
     check('resetCuts regrows everything', cg.hasTufts(cx, cz));

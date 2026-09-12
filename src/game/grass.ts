@@ -18,7 +18,7 @@
  *  - All animation lives in the vertex shader: travelling gusts (a noise field scrolled in world
  *    space), per-blade idle sway, gust shimmer, and radial parting around the player.
  *  - Cutting: the sword stamps a per-blade `aCut` timestamp; the shader makes the tile's tufts
- *    detach, tumble upward and fade (2D-Zelda style), hides them, then pops them back later.
+ *    detach, tumble upward and fade (2D-Zelda style) and hides them; they regrow off-screen.
  *
  * Per-instance data:
  *   aData0 = (root.x, root.y, root.z, height)
@@ -37,10 +37,12 @@ const MAX_BLADES_PER_CHUNK = 8000;
 const MAX_TUFTS_PER_TILE = 4;   // a fully lush tile: one tuft per quadrant
 const BLADES_PER_TUFT_MIN = 5, BLADES_PER_TUFT_RND = 5;
 
-// Cutting (Zelda-style): the tufts of a hit tile detach, fly up and vanish, then regrow later.
-export const CUT_FLY = 0.85;    // seconds the pieces are airborne
-export const CUT_REGROW = 28;   // seconds until the tile regrows
-const CUT_GROW = 0.7;           // regrow pop duration
+// Cutting (Zelda-style): the tufts of a hit tile detach, fly up and vanish. Like the 2D games, cut
+// grass only comes back once the player has left the area: a tile regrows after CUT_REGROW seconds
+// AND only while it is off-screen, so you never watch it pop back.
+export const CUT_FLY = 0.85;      // seconds the pieces are airborne
+export const CUT_REGROW = 90;     // minimum seconds before an off-screen tile may regrow
+const REGROW_SCAN = 1.0;          // seconds between regrow sweeps
 
 // ------------------------------------------------------------------ palette
 // sRGB hexes like the rest of the game, linearised because the scene renders into a linear render
@@ -86,8 +88,6 @@ const vec3 PET1 = vec3(${PAL.petals[1]});
 const vec3 PET2 = vec3(${PAL.petals[2]});
 const vec3 PET3 = vec3(${PAL.petals[3]});
 const float CUT_FLY = ${CUT_FLY.toFixed(3)};
-const float CUT_REGROW = ${CUT_REGROW.toFixed(3)};
-const float CUT_GROW = ${CUT_GROW.toFixed(3)};
 
 void main() {
   float bend = position.y;      // unit blade: 0 at the root, 1 at the tip
@@ -99,16 +99,13 @@ void main() {
   float lean = aData1.w;
   float dry = aData2;
 
-  // cut state: -1 = standing, [0,FLY) = airborne piece, [FLY,REGROW) = gone, then a regrow pop
+  // cut state: -1 = standing, [0,FLY) = airborne piece, beyond = gone (until the CPU regrows it)
   float age = aCut < 0.0 ? -1.0 : uTime - aCut;
-  if (age >= CUT_FLY && age < CUT_REGROW) {
+  if (age >= CUT_FLY) {
     gl_Position = vec4(0.0, 0.0, 2.0, 1.0); // degenerate, off-screen
     vCol = vec3(0.0); vShade = 0.0; vGust = 0.0;
     return;
   }
-  float grow = age >= CUT_REGROW ? smoothstep(0.0, CUT_GROW, age - CUT_REGROW) : 1.0;
-  grow = 1.0 - (1.0 - grow) * (1.0 - grow);
-  H *= grow; W *= grow;
 
   // blade in its screen-aligned local frame: lx along camera-right, ly up
   float lx = position.x * W + lean * bend;
@@ -194,29 +191,55 @@ function valueNoise(x: number, z: number, cell: number, salt: number): number {
   const h00 = hash2(x0, z0, salt), h10 = hash2(x0 + 1, z0, salt), h01 = hash2(x0, z0 + 1, salt), h11 = hash2(x0 + 1, z0 + 1, salt);
   return (h00 * (1 - sx) + h10 * sx) * (1 - sz) + (h01 * (1 - sx) + h11 * sx) * sz;
 }
-function clumpNoise(tx: number, tz: number): number {
-  return 0.55 * valueNoise(tx, tz, 7, 7) + 0.3 * valueNoise(tx, tz, 3, 17) + 0.15 * valueNoise(tx, tz, 1.5, 27);
+/** Large, soft field that decides where grass patches lie (big cells -> broad, calm shapes). */
+function patchNoise(tx: number, tz: number): number {
+  return 0.65 * valueNoise(tx + 0.5, tz + 0.5, 9, 7) + 0.35 * valueNoise(tx + 0.5, tz + 0.5, 4, 17);
 }
 
 /**
- * How many tufts a tile grows (0..MAX_TUFTS_PER_TILE). Deterministic, so the sword can ask about
- * tiles whose chunk isn't built. Zelda-style: tufts are discrete, patchy things — the lush heart
- * of a meadow fills up, the fringes thin out to the odd tuft, and plenty of green tiles stay bare
- * (the ground's grass texture is the base layer; tufts sit on top of it).
+ * Is this tile inside a grass patch? Zelda-style: patches are solid, organised areas with a hard
+ * edge — a tile is either fully tufted or bare, never "a bit". The patch field is thresholded per
+ * biome so the meadows carry broad patches while the mesa and highland get only a few small ones.
  */
-export function tuftCount(w: World, tx: number, tz: number): number {
-  if (!w.canGrowGrass(tx, tz)) return 0;
+function inPatch(w: World, tx: number, tz: number): boolean {
+  if (!w.canGrowGrass(tx, tz)) return false;
   const t = w.tile(tx, tz);
   const { density } = biomeMix(w, tx, tz);
-  const tileMul = t === Tile.Heather ? 0.5 : t === Tile.DryGrass ? 0.7 : 1;
-  const clump = clumpNoise(tx, tz);
-  const lush = clamp((clump - 0.27) / 0.5, 0, 1) * density * tileMul;
-  if (lush <= 0) return 0;
-  // dropout: even inside lush patches some tiles are bare, and sparse fringes are mostly bare
-  if (hash2(tx, tz, 29) < 0.08 + 0.45 * (1 - lush)) return 0;
-  const e = lush * (MAX_TUFTS_PER_TILE + 0.4);
-  const n = Math.floor(e) + (hash2(tx, tz, 23) < e - Math.floor(e) ? 1 : 0);
-  return Math.min(MAX_TUFTS_PER_TILE, n);
+  const tileMul = t === Tile.Heather ? 0.6 : t === Tile.DryGrass ? 0.75 : 1;
+  const threshold = 0.5 + (1 - density * tileMul) * 0.3;
+  return patchNoise(tx, tz) > threshold;
+}
+
+/**
+ * Per-world patch mask, cached: the raw patch field, then lone tiles / one-tile spurs eroded away
+ * (a tile needs at least two 4-neighbours) until stable, so every edge reads clean. Building it
+ * costs one pass over the map at startup.
+ */
+const patchMasks = new WeakMap<World, Uint8Array>();
+function patchMask(w: World): Uint8Array {
+  let m = patchMasks.get(w);
+  if (m) return m;
+  m = new Uint8Array(MAP_W * MAP_H);
+  for (let z = 0; z < MAP_H; z++) for (let x = 0; x < MAP_W; x++) if (inPatch(w, x, z)) m[z * MAP_W + x] = 1;
+  const at = (x: number, z: number) => (x < 0 || z < 0 || x >= MAP_W || z >= MAP_H ? 0 : m![z * MAP_W + x]);
+  for (let changed = true; changed;) {
+    changed = false;
+    for (let z = 0; z < MAP_H; z++) for (let x = 0; x < MAP_W; x++) {
+      if (!m[z * MAP_W + x]) continue;
+      if (at(x - 1, z) + at(x + 1, z) + at(x, z - 1) + at(x, z + 1) < 2) { m[z * MAP_W + x] = 0; changed = true; }
+    }
+  }
+  patchMasks.set(w, m);
+  return m;
+}
+
+/**
+ * How many tufts a tile grows: MAX_TUFTS_PER_TILE inside a patch, 0 outside. Deterministic, so
+ * the sword can ask about tiles whose chunk isn't built.
+ */
+export function tuftCount(w: World, tx: number, tz: number): number {
+  if (tx < 0 || tz < 0 || tx >= MAP_W || tz >= MAP_H) return 0;
+  return patchMask(w)[tz * MAP_W + tx] ? MAX_TUFTS_PER_TILE : 0;
 }
 
 /**
@@ -252,6 +275,7 @@ export class GrassSystem {
   /** tile index -> game time it was cut; survives chunk streaming so cut tiles stay cut */
   private cuts = new Map<number, number>();
   private now = 0;
+  private lastRegrowScan = -1e9;
 
   constructor(world: World) {
     this.world = world;
@@ -285,6 +309,8 @@ export class GrassSystem {
     this.now = time;
     (u.uPlayer.value as THREE.Vector2).set(px, pz);
     (u.uRight.value as THREE.Vector2).set(Math.cos(viewAngle), -Math.sin(viewAngle));
+
+    if (time - this.lastRegrowScan >= REGROW_SCAN) { this.lastRegrowScan = time; this.regrow(camX, camZ, radiusTiles + 1); }
 
     const ccx = Math.floor(camX / GRASS_CHUNK), ccz = Math.floor(camZ / GRASS_CHUNK);
     const r = Math.max(1, Math.ceil(radiusTiles / GRASS_CHUNK) + 1);
@@ -323,9 +349,26 @@ export class GrassSystem {
   /** Does this tile currently have standing tufts the sword could cut? */
   hasTufts(tx: number, tz: number): boolean {
     if (tx < 0 || tz < 0 || tx >= MAP_W || tz >= MAP_H) return false;
-    const cutAt = this.cuts.get(tz * MAP_W + tx);
-    if (cutAt !== undefined && this.now - cutAt < CUT_REGROW) return false;
+    if (this.cuts.has(tz * MAP_W + tx)) return false;
     return tuftCount(this.world, tx, tz) > 0;
+  }
+
+  /**
+   * Regrow cut tiles that are old enough AND out of view (further than `hideR` tiles from the
+   * camera) — the 2D-Zelda rule that grass is back when you return, but never pops up while you
+   * are looking at it.
+   */
+  regrow(camX: number, camZ: number, hideR: number) {
+    if (!this.cuts.size) return;
+    const r2 = hideR * hideR;
+    for (const [tileKey, t] of this.cuts) {
+      if (this.now - t < CUT_REGROW) continue;
+      const tx = tileKey % MAP_W, tz = Math.floor(tileKey / MAP_W);
+      if ((tx + 0.5 - camX) ** 2 + (tz + 0.5 - camZ) ** 2 < r2) continue;
+      this.cuts.delete(tileKey);
+      const mesh = this.chunks.get(Math.floor(tz / GRASS_CHUNK) * this.chX + Math.floor(tx / GRASS_CHUNK));
+      if (mesh) this.writeCut(mesh.geometry as THREE.InstancedBufferGeometry, tileKey, -1);
+    }
   }
 
   /**
@@ -426,8 +469,6 @@ export class GrassSystem {
     const w = this.world;
     const d0: number[] = [], d1: number[] = [], d2: number[] = [], dc: number[] = [];
     const ranges = new Map<number, [number, number]>();
-    // prune stale cuts while we're here
-    for (const [k, t] of this.cuts) if (this.now - t >= CUT_REGROW + CUT_GROW) this.cuts.delete(k);
     outer:
     for (let tz = tz0; tz < tz0 + hTiles; tz++) for (let tx = tx0; tx < tx0 + wTiles; tx++) {
       const tufts = tuftCount(w, tx, tz);
@@ -436,18 +477,15 @@ export class GrassSystem {
       const { dry } = biomeMix(w, tx, tz);
       const flowerTile = t === Tile.Flowers;
       const tileKey = tz * MAP_W + tx;
-      const cutAt = this.cuts.get(tileKey);
-      const cutVal = cutAt !== undefined && this.now - cutAt < CUT_REGROW + CUT_GROW ? cutAt : -1;
+      const cutVal = this.cuts.get(tileKey) ?? -1;
       const start = d0.length / 4;
       const seed = tx * 731 + tz * 197;
-      const q0 = Math.floor(hash2(tx, tz, 31) * 4);
       let i = 0;
       for (let k = 0; k < tufts; k++) {
-        // tuft centre: one per (shuffled) quadrant, jittered, so tufts on a tile stay separate
-        const q = (q0 + k) % 4;
+        // tuft centres on a neat 2×2 grid with only a whisker of jitter: tidy, Zelda-like rows
         const hq = hash2(seed, k, 3), hq2 = hash2(seed, k, 4);
-        const cx = tx + 0.28 + (q & 1) * 0.44 + (hq - 0.5) * 0.16;
-        const cz = tz + 0.28 + (q >> 1) * 0.44 + (hq2 - 0.5) * 0.16;
+        const cx = tx + 0.27 + (k & 1) * 0.46 + (hq - 0.5) * 0.07;
+        const cz = tz + 0.27 + (k >> 1) * 0.46 + (hq2 - 0.5) * 0.07;
         const blades = BLADES_PER_TUFT_MIN + Math.floor(hash2(seed, k, 5) * (BLADES_PER_TUFT_RND + 1));
         for (let b = 0; b < blades; b++, i++) {
           // every random value for this blade derives from two hashes (chunk builds are hot)
