@@ -438,6 +438,7 @@ export class Game implements GameCtx {
       this.grass.invalidate(b.tx, b.tz); // no grass inside the respawned bush
       if (b.stump) { this.scene.remove(b.stump); b.stump = undefined; }
     }
+    this.grass.resetCuts();
     const ps = this.world.playerStart;
     this.player.reset(ps.x, ps.z);
     this.spawnAllEnemies();
@@ -577,6 +578,22 @@ export class Game implements GameCtx {
       if (!inArc(Math.atan2(dx, dz), sw.from, sw.to, 0.35)) continue;
       this.cutBush(b);
     }
+    // grass tufts: every tile whose centre the blade sweeps over loses its tufts (Zelda-style)
+    const reach = Math.ceil(sw.r + 0.5);
+    const ptx = Math.floor(p.x), ptz = Math.floor(p.z);
+    let cutGrass = 0;
+    for (let tz = ptz - reach; tz <= ptz + reach; tz++) for (let tx = ptx - reach; tx <= ptx + reach; tx++) {
+      const dx = tx + 0.5 - p.x, dz = tz + 0.5 - p.z;
+      const d = Math.hypot(dx, dz);
+      if (d > sw.r + 0.35) continue;
+      if (d > 0.45 && !inArc(Math.atan2(dx, dz), sw.from, sw.to, 0.4)) continue;
+      if (!this.grass.hasTufts(tx, tz)) continue;
+      if (this.grass.cut(tx, tz)) {
+        cutGrass++;
+        if (this.rand() < 0.04) this.dropLoot(tx + 0.5, tz + 0.5, 0.4, 0.6); // the odd heart/rupee, like Zelda
+      }
+    }
+    if (cutGrass) this.audio.grassCut();
   }
 
   private onEnemyDied(e: Enemy) {
