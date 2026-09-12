@@ -10,15 +10,17 @@ import { Input, PAUSE_KEYS, MUTE_KEYS, ATTACK_KEYS, TALK_KEYS, ROTATE_CCW_KEYS, 
 import { Player, Enemy, Npc, Projectile, Pickup, Effect, fxSpark, fxPuff, fxLeaves, type GameCtx } from './entities';
 import { NPC_TALK, newQuestState, type Conversation, type QuestState, type TalkCtx } from './dialogue';
 import {
-  buildTrees, buildBush, buildBerryBush, buildStump, buildRock, buildFence, buildHouse, buildProp, getGroundGradientMap, buildVillager, buildDog, VILLAGER_LOOKS,
-  buildFernGeo, buildTallGrassGeo, buildBriarGeo, buildLilyGeo, buildBoulderGeo, makeVegInstances,
+  buildStump, buildRock, buildFence, buildHouse, buildProp, getGroundGradientMap, buildVillager, buildDog, VILLAGER_LOOKS,
+  buildFernGeo, buildTallGrassGeo, buildBriarGeo, buildLilyGeo, buildBoulderGeo, makeVegInstances, swayToon,
 } from './models';
 import { GrassSystem } from './grass';
+import { FoliageSystem } from './foliage';
 import { Hud } from './hud';
 
 export type Phase = 'title' | 'playing' | 'paused' | 'gameover';
 
-interface BushObj { tx: number; tz: number; mesh: THREE.Group; alive: boolean; stump?: THREE.Mesh }
+/** A cuttable bush. Its leaves live in the streamed foliage chunks, keyed by tile (see FoliageSystem). */
+interface BushObj { tx: number; tz: number; alive: boolean; stump?: THREE.Mesh }
 
 export const POST_VS = `varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`;
 export const POST_FS = `
@@ -81,6 +83,7 @@ export class Game implements GameCtx {
   quests: QuestState = newQuestState();
   talking = false;
   grass!: GrassSystem;
+  foliage!: FoliageSystem;
   private convo: Conversation | null = null;
   private convoPage = 0;
   private convoId = '';
@@ -216,31 +219,28 @@ export class Game implements GameCtx {
       this.scene.add(water);
     }
 
-    for (const o of buildTrees(w.trees)) this.scene.add(o);
     for (const o of w.createBridgeMeshes()) this.scene.add(o);
-    for (const b of w.bushes) {
-      const mesh = (b.tx * 31 + b.tz * 17) % 5 === 0 ? buildBerryBush() : buildBush(); // ~20% berry bushes
-      mesh.position.set(b.tx + 0.5, w.tileH(b.tx, b.tz), b.tz + 0.5);
-      mesh.rotation.y = ((b.tx * 7 + b.tz * 3) % 5) * 0.4;
-      this.scene.add(mesh);
-      this.bushes.push({ tx: b.tx, tz: b.tz, mesh, alive: true });
-    }
+    // bushes are gameplay objects first: cuttable, solid, and they respawn on restart. Their leaves
+    // are drawn by the foliage system below (a cut stamps the tile's cards and they fly off).
+    for (const b of w.bushes) this.bushes.push({ tx: b.tx, tz: b.tz, alive: true });
     for (const r of w.rocks) {
       const mesh = buildRock(r.v ?? 0);
       mesh.position.set(r.tx + 0.5, w.tileH(r.tx, r.tz), r.tz + 0.5);
       mesh.rotation.y = ((r.tx * 5 + r.tz * 11) % 6) * 0.5;
       this.scene.add(mesh);
     }
-    // undergrowth: one instanced draw call per type (ferns, tall grass, briars, boulders, lily pads)
-    const veg = (geo: THREE.BufferGeometry, list: TileObj[], seed: number, onWater = false) => {
+    // undergrowth: one instanced draw call per type (ferns, tall grass, briars, boulders, lily pads).
+    // Anything alive bends in the same gusts as the grass and the canopies (see wind.ts); rocks and
+    // lily pads keep the plain material.
+    const veg = (geo: THREE.BufferGeometry, list: TileObj[], seed: number, onWater = false, sway = 0) => {
       if (!list.length) return;
       // +0.012 on land keeps the base off the ground quad (no z-fighting); lilies sit on the water surface
-      const spots = list.map((t) => ({ x: t.tx + 0.5, y: onWater ? -WATER_DEPTH + 0.06 : w.tileH(t.tx, t.tz) + 0.012, z: t.tz + 0.5 }));
-      this.scene.add(makeVegInstances(geo, spots, seed));
+      const spots = list.map((t) => ({ x: t.tx + 0.5, y: onWater ? -WATER_DEPTH + 0.06 : w.drawnGroundY(t.tx + 0.5, t.tz + 0.5) + 0.012, z: t.tz + 0.5 }));
+      this.scene.add(makeVegInstances(geo, spots, seed, sway ? swayToon(sway) : undefined));
     };
-    veg(buildFernGeo(), w.ferns, 901);
-    veg(buildTallGrassGeo(), w.tallgrass, 902);
-    veg(buildBriarGeo(), w.briars, 903);
+    veg(buildFernGeo(), w.ferns, 901, false, 0.3);
+    veg(buildTallGrassGeo(), w.tallgrass, 902, false, 0.34);
+    veg(buildBriarGeo(), w.briars, 903, false, 0.1);
     veg(buildBoulderGeo(), w.boulders, 904);
     veg(buildLilyGeo(), w.lilies, 905, true);
     for (const f of w.fences) {
@@ -259,9 +259,12 @@ export class Game implements GameCtx {
       if (mill) this.millSpinners.push(mill);
     }
 
-    // BotW-style animated grass, streamed around the camera
+    // BotW-style animated grass + leaf-card trees and bushes, both streamed around the camera and
+    // both driven by the one shared wind field
     this.grass = new GrassSystem(w);
     this.scene.add(this.grass.root);
+    this.foliage = new FoliageSystem(w);
+    this.scene.add(this.foliage.root);
   }
 
   private spawnAllEnemies() {
@@ -433,7 +436,7 @@ export class Game implements GameCtx {
     for (const b of this.bushes) {
       if (b.alive) continue;
       b.alive = true;
-      this.scene.add(b.mesh);
+      this.foliage.respawnBush(b.tx, b.tz);
       this.world.setSolid(b.tx, b.tz, true);
       this.grass.invalidate(b.tx, b.tz); // no grass inside the respawned bush
       if (b.stump) { this.scene.remove(b.stump); b.stump = undefined; }
@@ -460,6 +463,7 @@ export class Game implements GameCtx {
     cancelAnimationFrame(this.raf);
     this.audio.stopMusic();
     this.grass.dispose();
+    this.foliage.dispose();
     this.renderer.dispose();
   }
 
@@ -608,7 +612,7 @@ export class Game implements GameCtx {
   private cutBush(b: BushObj) {
     b.alive = false;
     this.quests.bushes++;
-    this.scene.remove(b.mesh);
+    this.foliage.cutBush(b.tx, b.tz); // every leaf card of that bush detaches and tumbles away
     this.world.setSolid(b.tx, b.tz, false);
     this.grass.invalidate(b.tx, b.tz); // grass may now grow where the bush stood
     b.stump = buildStump();
@@ -710,12 +714,10 @@ export class Game implements GameCtx {
   // ------------------------------------------------------------------ render
   private render() {
     // BotW-style grass: stream chunks around the camera, animate wind, part around the player
-    this.grass.update(
-      this.time, this.cam.x, this.cam.z,
-      Math.hypot(this.viewW, this.viewH) / PX_PER_TILE / 2 + 2,
-      this.player.pos.x, this.player.pos.z,
-      this.viewAngle,
-    );
+    const viewR = Math.hypot(this.viewW, this.viewH) / PX_PER_TILE / 2 + 2;
+    this.grass.update(this.time, this.cam.x, this.cam.z, viewR, this.player.pos.x, this.player.pos.z, this.viewAngle);
+    // leaf-card trees and bushes: same chunks, same gusts (it widens the radius itself for tall crowns)
+    this.foliage.update(this.time, this.cam.x, this.cam.z, viewR, this.viewAngle);
     this.renderer.setRenderTarget(this.rt);
     this.renderer.render(this.scene, this.camera);
     this.renderer.setRenderTarget(null);

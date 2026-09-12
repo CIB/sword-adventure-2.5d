@@ -16,7 +16,9 @@
  *    a uniform carpet: lush hearts of a meadow fill up, fringes thin out, many green tiles are bare.
  *  - Blades are instanced per 16×16-tile chunk (one draw call each), streamed around the camera.
  *  - All animation lives in the vertex shader: travelling gusts (a noise field scrolled in world
- *    space), per-blade idle sway, gust shimmer, and radial parting around the player.
+ *    space), per-blade idle sway, gust shimmer, and radial parting around the player. The gust field
+ *    itself is shared with every other plant in the game (see wind.ts), so the same wave that
+ *    ripples through the meadow also rolls through the trees standing in it.
  *  - Cutting: the sword stamps a per-blade `aCut` timestamp; the shader makes the tile's tufts
  *    detach, tumble upward and fade (2D-Zelda style) and hides them; they regrow off-screen.
  *
@@ -30,6 +32,7 @@
 import * as THREE from 'three';
 import { clamp, hash2, MAP_W, MAP_H, Tile } from './constants';
 import type { World, Biome } from './world';
+import { vegUniforms, windTexture, setWindTime, setWindView, WIND_GLSL } from './wind';
 
 export const GRASS_CHUNK = 16;  // tiles per chunk side
 const BUILD_PER_FRAME = 2;      // chunk budget per frame (avoids hitches while travelling)
@@ -58,19 +61,10 @@ const PAL = {
 
 // ------------------------------------------------------------------ shaders
 const VERT = /* glsl */ `
-uniform float uTime;
-uniform sampler2D uWindTex;
-uniform float uWindScale;
-uniform vec2 uWindDir;
-uniform float uGust;
-uniform float uLean;
-uniform float uSway;
+${WIND_GLSL}
 uniform vec2 uPlayer;
 uniform float uPlayerR;
 uniform float uPush;
-uniform float uAmbient;
-uniform float uSun;
-uniform vec2 uRight;   // camera-right direction in world XZ: blades always face the screen
 attribute vec4 aData0; // xyz = root on the ground plane, w = blade height
 attribute vec4 aData1; // x = width, y = phase, z = tint code, w = lean
 attribute float aData2; // dryness: 0 lush, 1 bleached (tracks the world's biome blend per blade)
@@ -130,14 +124,13 @@ void main() {
   }
 
   vec3 p = root;
-  p.xz += uRight * lx + scatter;
+  p.xz += uRight.xz * lx + scatter;   // camera-right in world XZ: blades always face the screen
   p.y  += ly + rise;
   float b2 = bend * bend;
 
   // travelling wind: a noise field scrolled across the meadow, plus a per-blade idle sway
-  vec2 wuv = p.xz / uWindScale + uWindDir * (uTime * 0.13);
-  float gust = texture2D(uWindTex, wuv).r;
-  vec2 off = uWindDir * ((gust - 0.42) * uGust + uLean);
+  float gust = gustAt(p.xz, uWindScale);
+  vec2 off = gustPush(gust);
   off += vec2(sin(uTime * 2.1 + phase + p.z * 0.8), cos(uTime * 1.7 + phase * 1.3 + p.x * 0.6)) * uSway;
   p.xz += off * b2;
   p.y  -= length(off) * b2 * 0.3 * H; // keep the blade's length roughly constant as it leans
@@ -279,22 +272,14 @@ export class GrassSystem {
 
   constructor(world: World) {
     this.world = world;
-    this.windTex = GrassSystem.makeWindTexture();
+    this.windTex = windTexture();
     this.material = new THREE.ShaderMaterial({
       uniforms: {
-        uTime: { value: 0 },
+        ...vegUniforms,                       // shared: one write per frame moves every plant
         uWindTex: { value: this.windTex },
-        uWindScale: { value: 13 },
-        uWindDir: { value: new THREE.Vector2(1, 0.35).normalize() },
-        uGust: { value: 0.34 },
-        uLean: { value: 0.16 },
-        uSway: { value: 0.055 },
         uPlayer: { value: new THREE.Vector2(-999, -999) },
         uPlayerR: { value: 0.8 },
         uPush: { value: 0.42 },
-        uAmbient: { value: 0.6 },
-        uSun: { value: 0.42 },
-        uRight: { value: new THREE.Vector2(1, 0) },
       },
       vertexShader: VERT,
       fragmentShader: FRAG,
@@ -305,10 +290,10 @@ export class GrassSystem {
   /** Stream chunks around the camera, drive the wind. Called once per frame. */
   update(time: number, camX: number, camZ: number, radiusTiles: number, px: number, pz: number, viewAngle = 0) {
     const u = this.material.uniforms;
-    u.uTime.value = time;
+    setWindTime(time);
+    setWindView(viewAngle);
     this.now = time;
     (u.uPlayer.value as THREE.Vector2).set(px, pz);
-    (u.uRight.value as THREE.Vector2).set(Math.cos(viewAngle), -Math.sin(viewAngle));
 
     if (time - this.lastRegrowScan >= REGROW_SCAN) { this.lastRegrowScan = time; this.regrow(camX, camZ, radiusTiles + 1); }
 
@@ -344,7 +329,7 @@ export class GrassSystem {
   }
 
   /** Advance the wind clock without streaming (used by the model viewer). */
-  setTime(t: number) { this.material.uniforms.uTime.value = t; this.now = t; }
+  setTime(t: number) { setWindTime(t); this.now = t; }
 
   /** Does this tile currently have standing tufts the sword could cut? */
   hasTufts(tx: number, tz: number): boolean {
@@ -425,7 +410,7 @@ export class GrassSystem {
     this.queue = [];
     this.queued.clear();
     this.material.dispose();
-    this.windTex.dispose();
+    // the wind texture is a shared singleton (wind.ts): other plants still need it
   }
 
   /** A free-standing patch centred on the origin, for the model viewer. */
@@ -521,53 +506,9 @@ export class GrassSystem {
     return g;
   }
 
-  /**
-   * Terrain height exactly as the ground mesh draws it: each tile is split along its shorter
-   * diagonal into two flat triangles (see World.createGroundGeometry), so sample those planes
-   * rather than the bilinear heightfield — blades then never float or sink on slopes.
-   */
+  /** Terrain height exactly as the ground mesh draws it, so blades never float or sink on slopes. */
   private groundY(x: number, z: number): number {
-    const w = this.world;
-    const tx = Math.floor(x), tz = Math.floor(z);
-    const h00 = w.cornerH(tx, tz), h10 = w.cornerH(tx + 1, tz), h01 = w.cornerH(tx, tz + 1), h11 = w.cornerH(tx + 1, tz + 1);
-    const fx = clamp(x - tx, 0, 1), fz = clamp(z - tz, 0, 1);
-    if (Math.abs(h00 - h11) <= Math.abs(h10 - h01)) {
-      // diagonal (0,0)-(1,1)
-      return fz >= fx
-        ? h00 + (h01 - h00) * fz + (h11 - h01) * fx
-        : h00 + (h10 - h00) * fx + (h11 - h10) * fz;
-    }
-    // diagonal (1,0)-(0,1)
-    return fx + fz <= 1
-      ? h00 + (h10 - h00) * fx + (h01 - h00) * fz
-      : h11 * (fx + fz - 1) + h10 * (1 - fz) + h01 * (1 - fx);
+    return this.world.drawnGroundY(x, z);
   }
 
-  /** Seamless smooth value noise (16×16 lattice upsampled to 64×64) used by the vertex shader for gusts. */
-  private static makeWindTexture(): THREE.CanvasTexture {
-    const S = 64, G = 16;
-    const cv = document.createElement('canvas');
-    cv.width = cv.height = S;
-    const g = cv.getContext('2d')!;
-    const img = g.createImageData(S, S);
-    const h = (x: number, z: number) => hash2(((x % G) + G) % G, ((z % G) + G) % G, 77);
-    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
-      const gx = x / S * G, gz = y / S * G;
-      const x0 = Math.floor(gx), z0 = Math.floor(gz);
-      let fx = gx - x0, fz = gz - z0;
-      fx = fx * fx * (3 - 2 * fx); fz = fz * fz * (3 - 2 * fz);
-      const v = (h(x0, z0) * (1 - fx) + h(x0 + 1, z0) * fx) * (1 - fz)
-        + (h(x0, z0 + 1) * (1 - fx) + h(x0 + 1, z0 + 1) * fx) * fz;
-      const c = Math.round(clamp(v, 0, 1) * 255);
-      const i = (y * S + x) * 4;
-      img.data[i] = img.data[i + 1] = img.data[i + 2] = c;
-      img.data[i + 3] = 255;
-    }
-    g.putImageData(img, 0, 0);
-    const tex = new THREE.CanvasTexture(cv);
-    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-    tex.minFilter = tex.magFilter = THREE.LinearFilter;
-    tex.generateMipmaps = false;
-    return tex;
-  }
 }

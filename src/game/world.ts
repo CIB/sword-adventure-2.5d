@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { getGradientMap as getGradientMapRef } from './models';
-import { MAP_W, MAP_H, TEX_PX, Tile, RNG, hash2, LEVEL_H, MAX_WALK_SLOPE, WATER_DEPTH, BRIDGE_H } from './constants';
+import { MAP_W, MAP_H, TEX_PX, Tile, RNG, hash2, LEVEL_H, MAX_WALK_SLOPE, WATER_DEPTH, BRIDGE_H, clamp } from './constants';
 
 export type EnemyKind = 'sword' | 'spear' | 'javelin' | 'archer';
 export interface TreeSpec { x: number; z: number; scale: number; y?: number; kind?: 'oak' | 'pine' | 'autumn' | 'birch' | 'blossom' }
@@ -128,6 +128,27 @@ export class World {
     const fx = x - tx, fz = z - tz;
     const h00 = this.cornerH(tx, tz), h10 = this.cornerH(tx + 1, tz), h01 = this.cornerH(tx, tz + 1), h11 = this.cornerH(tx + 1, tz + 1);
     return (h00 * (1 - fx) + h10 * fx) * (1 - fz) + (h01 * (1 - fx) + h11 * fx) * fz;
+  }
+  /**
+   * Terrain height exactly as the ground mesh draws it: each tile is split along its shorter
+   * diagonal into two flat triangles (see createGroundGeometry), so sample those planes rather than
+   * the bilinear heightfield. Anything rooted in the ground — grass blades, tree trunks, bushes —
+   * uses this, so it never floats or sinks on a slope.
+   */
+  drawnGroundY(x: number, z: number): number {
+    const tx = Math.floor(x), tz = Math.floor(z);
+    const h00 = this.cornerH(tx, tz), h10 = this.cornerH(tx + 1, tz), h01 = this.cornerH(tx, tz + 1), h11 = this.cornerH(tx + 1, tz + 1);
+    const fx = clamp(x - tx, 0, 1), fz = clamp(z - tz, 0, 1);
+    if (Math.abs(h00 - h11) <= Math.abs(h10 - h01)) {
+      // diagonal (0,0)-(1,1)
+      return fz >= fx
+        ? h00 + (h01 - h00) * fz + (h11 - h01) * fx
+        : h00 + (h10 - h00) * fx + (h11 - h10) * fz;
+    }
+    // diagonal (1,0)-(0,1)
+    return fx + fz <= 1
+      ? h00 + (h10 - h00) * fx + (h01 - h00) * fz
+      : h11 * (fx + fz - 1) + h10 * (1 - fz) + h01 * (1 - fx);
   }
   /** Average height of a tile (used to place props/houses) */
   tileH(tx: number, tz: number): number {

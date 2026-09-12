@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import type { TreeSpec, HouseSpec, EnemyKind, PropSpec } from './world';
+import type { HouseSpec, EnemyKind, PropSpec } from './world';
 import { RNG } from './constants';
+import { swayMaterial } from './wind';
 
 // ---------------------------------------------------------------- materials
 let gradientMap: THREE.DataTexture | null = null;
@@ -49,6 +50,8 @@ export const UNIT_PYRAMID = new THREE.ConeGeometry(0.5, 1, 4).rotateY(Math.PI / 
 export const UNIT_OCTA = new THREE.OctahedronGeometry(0.5);
 export const UNIT_CIRCLE = new THREE.CircleGeometry(0.5, 14).rotateX(-Math.PI / 2);
 
+/** The one blob-shadow material every prop, character and plant shares (transparent, no depth write). */
+export function shadowMaterial(): THREE.MeshBasicMaterial { return shadowMat; }
 const shadowMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.32, depthWrite: false });
 
 export function part(geom: THREE.BufferGeometry, mat: THREE.Material, pos: [number, number, number], scale: [number, number, number]): THREE.Mesh {
@@ -278,94 +281,8 @@ export function buildSoldier(kind: EnemyKind): Humanoid {
 }
 
 // ---------------------------------------------------------------- props
-export type TreeKind = 'oak' | 'pine' | 'autumn' | 'birch' | 'blossom';
-
-/** Trees are rendered as one instanced trio (trunk/canopy/shadow) per kind so the map can mix species. */
-export function buildTrees(trees: TreeSpec[]): THREE.Object3D[] {
-  const out: THREE.Object3D[] = [];
-  for (const kind of ['oak', 'pine', 'autumn', 'birch', 'blossom'] as TreeKind[]) {
-    const list = trees.filter((t) => (t.kind ?? 'oak') === kind);
-    if (list.length) out.push(...buildTreeVariant(list, kind));
-  }
-  return out;
-}
-
-function buildTreeVariant(trees: TreeSpec[], kind: TreeKind): THREE.Object3D[] {
-  const mk = (r: number, sx: number, sy: number, sz: number, x: number, y: number, z: number) => {
-    const g = new THREE.SphereGeometry(r, 12, 8);
-    g.scale(sx, sy, sz);
-    g.translate(x, y, z);
-    return g;
-  };
-  let canopyGeo: THREE.BufferGeometry;
-  if (kind === 'pine') {
-    // tall stacked cones: the conifers of the Amber Highland
-    const cone = (r: number, h: number, y: number) => {
-      const g = new THREE.ConeGeometry(r, h, 9);
-      g.translate(0, y + h / 2, 0);
-      return g;
-    };
-    canopyGeo = mergeGeometries([cone(1.0, 1.5, 0.75), cone(0.76, 1.35, 1.45), cone(0.52, 1.15, 2.1)])!;
-  } else {
-    canopyGeo = mergeGeometries([
-      mk(1.0, 1, 0.62, 0.8, 0, 0.9, 0),
-      mk(0.5, 1, 0.9, 0.9, -0.55, 1.25, -0.1),
-      mk(0.5, 1, 0.9, 0.9, 0.55, 1.25, -0.1),
-      mk(0.48, 1, 0.9, 0.9, 0, 1.45, 0.25),
-      mk(0.44, 1, 0.9, 0.9, 0.05, 1.3, -0.35),
-    ])!;
-  }
-  const canopyMat = toon(kind === 'pine' ? '#2e7a4a' : kind === 'autumn' ? '#d18a2e' : kind === 'birch' ? '#9ac04a' : kind === 'blossom' ? '#e89ac0' : '#3f9a3d');
-  const trunkMat = toon(kind === 'birch' ? '#e8e0d0' : '#6b4226');
-  const trunkGeo = new THREE.CylinderGeometry(0.2, 0.28, 0.95, 8).translate(0, 0.47, 0);
-  const shadowGeo = new THREE.CircleGeometry(0.9, 12).rotateX(-Math.PI / 2).scale(1, 1, 0.7).translate(0, 0.015, 0.1);
-  const canopy = new THREE.InstancedMesh(canopyGeo, canopyMat, trees.length);
-  const trunk = new THREE.InstancedMesh(trunkGeo, trunkMat, trees.length);
-  const shadow = new THREE.InstancedMesh(shadowGeo, shadowMat, trees.length);
-  const mat = new THREE.Matrix4();
-  const q = new THREE.Quaternion();
-  const pos = new THREE.Vector3();
-  const scl = new THREE.Vector3();
-  trees.forEach((t, i) => {
-    pos.set(t.x, t.y ?? 0, t.z);
-    scl.set(t.scale, t.scale, t.scale);
-    q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), ((i * 37) % 7) * 0.3);
-    mat.compose(pos, q, scl);
-    canopy.setMatrixAt(i, mat);
-    trunk.setMatrixAt(i, mat);
-    shadow.setMatrixAt(i, mat);
-  });
-  canopy.instanceMatrix.needsUpdate = true;
-  trunk.instanceMatrix.needsUpdate = true;
-  shadow.instanceMatrix.needsUpdate = true;
-  return [trunk, canopy, shadow];
-}
-
-export function buildBush(): THREE.Group {
-  const g = new THREE.Group();
-  const m = toon('#3f9a3d'), mL = toon('#5fc04a'), mD = toon('#2a6e2a');
-  g.add(part(UNIT_SPHERE, m, [0, 0.33, 0], [0.76, 0.56, 0.62]));
-  g.add(part(UNIT_SPHERE, mL, [-0.16, 0.48, 0.02], [0.34, 0.28, 0.3]));
-  g.add(part(UNIT_SPHERE, mL, [0.14, 0.5, -0.06], [0.3, 0.26, 0.26]));
-  g.add(part(UNIT_SPHERE, m, [0.06, 0.42, 0.2], [0.34, 0.28, 0.3]));
-  g.add(part(UNIT_CYL, mD, [0, 0.03, 0], [0.82, 0.06, 0.68]));
-  return g;
-}
-
-/** Bush studded with red berries — a colour break in the green undergrowth. */
-export function buildBerryBush(): THREE.Group {
-  const g = new THREE.Group();
-  const m = toon('#3f8f3d'), mL = toon('#5cb04a'), mD = toon('#2a6e2a');
-  const berry = toon('#e04a3a'); berry.emissive.set('#a02010'); berry.emissiveIntensity = 0.4;
-  g.add(part(UNIT_SPHERE, m, [0, 0.33, 0], [0.76, 0.56, 0.62]));
-  g.add(part(UNIT_SPHERE, mL, [-0.16, 0.48, 0.02], [0.34, 0.28, 0.3]));
-  g.add(part(UNIT_SPHERE, mL, [0.14, 0.5, -0.06], [0.3, 0.26, 0.26]));
-  g.add(part(UNIT_SPHERE, m, [0.06, 0.42, 0.2], [0.34, 0.28, 0.3]));
-  g.add(part(UNIT_CYL, mD, [0, 0.03, 0], [0.82, 0.06, 0.68]));
-  for (const [x, y, z] of [[-0.2, 0.45, 0.2], [0.18, 0.55, 0.05], [0.0, 0.36, 0.3], [0.26, 0.38, -0.16], [-0.28, 0.34, -0.1]] as [number, number, number][])
-    g.add(part(UNIT_SPHERE, berry, [x, y, z], [0.09, 0.09, 0.08]));
-  return g;
-}
+// Trees and bushes moved to the leaf-card FoliageSystem (see foliage.ts): canopies are instanced
+// quads from the leaf atlas, swaying in the shared wind, instead of merged spheres and sphere Groups.
 
 // ---------------------------------------------------------------- undergrowth (vertex-coloured, instanced)
 /** Paint a flat vertex colour across a geometry so several parts can be merged into one material. */
@@ -380,6 +297,14 @@ function withColor(geo: THREE.BufferGeometry, hex: string, k = 1): THREE.BufferG
 
 export function vertexToon(): THREE.MeshToonMaterial {
   return new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: getGradientMap() });
+}
+
+/**
+ * Vertex-coloured toon material that bends in the shared wind (see wind.ts). `gain` is how far a tip
+ * travels, `top` the local height that counts as the tip — ferns whip about, briars barely stir.
+ */
+export function swayToon(gain: number, top = 0.6): THREE.MeshToonMaterial {
+  return swayMaterial(vertexToon(), { value: gain }, { value: top });
 }
 
 /** A single-mesh view of a vegetation geometry (model viewer). */
@@ -464,9 +389,14 @@ export function buildBoulderGeo(): THREE.BufferGeometry {
 
 export interface VegSpot { x: number; y: number; z: number }
 
-/** One InstancedMesh for a scatter of vegetation (single draw call, per-instance yaw/scale/position jitter). */
-export function makeVegInstances(geo: THREE.BufferGeometry, spots: VegSpot[], seed: number): THREE.InstancedMesh {
-  const im = new THREE.InstancedMesh(geo, vertexToon(), spots.length);
+/**
+ * One InstancedMesh for a scatter of vegetation (single draw call, per-instance yaw/scale/position
+ * jitter). `mat` defaults to the plain vertex-coloured toon; pass `swayToon(...)` for anything that
+ * should move in the wind. The mesh never transforms, so the injected sway works in world space.
+ */
+export function makeVegInstances(geo: THREE.BufferGeometry, spots: VegSpot[], seed: number, mat: THREE.Material = vertexToon()): THREE.InstancedMesh {
+  const im = new THREE.InstancedMesh(geo, mat, spots.length);
+  im.matrixAutoUpdate = false;
   const rng = new RNG(seed);
   const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), p = new THREE.Vector3(), s = new THREE.Vector3();
   const up = new THREE.Vector3(0, 1, 0);

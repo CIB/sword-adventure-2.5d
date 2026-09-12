@@ -2,3 +2,6 @@ node_modules/
 dist/
 .vite/
 dist-viewer/
+
+# CPU previews from tools/preview-foliage.mts (dev artifacts, never committed)
+.preview/

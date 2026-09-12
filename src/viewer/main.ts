@@ -5,13 +5,15 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import {
-  buildHeroine, buildSoldier, buildVillager, buildDog, VILLAGER_LOOKS, buildTrees, buildBush, buildBerryBush, buildRock, buildStump,
+  buildHeroine, buildSoldier, buildVillager, buildDog, VILLAGER_LOOKS, buildRock, buildStump,
   buildFence, buildHouse, buildProp, buildHeart, buildRupee, buildArrow, buildJavelinProjectile,
-  buildFernGeo, buildTallGrassGeo, buildBriarGeo, buildLilyGeo, buildBoulderGeo, vegObject, type Humanoid,
+  buildFernGeo, buildTallGrassGeo, buildBriarGeo, buildLilyGeo, buildBoulderGeo, vegObject, swayToon, type Humanoid,
 } from '../game/models';
 import type { PropKind, HouseSpec, EnemyKind } from '../game/world';
 import { World } from '../game/world';
 import { GrassSystem } from '../game/grass';
+import { FoliageSystem, TREE_KINDS, type TreeKind } from '../game/foliage';
+import { setWindView, setWindBasisFromCamera } from '../game/wind';
 import { POST_VS, POST_FS } from '../game/game';
 import { VIEW_W, VIEW_H, VIEW_TILES_X, VIEW_TILES_Y, CAM_HEIGHT, SHEAR, FACING_ANGLE } from '../game/constants';
 
@@ -22,6 +24,9 @@ const hum = (h: Humanoid) => ({ obj: h.root, humanoid: h });
 const PROPS: PropKind[] = ['well', 'sign', 'stall', 'bench', 'weathercock', 'lamp', 'barrel', 'crate', 'flowerpot', 'hedge', 'log', 'menhir', 'cart', 'hay', 'scarecrow', 'campfire', 'tent', 'banner', 'tower', 'ruinwall', 'pillar', 'crown', 'windmill', 'anvil', 'forge', 'cauldron', 'grave', 'deadtree', 'reeds', 'rosebush', 'beehive', 'wheelbarrow', 'statue', 'mushroom', 'amberrock'];
 const world = new World();
 const grass = new GrassSystem(world);
+const foliage = new FoliageSystem(world);
+/** A plant specimen for the viewer: the real thing, one instance of it, centred on the origin. */
+const plant = (opts: Parameters<FoliageSystem['buildSpecimen']>[0], footprint = 4) => () => ({ obj: foliage.buildSpecimen(opts), footprint });
 
 const catalog: Cat[] = [
   { name: 'Heroine', items: [{ name: 'Aria', build: () => hum(buildHeroine()) }] },
@@ -29,18 +34,23 @@ const catalog: Cat[] = [
   { name: 'Villagers', items: [...Object.keys(VILLAGER_LOOKS).map((id) => ({ name: id[0].toUpperCase() + id.slice(1), build: () => hum(buildVillager(VILLAGER_LOOKS[id])) })), { name: 'Dog', build: () => hum(buildDog()) }] },
   { name: 'Houses', items: world.houses.map((h, i) => ({ name: `House ${i + 1} (${h.w}×${h.d}${h.sign && h.sign !== 'none' ? ', ' + h.sign : ''})`, build: () => { const spec: HouseSpec = { ...h, x: -h.w / 2, z: -h.d / 2 }; return { obj: buildHouse(spec), footprint: Math.max(h.w, h.d) + 2 }; } })) },
   { name: 'Foliage', items: [
-    { name: 'Tree (big)', build: () => { const g = new THREE.Group(); for (const o of buildTrees([{ x: 0, z: 0, scale: 1 }])) g.add(o); return { obj: g, footprint: 4 }; } },
-    { name: 'Tree (small)', build: () => { const g = new THREE.Group(); for (const o of buildTrees([{ x: 0, z: 0, scale: 0.6 }])) g.add(o); return { obj: g, footprint: 3 }; } },
-    { name: 'Tree (pine)', build: () => { const g = new THREE.Group(); for (const o of buildTrees([{ x: 0, z: 0, scale: 1, kind: 'pine' }])) g.add(o); return { obj: g, footprint: 4 }; } },
-    { name: 'Tree (autumn)', build: () => { const g = new THREE.Group(); for (const o of buildTrees([{ x: 0, z: 0, scale: 1, kind: 'autumn' }])) g.add(o); return { obj: g, footprint: 4 }; } },
-    { name: 'Tree (birch)', build: () => { const g = new THREE.Group(); for (const o of buildTrees([{ x: 0, z: 0, scale: 1, kind: 'birch' }])) g.add(o); return { obj: g, footprint: 4 }; } },
-    { name: 'Tree (blossom)', build: () => { const g = new THREE.Group(); for (const o of buildTrees([{ x: 0, z: 0, scale: 1, kind: 'blossom' }])) g.add(o); return { obj: g, footprint: 4 }; } },
-    { name: 'Bush', build: () => ({ obj: buildBush() }) }, { name: 'Bush (berries)', build: () => ({ obj: buildBerryBush() }) }, { name: 'Bush stump', build: () => ({ obj: buildStump() }) },
+    // leaf-card crowns: every species big and small, plus patches of the real map to judge density
+    ...TREE_KINDS.flatMap((k: TreeKind) => [
+      { name: `Tree (${k})`, build: plant({ kind: k, scale: 1 }) },
+      { name: `Tree (${k}, small)`, build: plant({ kind: k, scale: 0.6 }, 3) },
+    ]),
+    { name: 'Grove (Willowmere)', build: () => ({ obj: foliage.buildPatch(90, 20, 7), footprint: 16 }) },
+    { name: 'Grove (border forest)', build: () => ({ obj: foliage.buildPatch(4, 4, 6), footprint: 14 }) },
+    { name: 'Copse (highland pines)', build: () => ({ obj: foliage.buildPatch(180, 30, 7), footprint: 16 }) },
+    { name: 'Bush', build: plant({ kind: 'bush' }, 2) },
+    { name: 'Bush (berries)', build: plant({ kind: 'bush', berry: true }, 2) },
+    { name: 'Bushes (patch)', build: () => ({ obj: foliage.buildPatch(44, 33, 6), footprint: 14 }) },
+    { name: 'Bush stump', build: () => ({ obj: buildStump() }) },
     { name: 'Rock', build: () => ({ obj: buildRock() }) }, { name: 'Rock (mossy)', build: () => ({ obj: buildRock(1) }) }, { name: 'Rock (crystal)', build: () => ({ obj: buildRock(2) }) },
     { name: 'Boulder', build: () => ({ obj: vegObject(buildBoulderGeo()) }) },
-    { name: 'Fern', build: () => ({ obj: vegObject(buildFernGeo()) }) },
-    { name: 'Tall grass', build: () => ({ obj: vegObject(buildTallGrassGeo()) }) },
-    { name: 'Briar', build: () => ({ obj: vegObject(buildBriarGeo()) }) },
+    { name: 'Fern (swaying)', build: () => ({ obj: new THREE.Mesh(buildFernGeo(), swayToon(0.3)) }) },
+    { name: 'Tall grass (swaying)', build: () => ({ obj: new THREE.Mesh(buildTallGrassGeo(), swayToon(0.34)) }) },
+    { name: 'Briar (swaying)', build: () => ({ obj: new THREE.Mesh(buildBriarGeo(), swayToon(0.1)) }) },
     { name: 'Lily pads', build: () => ({ obj: vegObject(buildLilyGeo()) }) },
     { name: 'Fence post', build: () => ({ obj: buildFence() }) },
     { name: 'Grass (animated)', build: () => ({ obj: grass.buildPatch(36, 22, 12, 12), footprint: 12 }) },
@@ -211,6 +221,8 @@ function frame(now: number) {
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
   grassTime += dt;
   grass.setTime(grassTime); // keep the wind blowing even on non-grass entries (it's one uniform)
+  // leaf cards are billboards for THIS projection: point the shared screen axes at the live camera
+  if (mode === 'game') setWindView(0); else setWindBasisFromCamera(freeCam);
   animate(dt);
   gridHelper.visible = gridCb.checked && mode === 'free';
   if (mode === 'game') {
