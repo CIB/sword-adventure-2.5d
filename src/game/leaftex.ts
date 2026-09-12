@@ -219,7 +219,10 @@ export function leafAtlasData(): Uint8ClampedArray {
   const t: Texel = { r: 0, g: 0, b: 0, a: 0 };
   for (let y = 0; y < LEAF_TEX; y++) for (let x = 0; x < LEAF_TEX; x++) {
     const col = (x / LEAF_CELL) | 0, row = (y / LEAF_CELL) | 0;
-    const u = (x - col * LEAF_CELL + 0.5) / LEAF_CELL, v = (y - row * LEAF_CELL + 0.5) / LEAF_CELL;
+    const u = (x - col * LEAF_CELL + 0.5) / LEAF_CELL;
+    // canvas rows run top-down but the shader's v runs bottom-up (flipY upload), so store v flipped:
+    // a leaf authored with its stem at v=0 keeps its stem at the bottom of the card on screen
+    const v = 1 - (y - row * LEAF_CELL + 0.5) / LEAF_CELL;
     leafTexel(row * LEAF_GRID + col, u, v, t);
     const i = (y * LEAF_TEX + x) * 4;
     data[i] = t.r; data[i + 1] = t.g; data[i + 2] = t.b; data[i + 3] = t.a;

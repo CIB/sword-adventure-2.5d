@@ -119,7 +119,7 @@ const check = (name: string, cond: boolean, extra = '') => {
     check('instance attributes line up', a0.count === a1.count && a1.count === a2.count && a2.count === ac.count && g.instanceCount === a0.count, `${a0.count} cards`);
     check('unit quad base geometry', g.getAttribute('position').count === 4 && g.index!.count === 6);
     let standing = 0, badSize = 0, badCell = 0;
-    for (let i = 0; i < ac.count; i++) if (ac.getX(i) < 0) standing++;
+    for (let i = 0; i < ac.count; i++) if (ac.getX(i) === 0) standing++;
     for (let i = 0; i < a0.count; i++) { if (!(a0.getW(i) > 0.02)) badSize++; if (!(a2.getW(i) >= 0 && a2.getW(i) < 10)) badCell++; }
     check('trees start standing, sizes and cells sane', standing === ac.count && badSize === 0 && badCell === 0);
     check('trunk + shadow meshes accompany the cards', !!forest.trunks && !!forest.shadows, `${forest.trunks.count} trunks, ${forest.shadows.count} shadows`);
@@ -149,7 +149,7 @@ const check = (name: string, cond: boolean, extra = '') => {
     const [start, n] = ranges.get(bush.tz * MAP_W + bush.tx)!;
     const ac = g.getAttribute('aCut') as THREE.InstancedBufferAttribute;
     let stamped = 0, others = 0;
-    for (let i = 0; i < ac.count; i++) { const v = ac.getX(i); if (i >= start && i < start + n) { if (v >= 0) stamped++; } else if (v >= 0) others++; }
+    for (let i = 0; i < ac.count; i++) { const v = ac.getX(i); if (i >= start && i < start + n) { if (v > 0) stamped++; } else if (v !== 0) others++; }
     check('only that bush\'s cards are stamped', stamped === n && others === 0, `${stamped}/${n} stamped, ${others} others`);
     // rebuild keeps the cut (streaming must not resurrect a cut bush)
     foliage.invalidate(bush.tx, bush.tz);

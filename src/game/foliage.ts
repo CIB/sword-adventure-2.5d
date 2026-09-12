@@ -30,7 +30,8 @@
  *   aData0 = (anchor.x, anchor.y, anchor.z, cardSize)
  *   aData1 = (roll, phase, bend, ao)
  *   aData2 = (tint.r, tint.g, tint.b, atlasCell)   tint is linear; cell is a small integer
- *   aCut   = game time the bush was cut (-1 while standing; trees are never cut)
+ *   aCut   = 0 while the plant stands, else (game time it was cut) + 1. Zero is the safe default:
+ *            an attribute that never arrives from the driver reads as standing, never as cut.
  *
  * Trees and bushes share one instanced geometry per chunk, so a chunk is exactly three draw calls:
  * leaf cards, trunks, shadows — whatever the species mix inside it.
@@ -396,18 +397,18 @@ uniform float uCutFly;
 attribute vec4 aData0;  // xyz = card anchor (world), w = card size
 attribute vec4 aData1;  // x = roll, y = phase, z = bend, w = ao
 attribute vec4 aData2;  // rgb = tint (linear), w = atlas cell
-attribute float aCut;   // game time this bush was cut, or -1 while it stands
+attribute float aCut;   // 0 while standing, else (cut time + 1)
 varying vec2 vUv;
 varying vec3 vCol;
 varying float vShade;
 
 void main() {
-  float age = aCut < 0.0 ? -1.0 : uTime - aCut;
+  float age = aCut <= 0.0 ? -1.0 : (uTime + 1.0) - aCut;
   if (age >= uCutFly) {
-    gl_Position = vec4(0.0, 0.0, 2.0, 1.0); // degenerate, off-screen
+    // long gone: park the quad outside clip space and leave the varyings empty
+    gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
     vUv = vec2(-1.0); vCol = vec3(0.0); vShade = 0.0;
-    return;
-  }
+  } else {
   vec3 p = aData0.xyz;
   float size = aData0.w;
   float roll = aData1.x, phase = aData1.y, bend = aData1.z, ao = aData1.w;
@@ -455,7 +456,8 @@ void main() {
   vec2 cc = vec2(mod(cell, uGrid), floor(cell / uGrid));
   vUv = (vec2(cc.x, (uGrid - 1.0) - cc.y) + mix(uCellInset, 1.0 - uCellInset, uv)) / uGrid;
 
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(wp, 1.0);
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(wp, 1.0);
+  }
 }
 `;
 
@@ -552,7 +554,8 @@ export class FoliageSystem {
     });
     this.trunkMat = new THREE.MeshToonMaterial({ color: '#ffffff', gradientMap: getGradientMap() });
     // trunks ride the same gust field as their crowns (a whole tree bends together)
-    swayMaterial(this.trunkMat, { value: 0.55 }, { value: 1.0 });
+    // trunks are stiff: the crown cards carry the sway, the bole only follows with a whisper
+    swayMaterial(this.trunkMat, { value: 0.12 }, { value: 1.0 });
     this.warmBuildPath();
   }
 
@@ -656,7 +659,7 @@ export class FoliageSystem {
     for (const data of this.chunks.values()) {
       if (!data?.leaves) continue;
       const attr = data.leaves.geometry.getAttribute('aCut') as THREE.InstancedBufferAttribute;
-      (attr.array as Float32Array).fill(-1);
+      (attr.array as Float32Array).fill(0);
       attr.needsUpdate = true;
     }
   }
@@ -667,7 +670,8 @@ export class FoliageSystem {
     if (!range) return;
     const attr = geo.getAttribute('aCut') as THREE.InstancedBufferAttribute;
     const arr = attr.array as Float32Array;
-    for (let i = range[0]; i < range[0] + range[1]; i++) arr[i] = t;
+    const v = t < 0 ? 0 : t + 1;
+    for (let i = range[0]; i < range[0] + range[1]; i++) arr[i] = v;
     attr.addUpdateRange(range[0], range[1]);
     attr.needsUpdate = true;
   }
@@ -783,7 +787,7 @@ export class FoliageSystem {
         d0[o] = x; d0[o + 1] = oy + c.y * scale; d0[o + 2] = z; d0[o + 3] = c.s * scale;
         d1[o] = c.roll; d1[o + 1] = c.phase; d1[o + 2] = c.bend; d1[o + 3] = c.ao;
         d2[o] = col.r; d2[o + 1] = col.g; d2[o + 2] = col.b; d2[o + 3] = c.cell;
-        dc[cards] = cut;
+        dc[cards] = cut < 0 ? 0 : cut + 1;   // see aCut: standing is 0, a cut is (time + 1)
         cards++;
       }
       return [start, cards - start] as [number, number];
@@ -907,7 +911,7 @@ export class FoliageSystem {
       d0.push(c.x * scale, c.y * scale, c.z * scale, c.s * scale);
       d1.push(c.roll, c.phase, c.bend, c.ao);
       d2.push(col.r, col.g, col.b, c.cell);
-      dc.push(-1);
+      dc.push(0);
     }
     const geo = new THREE.InstancedBufferGeometry();
     geo.index = QUAD.index;
