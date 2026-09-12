@@ -12,14 +12,19 @@
  *    oblique shear, so a randomly-rotated vertical triangle would collapse to an invisible sliver
  *    whenever it sits edge-on to the view). Height stays true-3D, so shear, depth and the
  *    player-parting deformation all still work.
+ *  - Blades grow in discrete Zelda-style TUFTS (up to four per tile, 5-10 blades each) rather than
+ *    a uniform carpet: lush hearts of a meadow fill up, fringes thin out, many green tiles are bare.
  *  - Blades are instanced per 16×16-tile chunk (one draw call each), streamed around the camera.
  *  - All animation lives in the vertex shader: travelling gusts (a noise field scrolled in world
  *    space), per-blade idle sway, gust shimmer, and radial parting around the player.
+ *  - Cutting: the sword stamps a per-blade `aCut` timestamp; the shader makes the tile's tufts
+ *    detach, tumble upward and fade (2D-Zelda style), hides them, then pops them back later.
  *
  * Per-instance data:
  *   aData0 = (root.x, root.y, root.z, height)
  *   aData1 = (width, phase, tintCode, lean)
  *   aData2 = dryness (0 = lush green, 1 = bleached amber; follows the world's biome blend)
+ *   aCut   = game time the tuft was cut (-1 while standing)
  * `tintCode` doubles as a flower flag: values > 1.4 mark a flower blade, 1.5+ = petal index.
  */
 import * as THREE from 'three';
@@ -29,7 +34,13 @@ import type { World, Biome } from './world';
 export const GRASS_CHUNK = 16;  // tiles per chunk side
 const BUILD_PER_FRAME = 2;      // chunk budget per frame (avoids hitches while travelling)
 const MAX_BLADES_PER_CHUNK = 8000;
-const BLADES_PER_TILE = 30;     // lush-meadow baseline; regions scale this up/down
+const MAX_TUFTS_PER_TILE = 4;   // a fully lush tile: one tuft per quadrant
+const BLADES_PER_TUFT_MIN = 5, BLADES_PER_TUFT_RND = 5;
+
+// Cutting (Zelda-style): the tufts of a hit tile detach, fly up and vanish, then regrow later.
+export const CUT_FLY = 0.85;    // seconds the pieces are airborne
+export const CUT_REGROW = 28;   // seconds until the tile regrows
+const CUT_GROW = 0.7;           // regrow pop duration
 
 // ------------------------------------------------------------------ palette
 // sRGB hexes like the rest of the game, linearised because the scene renders into a linear render
@@ -61,6 +72,7 @@ uniform vec2 uRight;   // camera-right direction in world XZ: blades always face
 attribute vec4 aData0; // xyz = root on the ground plane, w = blade height
 attribute vec4 aData1; // x = width, y = phase, z = tint code, w = lean
 attribute float aData2; // dryness: 0 lush, 1 bleached (tracks the world's biome blend per blade)
+attribute float aCut;   // game time the tuft was cut, or -1 while it stands
 varying vec3 vCol;
 varying float vShade;
 varying float vGust;
@@ -73,6 +85,9 @@ const vec3 PET0 = vec3(${PAL.petals[0]});
 const vec3 PET1 = vec3(${PAL.petals[1]});
 const vec3 PET2 = vec3(${PAL.petals[2]});
 const vec3 PET3 = vec3(${PAL.petals[3]});
+const float CUT_FLY = ${CUT_FLY.toFixed(3)};
+const float CUT_REGROW = ${CUT_REGROW.toFixed(3)};
+const float CUT_GROW = ${CUT_GROW.toFixed(3)};
 
 void main() {
   float bend = position.y;      // unit blade: 0 at the root, 1 at the tip
@@ -84,10 +99,42 @@ void main() {
   float lean = aData1.w;
   float dry = aData2;
 
-  // erect the blade: base edge along the screen-right axis, tip straight up
+  // cut state: -1 = standing, [0,FLY) = airborne piece, [FLY,REGROW) = gone, then a regrow pop
+  float age = aCut < 0.0 ? -1.0 : uTime - aCut;
+  if (age >= CUT_FLY && age < CUT_REGROW) {
+    gl_Position = vec4(0.0, 0.0, 2.0, 1.0); // degenerate, off-screen
+    vCol = vec3(0.0); vShade = 0.0; vGust = 0.0;
+    return;
+  }
+  float grow = age >= CUT_REGROW ? smoothstep(0.0, CUT_GROW, age - CUT_REGROW) : 1.0;
+  grow = 1.0 - (1.0 - grow) * (1.0 - grow);
+  H *= grow; W *= grow;
+
+  // blade in its screen-aligned local frame: lx along camera-right, ly up
+  float lx = position.x * W + lean * bend;
+  float ly = bend * H;
+  float rise = 0.0, flying = 0.0;
+  vec2 scatter = vec2(0.0);
+  if (age >= 0.0 && age < CUT_FLY) {
+    // the tuft detaches: the whole piece pops up, tumbles, drifts outward and shrinks away
+    flying = 1.0;
+    float f = age / CUT_FLY;
+    float e = 1.0 - (1.0 - f) * (1.0 - f);
+    float spin = (fract(phase * 0.618) - 0.5) * 9.0 * f;
+    float c = cos(spin), s = sin(spin);
+    float cy = ly - H * 0.45;
+    float rx = lx * c - cy * s, ry = lx * s + cy * c;
+    float shrink = 1.0 - smoothstep(0.5, 1.0, f);
+    lx = rx * shrink;
+    ly = (ry + H * 0.45) * shrink;
+    rise = 0.12 + e * 0.95;
+    scatter = vec2(cos(phase * 3.1), sin(phase * 3.1)) * e * 0.28;
+    bend = 1.0; // airborne pieces ride the wind as a whole
+  }
+
   vec3 p = root;
-  p.xz += uRight * (position.x * W + lean * bend);
-  p.y  += bend * H;
+  p.xz += uRight * lx + scatter;
+  p.y  += ly + rise;
   float b2 = bend * bend;
 
   // travelling wind: a noise field scrolled across the meadow, plus a per-blade idle sway
@@ -101,7 +148,7 @@ void main() {
   // the player parts the grass
   vec2 d = p.xz - uPlayer;
   float pd = length(d);
-  float push = (1.0 - smoothstep(uPlayerR * 0.15, uPlayerR, pd)) * uPush;
+  float push = (1.0 - smoothstep(uPlayerR * 0.15, uPlayerR, pd)) * uPush * (1.0 - flying);
   p.xz += (d / max(pd, 1e-4)) * push * bend;
   p.y -= push * bend * 0.2 * H;
 
@@ -121,7 +168,7 @@ void main() {
   // mosaic of green shades), plus fake occlusion toward the root and a shimmer when gusts hit
   float qv = fract(phase * 2.399);
   float q = qv > 0.7 ? 1.0 : qv > 0.4 ? 0.78 : 0.6;
-  vShade = (uAmbient + uSun * q) * (0.72 + 0.28 * bend);
+  vShade = (uAmbient + uSun * q) * (0.72 + 0.28 * bend) * (1.0 + 0.18 * flying);
   vGust = gust * b2;
 
   gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
@@ -148,7 +195,28 @@ function valueNoise(x: number, z: number, cell: number, salt: number): number {
   return (h00 * (1 - sx) + h10 * sx) * (1 - sz) + (h01 * (1 - sx) + h11 * sx) * sz;
 }
 function clumpNoise(tx: number, tz: number): number {
-  return 0.7 * valueNoise(tx, tz, 5, 7) + 0.3 * valueNoise(tx, tz, 2, 17);
+  return 0.55 * valueNoise(tx, tz, 7, 7) + 0.3 * valueNoise(tx, tz, 3, 17) + 0.15 * valueNoise(tx, tz, 1.5, 27);
+}
+
+/**
+ * How many tufts a tile grows (0..MAX_TUFTS_PER_TILE). Deterministic, so the sword can ask about
+ * tiles whose chunk isn't built. Zelda-style: tufts are discrete, patchy things — the lush heart
+ * of a meadow fills up, the fringes thin out to the odd tuft, and plenty of green tiles stay bare
+ * (the ground's grass texture is the base layer; tufts sit on top of it).
+ */
+export function tuftCount(w: World, tx: number, tz: number): number {
+  if (!w.canGrowGrass(tx, tz)) return 0;
+  const t = w.tile(tx, tz);
+  const { density } = biomeMix(w, tx, tz);
+  const tileMul = t === Tile.Heather ? 0.5 : t === Tile.DryGrass ? 0.7 : 1;
+  const clump = clumpNoise(tx, tz);
+  const lush = clamp((clump - 0.27) / 0.5, 0, 1) * density * tileMul;
+  if (lush <= 0) return 0;
+  // dropout: even inside lush patches some tiles are bare, and sparse fringes are mostly bare
+  if (hash2(tx, tz, 29) < 0.08 + 0.45 * (1 - lush)) return 0;
+  const e = lush * (MAX_TUFTS_PER_TILE + 0.4);
+  const n = Math.floor(e) + (hash2(tx, tz, 23) < e - Math.floor(e) ? 1 : 0);
+  return Math.min(MAX_TUFTS_PER_TILE, n);
 }
 
 /**
@@ -181,6 +249,9 @@ export class GrassSystem {
   private queued = new Set<number>();
   private chX = Math.ceil(MAP_W / GRASS_CHUNK);
   private chZ = Math.ceil(MAP_H / GRASS_CHUNK);
+  /** tile index -> game time it was cut; survives chunk streaming so cut tiles stay cut */
+  private cuts = new Map<number, number>();
+  private now = 0;
 
   constructor(world: World) {
     this.world = world;
@@ -211,6 +282,7 @@ export class GrassSystem {
   update(time: number, camX: number, camZ: number, radiusTiles: number, px: number, pz: number, viewAngle = 0) {
     const u = this.material.uniforms;
     u.uTime.value = time;
+    this.now = time;
     (u.uPlayer.value as THREE.Vector2).set(px, pz);
     (u.uRight.value as THREE.Vector2).set(Math.cos(viewAngle), -Math.sin(viewAngle));
 
@@ -246,7 +318,50 @@ export class GrassSystem {
   }
 
   /** Advance the wind clock without streaming (used by the model viewer). */
-  setTime(t: number) { this.material.uniforms.uTime.value = t; }
+  setTime(t: number) { this.material.uniforms.uTime.value = t; this.now = t; }
+
+  /** Does this tile currently have standing tufts the sword could cut? */
+  hasTufts(tx: number, tz: number): boolean {
+    if (tx < 0 || tz < 0 || tx >= MAP_W || tz >= MAP_H) return false;
+    const cutAt = this.cuts.get(tz * MAP_W + tx);
+    if (cutAt !== undefined && this.now - cutAt < CUT_REGROW) return false;
+    return tuftCount(this.world, tx, tz) > 0;
+  }
+
+  /**
+   * Cut the tufts on a tile: they detach and fly off (shader-side), then regrow after CUT_REGROW.
+   * Returns false if there was nothing standing to cut.
+   */
+  cut(tx: number, tz: number): boolean {
+    if (!this.hasTufts(tx, tz)) return false;
+    const tileKey = tz * MAP_W + tx;
+    this.cuts.set(tileKey, this.now);
+    const mesh = this.chunks.get(Math.floor(tz / GRASS_CHUNK) * this.chX + Math.floor(tx / GRASS_CHUNK));
+    if (mesh) this.writeCut(mesh.geometry as THREE.InstancedBufferGeometry, tileKey, this.now);
+    return true;
+  }
+
+  /** Everything regrows at once (game restart). */
+  resetCuts() {
+    this.cuts.clear();
+    for (const mesh of this.chunks.values()) {
+      if (!mesh) continue;
+      const attr = mesh.geometry.getAttribute('aCut') as THREE.InstancedBufferAttribute;
+      (attr.array as Float32Array).fill(-1);
+      attr.needsUpdate = true;
+    }
+  }
+
+  private writeCut(geo: THREE.InstancedBufferGeometry, tileKey: number, t: number) {
+    const ranges = geo.userData.tileRanges as Map<number, [number, number]>;
+    const range = ranges?.get(tileKey);
+    if (!range) return;
+    const attr = geo.getAttribute('aCut') as THREE.InstancedBufferAttribute;
+    const arr = attr.array as Float32Array;
+    for (let i = range[0]; i < range[0] + range[1]; i++) arr[i] = t;
+    attr.addUpdateRange(range[0], range[1]);
+    attr.needsUpdate = true;
+  }
 
   /**
    * Drop the chunk containing this tile so it regrows with the current solidity next time it's
@@ -302,35 +417,56 @@ export class GrassSystem {
     return mesh;
   }
 
-  /** Scatter every blade inside a tile rectangle into one instanced geometry (null if nothing grows). */
+  /**
+   * Scatter the tufts of every tile inside a rectangle into one instanced geometry (null if nothing
+   * grows). Each tile's blades are contiguous; `userData.tileRanges` maps tile index -> [start, n]
+   * so a cut can stamp the tile's blades without rebuilding the chunk.
+   */
   private buildGeometry(tx0: number, tz0: number, wTiles: number, hTiles: number): THREE.InstancedBufferGeometry | null {
     const w = this.world;
-    const d0: number[] = [], d1: number[] = [], d2: number[] = [];
+    const d0: number[] = [], d1: number[] = [], d2: number[] = [], dc: number[] = [];
+    const ranges = new Map<number, [number, number]>();
+    // prune stale cuts while we're here
+    for (const [k, t] of this.cuts) if (this.now - t >= CUT_REGROW + CUT_GROW) this.cuts.delete(k);
     outer:
     for (let tz = tz0; tz < tz0 + hTiles; tz++) for (let tx = tx0; tx < tx0 + wTiles; tx++) {
-      if (!w.canGrowGrass(tx, tz)) continue;
+      const tufts = tuftCount(w, tx, tz);
+      if (!tufts) continue;
       const t = w.tile(tx, tz);
-      const { density, dry } = biomeMix(w, tx, tz);
-      // heather clumps and the dry steppe keep their own character: sparser blades between them
-      const tileMul = t === Tile.Heather ? 0.45 : t === Tile.DryGrass ? 0.7 : 1;
-      const clump = clumpNoise(tx, tz);
-      const count = Math.min(44, Math.round(BLADES_PER_TILE * density * tileMul * (0.6 + 0.85 * clump)));
-      if (!count) continue;
+      const { dry } = biomeMix(w, tx, tz);
       const flowerTile = t === Tile.Flowers;
+      const tileKey = tz * MAP_W + tx;
+      const cutAt = this.cuts.get(tileKey);
+      const cutVal = cutAt !== undefined && this.now - cutAt < CUT_REGROW + CUT_GROW ? cutAt : -1;
+      const start = d0.length / 4;
       const seed = tx * 731 + tz * 197;
-      for (let i = 0; i < count; i++) {
-        // every random value for this blade derives from two hashes (chunk builds are hot)
-        const h1 = hash2(seed, i, 1), h2 = hash2(seed, i, 2);
-        const rnd = (k: number) => { const v = h1 * (k * 1.37 + 0.71) + h2 * (k * 2.13 + 1.17); return v - Math.floor(v); };
-        const x = tx + 0.06 + rnd(3) * 0.88, z = tz + 0.06 + rnd(4) * 0.88;
-        const isFlower = flowerTile && rnd(9) < 0.06;
-        const H = (0.34 + rnd(5) * 0.36) * (1 - dry * 0.22) * (isFlower ? 1.18 : 1);
-        const W = 0.09 + rnd(6) * 0.075;
-        d0.push(x, this.groundY(x, z), z, H);
-        d1.push(W, rnd(7) * Math.PI * 2, isFlower ? 1.5 + Math.floor(rnd(10) * 4) : rnd(10), (rnd(8) - 0.5) * 0.4);
-        d2.push(dry);
-        if (d0.length / 4 >= MAX_BLADES_PER_CHUNK) break outer;
+      const q0 = Math.floor(hash2(tx, tz, 31) * 4);
+      let i = 0;
+      for (let k = 0; k < tufts; k++) {
+        // tuft centre: one per (shuffled) quadrant, jittered, so tufts on a tile stay separate
+        const q = (q0 + k) % 4;
+        const hq = hash2(seed, k, 3), hq2 = hash2(seed, k, 4);
+        const cx = tx + 0.28 + (q & 1) * 0.44 + (hq - 0.5) * 0.16;
+        const cz = tz + 0.28 + (q >> 1) * 0.44 + (hq2 - 0.5) * 0.16;
+        const blades = BLADES_PER_TUFT_MIN + Math.floor(hash2(seed, k, 5) * (BLADES_PER_TUFT_RND + 1));
+        for (let b = 0; b < blades; b++, i++) {
+          // every random value for this blade derives from two hashes (chunk builds are hot)
+          const h1 = hash2(seed, i, 1), h2 = hash2(seed, i, 2);
+          const rnd = (n: number) => { const v = h1 * (n * 1.37 + 0.71) + h2 * (n * 2.13 + 1.17); return v - Math.floor(v); };
+          const ang = rnd(3) * Math.PI * 2, rad = Math.sqrt(rnd(4)) * 0.17;
+          const x = clamp(cx + Math.cos(ang) * rad, tx + 0.04, tx + 0.96), z = clamp(cz + Math.sin(ang) * rad, tz + 0.04, tz + 0.96);
+          const isFlower = flowerTile && rnd(9) < 0.08;
+          // blades near the tuft's heart stand tallest
+          const H = (0.3 + rnd(5) * 0.3 + (1 - rad / 0.17) * 0.12) * (1 - dry * 0.22) * (isFlower ? 1.18 : 1);
+          const W = 0.09 + rnd(6) * 0.075;
+          d0.push(x, this.groundY(x, z), z, H);
+          d1.push(W, rnd(7) * Math.PI * 2, isFlower ? 1.5 + Math.floor(rnd(10) * 4) : rnd(10), (rnd(8) - 0.5) * 0.4);
+          d2.push(dry);
+          dc.push(cutVal);
+          if (d0.length / 4 >= MAX_BLADES_PER_CHUNK) { ranges.set(tileKey, [start, d0.length / 4 - start]); break outer; }
+        }
       }
+      ranges.set(tileKey, [start, d0.length / 4 - start]);
     }
     if (!d0.length) return null;
     const g = new THREE.InstancedBufferGeometry();
@@ -339,7 +475,11 @@ export class GrassSystem {
     g.setAttribute('aData0', new THREE.InstancedBufferAttribute(new Float32Array(d0), 4));
     g.setAttribute('aData1', new THREE.InstancedBufferAttribute(new Float32Array(d1), 4));
     g.setAttribute('aData2', new THREE.InstancedBufferAttribute(new Float32Array(d2), 1));
+    const cutAttr = new THREE.InstancedBufferAttribute(new Float32Array(dc), 1);
+    cutAttr.setUsage(THREE.DynamicDrawUsage);
+    g.setAttribute('aCut', cutAttr);
     g.instanceCount = d0.length / 4;
+    g.userData.tileRanges = ranges;
     return g;
   }
 

@@ -158,6 +158,7 @@ export class AudioEngine {
   arrow() { this.noise(0.09, 0.22, 'highpass', 3000); this.tone('square', 900, 0.06, 0.05, { f1: 1600 }); }
   throwJav() { this.noise(0.18, 0.22, 'bandpass', 500, { f1: 1200, q: 1.2 }); }
   block() { this.tone('square', 2400, 0.05, 0.13); this.tone('square', 1700, 0.1, 0.1, { when: (this.ctx?.currentTime ?? 0) + 0.03 }); this.noise(0.04, 0.2, 'highpass', 4000); }
+  grassCut() { this.noise(0.09, 0.16, 'bandpass', 2600, { q: 0.8, attack: 0.005 }); }
   bushCut() { this.noise(0.16, 0.32, 'bandpass', 1300, { q: 1, attack: 0.01 }); }
   charged() { const t = this.ctx?.currentTime ?? 0; [880, 1108, 1318, 1760].forEach((f, i) => this.tone('square', f, 0.06, 0.09, { when: t + i * 0.045 })); }
   spin() { this.noise(0.38, 0.3, 'highpass', 700, { f1: 3500 }); this.tone('square', 300, 0.32, 0.07, { f1: 950 }); }
