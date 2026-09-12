@@ -18,7 +18,7 @@
  *  - All animation lives in the vertex shader: travelling gusts (a noise field scrolled in world
  *    space), per-blade idle sway, gust shimmer, and radial parting around the player.
  *  - Cutting: the sword stamps a per-blade `aCut` timestamp; the shader makes the tile's tufts
- *    detach, tumble upward and fade (2D-Zelda style) and hides them; they regrow off-screen.
+ *    detach, tumble upward and fade, then leaves behind short, dark stubble until the tile regrows.
  *
  * Per-instance data:
  *   aData0 = (root.x, root.y, root.z, height)
@@ -41,6 +41,8 @@ const BLADES_PER_TUFT_MIN = 5, BLADES_PER_TUFT_RND = 5;
 // grass only comes back once the player has left the area: a tile regrows after CUT_REGROW seconds
 // AND only while it is off-screen, so you never watch it pop back.
 export const CUT_FLY = 0.85;      // seconds the pieces are airborne
+export const CUT_STUBBLE_HEIGHT = 0.16; // surviving blade height after the airborne cut animation
+export const CUT_STUBBLE_WIDTH = 0.68;  // keep the remnant readable without looking like full grass
 export const CUT_REGROW = 90;     // minimum seconds before an off-screen tile may regrow
 const REGROW_SCAN = 1.0;          // seconds between regrow sweeps
 
@@ -88,6 +90,8 @@ const vec3 PET1 = vec3(${PAL.petals[1]});
 const vec3 PET2 = vec3(${PAL.petals[2]});
 const vec3 PET3 = vec3(${PAL.petals[3]});
 const float CUT_FLY = ${CUT_FLY.toFixed(3)};
+const float CUT_STUBBLE_HEIGHT = ${CUT_STUBBLE_HEIGHT.toFixed(3)};
+const float CUT_STUBBLE_WIDTH = ${CUT_STUBBLE_WIDTH.toFixed(3)};
 
 void main() {
   float bend = position.y;      // unit blade: 0 at the root, 1 at the tip
@@ -99,12 +103,16 @@ void main() {
   float lean = aData1.w;
   float dry = aData2;
 
-  // cut state: -1 = standing, [0,FLY) = airborne piece, beyond = gone (until the CPU regrows it)
+  // cut state: -1 = standing, [0,FLY) = airborne piece, beyond = persistent stubble
   float age = aCut < 0.0 ? -1.0 : uTime - aCut;
-  if (age >= CUT_FLY) {
-    gl_Position = vec4(0.0, 0.0, 2.0, 1.0); // degenerate, off-screen
-    vCol = vec3(0.0); vShade = 0.0; vGust = 0.0;
-    return;
+  // Once the cut pieces have finished flying, keep the roots visible as Zelda-style stubble.
+  // This is deliberately shader-side: the original instances remain in the same tile ranges,
+  // so streaming/rebuilding a chunk preserves the remnant without another draw call.
+  float stubble = age >= CUT_FLY ? 1.0 : 0.0;
+  if (stubble > 0.5) {
+    H *= CUT_STUBBLE_HEIGHT;
+    W *= CUT_STUBBLE_WIDTH;
+    lean *= 0.25;
   }
 
   // blade in its screen-aligned local frame: lx along camera-right, ly up
@@ -150,7 +158,12 @@ void main() {
   p.y -= push * bend * 0.2 * H;
 
   // colour: dark root -> bright tip, per-blade tint, bleached toward dry by the region
-  if (tint > 1.4) {
+  if (stubble > 0.5) {
+    // Cut flowers lose their petals too: every remnant is a subdued green/brown root.
+    vec3 stubTip = mix(C_BASE, C_TIP, 0.28);
+    stubTip = mix(stubTip, C_DRY, dry * 0.75);
+    vCol = mix(C_BASE, stubTip, bend);
+  } else if (tint > 1.4) {
     // a flower: green stem, petal-coloured head at the tip
     vec3 petal = tint < 2.5 ? PET0 : tint < 3.5 ? PET1 : tint < 4.5 ? PET2 : PET3;
     vCol = bend > 0.6 ? petal : mix(C_BASE, C_TIP, 0.5);
@@ -165,7 +178,7 @@ void main() {
   // mosaic of green shades), plus fake occlusion toward the root and a shimmer when gusts hit
   float qv = fract(phase * 2.399);
   float q = qv > 0.7 ? 1.0 : qv > 0.4 ? 0.78 : 0.6;
-  vShade = (uAmbient + uSun * q) * (0.72 + 0.28 * bend) * (1.0 + 0.18 * flying);
+  vShade = (uAmbient + uSun * q) * (0.72 + 0.28 * bend) * (1.0 + 0.18 * flying) * (stubble > 0.5 ? 0.68 : 1.0);
   vGust = gust * b2;
 
   gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
