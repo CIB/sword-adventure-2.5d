@@ -8,7 +8,7 @@ const g2d = () => ({
 
 import * as THREE from 'three';
 import { World } from '../src/game/world';
-import { GrassSystem, GRASS_CHUNK, tuftCount, CUT_FLY, CUT_REGROW } from '../src/game/grass';
+import { GrassSystem, GRASS_CHUNK, tuftCount, CUT_REGROW } from '../src/game/grass';
 import { MAP_W, MAP_H, Tile } from '../src/game/constants';
 
 let failures = 0;
@@ -186,7 +186,7 @@ if (g) {
     let kept = 0;
     for (let i = s2; i < s2 + n2; i++) if (attr2.getX(i) >= 0) kept++;
     check('cut survives a chunk rebuild', kept === n2);
-    check('still cut while airborne', (cg.update(10 + CUT_FLY * 0.5, 41.5, 41.5, 16, 41.5, 41.5), !cg.hasTufts(cx, cz)));
+    check('cut stubble stays immediate and static', (cg.update(10.516, 41.5, 41.5, 16, 41.5, 41.5), !cg.hasTufts(cx, cz)));
     cg.update(10 + CUT_REGROW + 2, 41.5, 41.5, 16, 41.5, 41.5);
     check('never regrows while in view', !cg.hasTufts(cx, cz));
     cg.update(10 + CUT_REGROW / 2, 141.5, 41.5, 16, 141.5, 41.5);

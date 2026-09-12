@@ -17,8 +17,9 @@
  *  - Blades are instanced per 16×16-tile chunk (one draw call each), streamed around the camera.
  *  - All animation lives in the vertex shader: travelling gusts (a noise field scrolled in world
  *    space), per-blade idle sway, gust shimmer, and radial parting around the player.
- *  - Cutting: the sword stamps a per-blade `aCut` timestamp; the shader makes the tile's tufts
- *    detach, tumble upward and fade, then leaves behind short, dark stubble until the tile regrows.
+ *  - Cutting: the sword stamps a per-blade `aCut` timestamp and immediately turns the tile into
+ *    short, dark stubble. Stubble is deliberately static — there is no detached particle phase —
+ *    until the tile regrows.
  *
  * Per-instance data:
  *   aData0 = (root.x, root.y, root.z, height)
@@ -37,13 +38,12 @@ const MAX_BLADES_PER_CHUNK = 8000;
 const MAX_TUFTS_PER_TILE = 4;   // a fully lush tile: one tuft per quadrant
 const BLADES_PER_TUFT_MIN = 5, BLADES_PER_TUFT_RND = 5;
 
-// Cutting (Zelda-style): the tufts of a hit tile detach, fly up and vanish. Like the 2D games, cut
-// grass only comes back once the player has left the area: a tile regrows after CUT_REGROW seconds
-// AND only while it is off-screen, so you never watch it pop back.
-export const CUT_FLY = 0.85;      // seconds the pieces are airborne
-export const CUT_STUBBLE_HEIGHT = 0.16; // surviving blade height after the airborne cut animation
+// Cutting (Zelda-style): a hit tile becomes a small, static remnant immediately. Like the 2D
+// games, cut grass only comes back once the player has left the area: a tile regrows after
+// CUT_REGROW seconds AND only while it is off-screen, so you never watch it pop back.
+export const CUT_STUBBLE_HEIGHT = 0.16; // surviving blade height after a cut
 export const CUT_STUBBLE_WIDTH = 0.68;  // keep the remnant readable without looking like full grass
-export const CUT_REGROW = 90;     // minimum seconds before an off-screen tile may regrow
+export const CUT_REGROW = 90;           // minimum seconds before an off-screen tile may regrow
 const REGROW_SCAN = 1.0;          // seconds between regrow sweeps
 
 // ------------------------------------------------------------------ palette
@@ -89,7 +89,6 @@ const vec3 PET0 = vec3(${PAL.petals[0]});
 const vec3 PET1 = vec3(${PAL.petals[1]});
 const vec3 PET2 = vec3(${PAL.petals[2]});
 const vec3 PET3 = vec3(${PAL.petals[3]});
-const float CUT_FLY = ${CUT_FLY.toFixed(3)};
 const float CUT_STUBBLE_HEIGHT = ${CUT_STUBBLE_HEIGHT.toFixed(3)};
 const float CUT_STUBBLE_WIDTH = ${CUT_STUBBLE_WIDTH.toFixed(3)};
 
@@ -103,59 +102,43 @@ void main() {
   float lean = aData1.w;
   float dry = aData2;
 
-  // cut state: -1 = standing, [0,FLY) = airborne piece, beyond = persistent stubble
-  float age = aCut < 0.0 ? -1.0 : uTime - aCut;
-  // Once the cut pieces have finished flying, keep the roots visible as Zelda-style stubble.
-  // This is deliberately shader-side: the original instances remain in the same tile ranges,
-  // so streaming/rebuilding a chunk preserves the remnant without another draw call.
-  float stubble = age >= CUT_FLY ? 1.0 : 0.0;
+  // A cut is visible on the very next render. The original instances stay in their tile range,
+  // but become short, subdued roots instead of turning into a flying particle effect.
+  // This also means a streamed/rebuilt chunk preserves the remnant without another draw call.
+  float stubble = aCut >= 0.0 ? 1.0 : 0.0;
   if (stubble > 0.5) {
     H *= CUT_STUBBLE_HEIGHT;
     W *= CUT_STUBBLE_WIDTH;
-    lean *= 0.25;
+    lean = 0.0;
   }
 
   // blade in its screen-aligned local frame: lx along camera-right, ly up
   float lx = position.x * W + lean * bend;
   float ly = bend * H;
-  float rise = 0.0, flying = 0.0;
-  vec2 scatter = vec2(0.0);
-  if (age >= 0.0 && age < CUT_FLY) {
-    // the tuft detaches: the whole piece pops up, tumbles, drifts outward and shrinks away
-    flying = 1.0;
-    float f = age / CUT_FLY;
-    float e = 1.0 - (1.0 - f) * (1.0 - f);
-    float spin = (fract(phase * 0.618) - 0.5) * 9.0 * f;
-    float c = cos(spin), s = sin(spin);
-    float cy = ly - H * 0.45;
-    float rx = lx * c - cy * s, ry = lx * s + cy * c;
-    float shrink = 1.0 - smoothstep(0.5, 1.0, f);
-    lx = rx * shrink;
-    ly = (ry + H * 0.45) * shrink;
-    rise = 0.12 + e * 0.95;
-    scatter = vec2(cos(phase * 3.1), sin(phase * 3.1)) * e * 0.28;
-    bend = 1.0; // airborne pieces ride the wind as a whole
-  }
-
   vec3 p = root;
-  p.xz += uRight * lx + scatter;
-  p.y  += ly + rise;
+  p.xz += uRight * lx;
+  p.y  += ly;
   float b2 = bend * bend;
+  float gust = 0.0;
 
-  // travelling wind: a noise field scrolled across the meadow, plus a per-blade idle sway
-  vec2 wuv = p.xz / uWindScale + uWindDir * (uTime * 0.13);
-  float gust = texture2D(uWindTex, wuv).r;
-  vec2 off = uWindDir * ((gust - 0.42) * uGust + uLean);
-  off += vec2(sin(uTime * 2.1 + phase + p.z * 0.8), cos(uTime * 1.7 + phase * 1.3 + p.x * 0.6)) * uSway;
-  p.xz += off * b2;
-  p.y  -= length(off) * b2 * 0.3 * H; // keep the blade's length roughly constant as it leans
+  // Standing grass gets the full wind and player-parting treatment. Stubble intentionally skips
+  // both paths: it is a static visual marker, not another animated particle system.
+  if (stubble < 0.5) {
+    // travelling wind: a noise field scrolled across the meadow, plus a per-blade idle sway
+    vec2 wuv = p.xz / uWindScale + uWindDir * (uTime * 0.13);
+    gust = texture2D(uWindTex, wuv).r;
+    vec2 off = uWindDir * ((gust - 0.42) * uGust + uLean);
+    off += vec2(sin(uTime * 2.1 + phase + p.z * 0.8), cos(uTime * 1.7 + phase * 1.3 + p.x * 0.6)) * uSway;
+    p.xz += off * b2;
+    p.y  -= length(off) * b2 * 0.3 * H; // keep the blade's length roughly constant as it leans
 
-  // the player parts the grass
-  vec2 d = p.xz - uPlayer;
-  float pd = length(d);
-  float push = (1.0 - smoothstep(uPlayerR * 0.15, uPlayerR, pd)) * uPush * (1.0 - flying);
-  p.xz += (d / max(pd, 1e-4)) * push * bend;
-  p.y -= push * bend * 0.2 * H;
+    // the player parts the grass
+    vec2 d = p.xz - uPlayer;
+    float pd = length(d);
+    float push = (1.0 - smoothstep(uPlayerR * 0.15, uPlayerR, pd)) * uPush;
+    p.xz += (d / max(pd, 1e-4)) * push * bend;
+    p.y -= push * bend * 0.2 * H;
+  }
 
   // colour: dark root -> bright tip, per-blade tint, bleached toward dry by the region
   if (stubble > 0.5) {
@@ -175,11 +158,12 @@ void main() {
   }
 
   // shade: quantised bands like the ground's toon gradient, picked per blade (BotW's fields are a
-  // mosaic of green shades), plus fake occlusion toward the root and a shimmer when gusts hit
+  // mosaic of green shades), plus fake occlusion toward the root and a shimmer when gusts hit.
+  // Stubble receives no gust term, so its appearance is stable from frame to frame.
   float qv = fract(phase * 2.399);
   float q = qv > 0.7 ? 1.0 : qv > 0.4 ? 0.78 : 0.6;
-  vShade = (uAmbient + uSun * q) * (0.72 + 0.28 * bend) * (1.0 + 0.18 * flying) * (stubble > 0.5 ? 0.68 : 1.0);
-  vGust = gust * b2;
+  vShade = (uAmbient + uSun * q) * (0.72 + 0.28 * bend) * (stubble > 0.5 ? 0.68 : 1.0);
+  vGust = stubble > 0.5 ? 0.0 : gust * b2;
 
   gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
 }
@@ -342,7 +326,7 @@ export class GrassSystem {
   }
 
   /**
-   * Cut the tufts on a tile: they detach and fly off (shader-side), then regrow after CUT_REGROW.
+   * Cut the tufts on a tile: they become static stubble immediately, then regrow after CUT_REGROW.
    * Returns false if there was nothing standing to cut.
    */
   cut(tx: number, tz: number): boolean {
