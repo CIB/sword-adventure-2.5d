@@ -32,44 +32,62 @@ for (let z = 0; z < MAP_H; z++) for (let x = 0; x < MAP_W; x++) {
 console.log(`INFO growable grass tiles: ${growTiles}/${grassTiles} (${(100 * growTiles / grassTiles).toFixed(1)}%)`);
 check('a healthy share of grass tiles can grow blades', growTiles / grassTiles > 0.55 && growTiles / grassTiles < 0.99);
 
-// ---- geometry integrity on a meadow chunk (home meadow near spawn, outside the village)
-const g = (grass as any).buildGeometry(33, 33, GRASS_CHUNK, GRASS_CHUNK) as THREE.BufferGeometry | null;
+// ---- geometry integrity on a meadow chunk (home meadow, just outside the village)
+const g = (grass as any).buildGeometry(33, 33, GRASS_CHUNK, GRASS_CHUNK) as THREE.InstancedBufferGeometry | null;
 check('meadow chunk produces geometry', !!g);
 if (g) {
-  const pos = g.getAttribute('position'), nrm = g.getAttribute('normal'), col = g.getAttribute('aCol'), uv = g.getAttribute('uv'), idx = g.getIndex()!;
-  check('attributes match', pos.count === nrm.count && pos.count === col.count && pos.count === uv.count, `${pos.count} verts`);
-  check('index fits uint16', pos.count <= 65535);
-  let okIdx = true, yMin = Infinity, yMax = -Infinity;
-  for (let i = 0; i < idx.count; i++) { const v = idx.getX(i); if (v < 0 || v >= pos.count) okIdx = false; }
-  for (let i = 0; i < pos.count; i++) { yMin = Math.min(yMin, pos.getY(i)); yMax = Math.max(yMax, pos.getY(i)); }
-  check('indices in range', okIdx);
-  check('blade heights sensible', yMax - yMin < 1.2 && yMax - yMin > 0.3, `height span ${(yMax - yMin).toFixed(2)}`);
-  // roots sit on the ground mesh plane
-  let maxErr = 0;
-  for (let i = 0; i < pos.count; i++) {
-    const bend = uv.getX(i);
-    if (bend !== 0) continue;
-    const x = pos.getX(i), z = pos.getZ(i), y = pos.getY(i);
-    const gy = (grass as any).groundY(x, z);
-    maxErr = Math.max(maxErr, Math.abs(y - gy));
+  const base = g.getAttribute('position'), a0 = g.getAttribute('aData0') as THREE.InstancedBufferAttribute, a1 = g.getAttribute('aData1') as THREE.InstancedBufferAttribute;
+  const n = a0.count;
+  check('unit blade base geometry', base.count === 3);
+  check('instance attributes match', a0.count === a1.count, `${n} blades`);
+  check('instance count flag set', g.instanceCount === n);
+  check('dense BotW-style coverage', n >= 256 * 8, `${n} blades (~${(n / 256).toFixed(1)}/tile)`);
+  check('instance data fits in memory', n <= 7200);
+  // every blade roots exactly on the drawn ground plane; heights/widths sensible; tint code valid
+  let maxErr = 0, badH = 0, badTint = 0, flowers = 0;
+  for (let i = 0; i < n; i++) {
+    const x = a0.getX(i), y = a0.getY(i), z = a0.getZ(i), h = a0.getW(i);
+    maxErr = Math.max(maxErr, Math.abs(y - (grass as any).groundY(x, z)));
+    if (h < 0.2 || h > 0.95) badH++;
+    const tint = a1.getZ(i);
+    if (!(tint >= 0 && tint <= 5.5)) badTint++;
+    if (tint > 1.4) flowers++;
   }
-  check('roots exactly on the drawn ground plane', maxErr < 1e-4, `max err ${maxErr.toExponential(2)}`);
-  const bladeEstimate = pos.count / 5;
-  console.log(`INFO meadow chunk: ~${bladeEstimate} blades, ${idx.count / 3} tris`);
+  check('roots exactly on the drawn ground plane', maxErr < 1e-5, `max err ${maxErr.toExponential(2)}`);
+  check('blade heights sensible', badH === 0, `${badH} bad`);
+  check('tint codes valid', badTint === 0);
+  console.log(`INFO meadow chunk: ${n} single-triangle blades (${flowers} flowers), ${n} tris`);
 }
 
-// ---- water/village chunks stay empty where nothing grows
-const plaza = (grass as any).buildGeometry(6, 6, GRASS_CHUNK, GRASS_CHUNK);
-console.log('INFO plaza chunk (village core):', plaza ? `${(plaza as THREE.BufferGeometry).getAttribute('position').count} verts` : 'empty');
+// ---- flower tiles actually bloom
+{
+  let flowerTile: [number, number] | null = null;
+  outer:
+  for (let z = 0; z < MAP_H; z++) for (let x = 0; x < MAP_W; x++) {
+    if (world.tile(x, z) === Tile.Flowers && world.canGrowGrass(x, z) && x < 60 && z < 50) { flowerTile = [x, z]; break outer; }
+  }
+  if (flowerTile) {
+    const [fx, fz] = flowerTile;
+    const fg = (grass as any).buildGeometry(fx, fz, 1, 1) as THREE.InstancedBufferGeometry | null;
+    const a1 = fg?.getAttribute('aData1') as THREE.InstancedBufferAttribute | undefined;
+    let hasFlower = false;
+    if (a1) for (let i = 0; i < a1.count; i++) if (a1.getZ(i) > 1.4) hasFlower = true;
+    // a single tile has only a ~6% chance per blade; allow either but report
+    console.log(`INFO flower tile (${fx},${fz}): ${a1?.count ?? 0} blades, flower present: ${hasFlower}`);
+    check('flower tile grows blades', (a1?.count ?? 0) > 0);
+  } else {
+    check('found a flower tile to test', false);
+  }
+}
 
 // ---- determinism
-const a = (grass as any).buildGeometry(33, 33, GRASS_CHUNK, GRASS_CHUNK) as THREE.BufferGeometry;
-const b = (grass as any).buildGeometry(33, 33, GRASS_CHUNK, GRASS_CHUNK) as THREE.BufferGeometry;
-let same = a.getAttribute('position').count === b.getAttribute('position').count;
-if (same) { const pa = a.getAttribute('position') as THREE.BufferAttribute, pb = b.getAttribute('position') as THREE.BufferAttribute; for (let i = 0; i < pa.count * 3; i++) if (pa.array[i] !== pb.array[i]) { same = false; break; } }
+const a = (grass as any).buildGeometry(33, 33, GRASS_CHUNK, GRASS_CHUNK) as THREE.InstancedBufferGeometry;
+const b = (grass as any).buildGeometry(33, 33, GRASS_CHUNK, GRASS_CHUNK) as THREE.InstancedBufferGeometry;
+let same = a.getAttribute('aData0').count === b.getAttribute('aData0').count;
+if (same) { const pa = a.getAttribute('aData0').array as Float32Array, pb = b.getAttribute('aData0').array as Float32Array; for (let i = 0; i < pa.length; i++) if (pa[i] !== pb[i]) { same = false; break; } }
 check('deterministic builds', same);
 
-// ---- single-chunk build cost (what a streaming frame pays; median of 9 to dodge sandbox noise)
+// ---- single-chunk build cost (median of 9 to dodge sandbox noise)
 {
   const ts: number[] = [];
   for (let i = 0; i < 9; i++) {
@@ -77,7 +95,7 @@ check('deterministic builds', same);
     (grass as any).buildGeometry(60 + (i % 3) * 16, 60, GRASS_CHUNK, GRASS_CHUNK);
     ts.push(performance.now() - t);
   }
-  ts.sort((a, b) => a - b);
+  ts.sort((a2, b2) => a2 - b2);
   console.log(`INFO single chunk build median: ${ts[4].toFixed(2)} ms`);
   check('chunk build affordable', ts[4] < 12, `${ts[4].toFixed(2)} ms`);
 }
@@ -89,8 +107,7 @@ for (let i = 0; i < 400; i++) {
   grass.update(i * 0.016, cx, cz, 16, cx, cz);
 }
 const chunkCount = [...(grass as any).chunks.entries()].filter(([, m]: any) => m).length;
-const emptyCount = [...(grass as any).chunks.entries()].filter(([, m]: any) => !m).length;
-console.log(`INFO streaming: ${chunkCount} built chunks resident, ${emptyCount} empty slots, total ${(performance.now() - t0).toFixed(0)} ms`);
+console.log(`INFO streaming: ${chunkCount} built chunks resident, total ${(performance.now() - t0).toFixed(0)} ms`);
 check('resident chunk count bounded', chunkCount <= 49, `${chunkCount}`);
 
 // ---- steady-state update cost once the surroundings are built (median of 200)
@@ -99,15 +116,15 @@ check('resident chunk count bounded', chunkCount <= 49, `${chunkCount}`);
   const ts: number[] = [];
   for (let i = 0; i < 200; i++) {
     const t = performance.now();
-    grass.update(1 + i * 0.016, 41.5, 41.5, 16, 41.5 + Math.sin(i * 0.1) * 0.2, 41.5);
+    grass.update(1 + i * 0.016, 41.5, 41.5, 16, 41.5 + Math.sin(i * 0.1) * 0.2, 41.5, 0.3);
     ts.push(performance.now() - t);
   }
-  ts.sort((a, b) => a - b);
+  ts.sort((a2, b2) => a2 - b2);
   console.log(`INFO steady update median: ${ts[100].toFixed(3)} ms`);
   check('steady-state update nearly free', ts[100] < 0.5, `${ts[100].toFixed(3)} ms`);
 }
 
-// ---- invalidate (bush cut / regrow): bring the camera back near the meadow first
+// ---- invalidate (bush cut / regrow): camera is parked near the meadow
 for (let i = 0; i < 6; i++) grass.update(i * 0.016, 35.5, 35.5, 16, 35.5, 35.5);
 const key = Math.floor(35 / GRASS_CHUNK) * (grass as any).chX + Math.floor(35 / GRASS_CHUNK);
 check('chunk exists before invalidate', (grass as any).chunks.has(key));

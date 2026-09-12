@@ -1,38 +1,46 @@
 /**
- * Breath of the Wild-style animated grass.
+ * Breath of the Wild-style grass: a dense carpet of individual blades.
  *
- * The meadows are covered in small tufts of tapered blades — opaque triangle strips, no alpha
- * textures, so they stay crisp at the game's chunky resolution. Blades are merged into one mesh
- * per 16×16-tile chunk, streamed around the camera, and animated entirely in the vertex shader:
+ * The trick (per BotW technical analyses, e.g. the ResetEra tech-analysis thread and the Cemu
+ * grass-density work): every blade of grass is exactly ONE triangle — 3 vertices — rendered by
+ * instancing tens of thousands of them. Wind just pushes the tip vertex, and the dark-root to
+ * bright-tip gradient is plain per-vertex colour. That is why BotW's fields read as individual
+ * blades instead of sparse tufts: a blade this cheap can be planted 20-30 to a tile.
  *
- *  - travelling gusts: a noise field scrolled through the field in world space pushes the tips,
- *  - idle sway: a per-blade phase makes every tuft dance slightly out of step,
- *  - the player parts the grass radially as she walks through it (the classic BotW touch),
- *  - shading is a quantised lambert on the blade face, matching the ground's toon gradient.
+ * Adaptations for this engine:
+ *  - Blades are screen-aligned around their width axis (the camera looks straight down under the
+ *    oblique shear, so a randomly-rotated vertical triangle would collapse to an invisible sliver
+ *    whenever it sits edge-on to the view). Height stays true-3D, so shear, depth and the
+ *    player-parting deformation all still work.
+ *  - Blades are instanced per 16×16-tile chunk (one draw call each), streamed around the camera.
+ *  - All animation lives in the vertex shader: travelling gusts (a noise field scrolled in world
+ *    space), per-blade idle sway, gust shimmer, and radial parting around the player.
  *
- * Vertex layout per blade (5 verts, 3 tris): root L/R, middle L/R, tip. The `uv` attribute carries
- * (bend weight, random phase) instead of texture coordinates, and per-vertex colours run from a
- * dark root to a bright tip with per-tuft tint variation.
+ * Per-instance data (two vec4 attributes):
+ *   aData0 = (root.x, root.y, root.z, height)
+ *   aData1 = (width, phase, tintCode, lean)
+ * `tintCode` doubles as a flower flag: values > 1.4 mark a flower blade, 1.5+ = petal index.
  */
 import * as THREE from 'three';
 import { clamp, hash2, MAP_W, MAP_H, Tile } from './constants';
 import type { World } from './world';
 
-export const GRASS_CHUNK = 16; // tiles per chunk side
-const BUILD_PER_FRAME = 2;     // chunk budget per frame (avoids hitches while travelling)
-const MAX_BLADES_PER_CHUNK = 1500;
+export const GRASS_CHUNK = 16;  // tiles per chunk side
+const BUILD_PER_FRAME = 2;      // chunk budget per frame (avoids hitches while travelling)
+const MAX_BLADES_PER_CHUNK = 8000;
+const BLADES_PER_TILE = 30;     // lush-meadow baseline; regions scale this up/down
 
 // ------------------------------------------------------------------ palette
-// sRGB hexes like the rest of the game; linearised here because the scene renders into a linear
-// render target (the post pass does the final sRGB encode). Kept as [r,g,b] triples for fast mixing.
-type RGB = [number, number, number];
-const lin = (hex: string): RGB => { const c = new THREE.Color(hex).convertSRGBToLinear(); return [c.r, c.g, c.b]; };
-const C_BASE = lin('#3f7a34');   // dark root
-const C_TIP = lin('#7bc65f');    // matches the ground's light grass speckle
-const C_TIP_L = lin('#9ad86e');
-const C_DRY = lin('#9aa84e');    // highland / moor tint
-const C_COOL = lin('#4f9f66');   // shaded-forest tint
-const PETALS: RGB[] = ['#f8f8f8', '#f8d848', '#f07070', '#8aa0f8'].map(lin); // same petals as the ground texture
+// sRGB hexes like the rest of the game, linearised because the scene renders into a linear render
+// target (the post pass does the final sRGB encode). Injected into the shader as constants.
+const lin = (hex: string) => { const c = new THREE.Color(hex).convertSRGBToLinear(); return `${c.r.toFixed(4)}, ${c.g.toFixed(4)}, ${c.b.toFixed(4)}`; };
+const PAL = {
+  base: lin('#2e6a2a'),   // dark root
+  tip: lin('#7bc65f'),    // matches the ground's light grass speckle
+  tipL: lin('#a4d870'),
+  dry: lin('#a8b050'),    // highland / moor bleach
+  petals: ['#f8f8f8', '#f8d848', '#f07070', '#8aa0f8'].map(lin), // same petals as the ground texture
+};
 
 // ------------------------------------------------------------------ shaders
 const VERT = /* glsl */ `
@@ -46,18 +54,38 @@ uniform float uSway;
 uniform vec2 uPlayer;
 uniform float uPlayerR;
 uniform float uPush;
-uniform vec3 uSunDir;
 uniform float uAmbient;
 uniform float uSun;
-attribute vec3 aCol;
+uniform float uDry;
+uniform vec2 uRight;   // camera-right direction in world XZ: blades always face the screen
+attribute vec4 aData0; // xyz = root on the ground plane, w = blade height
+attribute vec4 aData1; // x = width, y = phase, z = tint code, w = lean
 varying vec3 vCol;
 varying float vShade;
 varying float vGust;
 
+const vec3 C_BASE = vec3(${PAL.base});
+const vec3 C_TIP  = vec3(${PAL.tip});
+const vec3 C_TIPL = vec3(${PAL.tipL});
+const vec3 C_DRY  = vec3(${PAL.dry});
+const vec3 PET0 = vec3(${PAL.petals[0]});
+const vec3 PET1 = vec3(${PAL.petals[1]});
+const vec3 PET2 = vec3(${PAL.petals[2]});
+const vec3 PET3 = vec3(${PAL.petals[3]});
+
 void main() {
-  float bend = uv.x;    // 0 at the root, 1 at the tip
-  float phase = uv.y;   // per-blade random phase
-  vec3 p = position;
+  float bend = position.y;      // unit blade: 0 at the root, 1 at the tip
+  vec3 root = aData0.xyz;
+  float H = aData0.w;
+  float W = aData1.x;
+  float phase = aData1.y;
+  float tint = aData1.z;
+  float lean = aData1.w;
+
+  // erect the blade: base edge along the screen-right axis, tip straight up
+  vec3 p = root;
+  p.xz += uRight * (position.x * W + lean * bend);
+  p.y  += bend * H;
   float b2 = bend * bend;
 
   // travelling wind: a noise field scrolled across the meadow, plus a per-blade idle sway
@@ -66,21 +94,33 @@ void main() {
   vec2 off = uWindDir * ((gust - 0.42) * uGust + uLean);
   off += vec2(sin(uTime * 2.1 + phase + p.z * 0.8), cos(uTime * 1.7 + phase * 1.3 + p.x * 0.6)) * uSway;
   p.xz += off * b2;
-  p.y -= length(off) * b2 * 0.32; // keep the blade's length roughly constant as it leans
+  p.y  -= length(off) * b2 * 0.3 * H; // keep the blade's length roughly constant as it leans
 
   // the player parts the grass
   vec2 d = p.xz - uPlayer;
   float pd = length(d);
   float push = (1.0 - smoothstep(uPlayerR * 0.15, uPlayerR, pd)) * uPush;
   p.xz += (d / max(pd, 1e-4)) * push * bend;
-  p.y -= push * bend * 0.22;
+  p.y -= push * bend * 0.2 * H;
 
-  // toon-ish shading: quantised two-sided lambert on the blade face, like the ground's gradient map
-  float ndl = abs(dot(normalize(normal), uSunDir));
-  float q = ndl > 0.72 ? 1.0 : ndl > 0.42 ? 0.78 : ndl > 0.18 ? 0.58 : 0.4;
-  vShade = uAmbient + uSun * q;
+  // colour: dark root -> bright tip, per-blade tint, bleached toward dry by the region
+  if (tint > 1.4) {
+    // a flower: green stem, petal-coloured head at the tip
+    vec3 petal = tint < 2.5 ? PET0 : tint < 3.5 ? PET1 : tint < 4.5 ? PET2 : PET3;
+    vCol = bend > 0.6 ? petal : mix(C_BASE, C_TIP, 0.5);
+  } else {
+    vec3 tip = mix(C_TIP, C_TIPL, tint);
+    tip = mix(tip, C_DRY, uDry);
+    vec3 base = mix(C_BASE, C_DRY, uDry * 0.65);
+    vCol = mix(base, tip, bend);
+  }
+
+  // shade: quantised bands like the ground's toon gradient, picked per blade (BotW's fields are a
+  // mosaic of green shades), plus fake occlusion toward the root and a shimmer when gusts hit
+  float qv = fract(phase * 2.399);
+  float q = qv > 0.7 ? 1.0 : qv > 0.4 ? 0.78 : 0.6;
+  vShade = (uAmbient + uSun * q) * (0.72 + 0.28 * bend);
   vGust = gust * b2;
-  vCol = aCol;
 
   gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
 }
@@ -111,11 +151,11 @@ function clumpNoise(tx: number, tz: number): number {
 
 /** Lushness per region (mirrors the world's flower placement: meadows bloom, the moor barely grows). */
 function regionDensity(tx: number, tz: number): number {
-  if (tx > 150 && tz < 40) return 0.3;                 // Amber Highland: sparse
-  if (tx > 140 && tz > 60 && tz < 120) return 0.42;    // Grey Moor
-  if (tx >= 1 && tx <= 32 && tz >= 1 && tz <= 29) return 0.85; // Thistledown: kept lawns
+  if (tx > 150 && tz < 40) return 0.25;                // Amber Highland: sparse
+  if (tx > 140 && tz > 60 && tz < 120) return 0.4;     // Grey Moor
+  if (tx >= 1 && tx <= 32 && tz >= 1 && tz <= 29) return 0.8; // Thistledown: kept lawns
   if (tx < 60 && tz < 50) return 1.0;                  // the home meadow
-  return 0.8;
+  return 0.78;
 }
 /** 0 = lush green, 1 = dry amber (blades bleach on the highland and the moor). */
 function regionDryness(tx: number, tz: number): number {
@@ -152,9 +192,10 @@ export class GrassSystem {
         uPlayer: { value: new THREE.Vector2(-999, -999) },
         uPlayerR: { value: 0.8 },
         uPush: { value: 0.42 },
-        uSunDir: { value: new THREE.Vector3(-0.15, 1, 0.42).normalize() }, // same direction as the game's sun
         uAmbient: { value: 0.6 },
         uSun: { value: 0.42 },
+        uDry: { value: 0 },
+        uRight: { value: new THREE.Vector2(1, 0) },
       },
       vertexShader: VERT,
       fragmentShader: FRAG,
@@ -162,11 +203,12 @@ export class GrassSystem {
     });
   }
 
-  /** Stream chunks around the camera and drive the wind. Called once per frame. */
-  update(time: number, camX: number, camZ: number, radiusTiles: number, px: number, pz: number) {
+  /** Stream chunks around the camera, drive the wind. Called once per frame. */
+  update(time: number, camX: number, camZ: number, radiusTiles: number, px: number, pz: number, viewAngle = 0) {
     const u = this.material.uniforms;
     u.uTime.value = time;
     (u.uPlayer.value as THREE.Vector2).set(px, pz);
+    (u.uRight.value as THREE.Vector2).set(Math.cos(viewAngle), -Math.sin(viewAngle));
 
     const ccx = Math.floor(camX / GRASS_CHUNK), ccz = Math.floor(camZ / GRASS_CHUNK);
     const r = Math.max(1, Math.ceil(radiusTiles / GRASS_CHUNK) + 1);
@@ -226,108 +268,72 @@ export class GrassSystem {
 
   /** A free-standing patch centred on the origin, for the model viewer. */
   buildPatch(tx0: number, tz0: number, wTiles: number, hTiles: number): THREE.Mesh {
-    const geo = this.buildGeometry(tx0, tz0, wTiles, hTiles) ?? new THREE.BufferGeometry();
-    const cx = tx0 + wTiles / 2, cz = tz0 + hTiles / 2;
-    geo.translate(-cx, -this.groundY(cx, cz), -cz);
-    return new THREE.Mesh(geo, this.material);
+    const geo = this.buildGeometry(tx0, tz0, wTiles, hTiles) ?? new THREE.InstancedBufferGeometry();
+    const cx = tx0 + wTiles / 2, cz = tz0 + hTiles / 2, cy = this.groundY(cx, cz);
+    const a0 = geo.getAttribute('aData0') as THREE.InstancedBufferAttribute | undefined;
+    if (a0) for (let i = 0; i < a0.count; i++) { a0.setXYZ(i, a0.getX(i) - cx, a0.getY(i) - cy, a0.getZ(i) - cz); }
+    geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0.5, 0), Math.hypot(wTiles, hTiles) / 2 + 2);
+    return this.makeMesh(geo, regionDryness(Math.floor(cx), Math.floor(cz)));
   }
 
   // ------------------------------------------------------------------ internals
   private buildChunk(key: number) {
     const cx = key % this.chX, cz = Math.floor(key / this.chX);
-    const geo = this.buildGeometry(cx * GRASS_CHUNK, cz * GRASS_CHUNK, GRASS_CHUNK, GRASS_CHUNK);
-    this.chunks.set(key, geo ? this.addMesh(geo) : null);
+    const tx0 = cx * GRASS_CHUNK, tz0 = cz * GRASS_CHUNK;
+    const geo = this.buildGeometry(tx0, tz0, GRASS_CHUNK, GRASS_CHUNK);
+    if (!geo) { this.chunks.set(key, null); return; }
+    geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(tx0 + GRASS_CHUNK / 2, 0.5, tz0 + GRASS_CHUNK / 2), GRASS_CHUNK * 0.71 + 2);
+    this.chunks.set(key, this.addMesh(this.makeMesh(geo, regionDryness(tx0 + 8, tz0 + 8))));
   }
 
-  private addMesh(geo: THREE.BufferGeometry): THREE.Mesh {
+  /** One shared material; each chunk patches its region dryness in just before it draws. */
+  private makeMesh(geo: THREE.BufferGeometry, dry: number): THREE.Mesh {
     const mesh = new THREE.Mesh(geo, this.material);
     mesh.matrixAutoUpdate = false; // static, already in world space
+    mesh.userData.dry = dry;
+    mesh.onBeforeRender = () => { this.material.uniforms.uDry.value = mesh.userData.dry; };
+    return mesh;
+  }
+
+  private addMesh(mesh: THREE.Mesh): THREE.Mesh {
     this.root.add(mesh);
     return mesh;
   }
 
-  /** Merge every tuft inside a tile rectangle into one world-space geometry (null if nothing grows there). */
-  private buildGeometry(tx0: number, tz0: number, wTiles: number, hTiles: number): THREE.BufferGeometry | null {
+  /** Scatter every blade inside a tile rectangle into one instanced geometry (null if nothing grows). */
+  private buildGeometry(tx0: number, tz0: number, wTiles: number, hTiles: number): THREE.InstancedBufferGeometry | null {
     const w = this.world;
-    const pos: number[] = [], nrm: number[] = [], col: number[] = [], uv: number[] = [], idx: number[] = [];
-    let blades = 0;
+    const d0: number[] = [], d1: number[] = [];
     outer:
     for (let tz = tz0; tz < tz0 + hTiles; tz++) for (let tx = tx0; tx < tx0 + wTiles; tx++) {
       if (!w.canGrowGrass(tx, tz)) continue;
       const clump = clumpNoise(tx, tz);
-      const p = regionDensity(tx, tz) * (0.25 + 1.15 * clump);
+      const count = Math.min(44, Math.round(BLADES_PER_TILE * regionDensity(tx, tz) * (0.6 + 0.85 * clump)));
+      if (!count) continue;
       const flowerTile = w.tile(tx, tz) === Tile.Flowers;
-      let tufts = 0;
-      if (hash2(tx, tz, 1) < p) tufts++;
-      if (clump > 0.62 && hash2(tx, tz, 2) < p * 0.8) tufts++;
-      if (!tufts) continue;
       const dry = regionDryness(tx, tz);
-      for (let t = 0; t < tufts; t++) {
-        const jx = (hash2(tx, tz, 11 + t) - 0.5) * 0.7, jz = (hash2(tx, tz, 21 + t) - 0.5) * 0.7;
-        const x = tx + 0.5 + jx, z = tz + 0.5 + jz;
-        blades += this.addTuft(pos, nrm, col, uv, idx, x, z, tx * 731 + tz * 197 + t * 57,
-          dry, flowerTile && hash2(tx, tz, 31 + t) < 0.6);
-        if (blades > MAX_BLADES_PER_CHUNK) break outer;
+      const seed = tx * 731 + tz * 197;
+      for (let i = 0; i < count; i++) {
+        // every random value for this blade derives from two hashes (chunk builds are hot)
+        const h1 = hash2(seed, i, 1), h2 = hash2(seed, i, 2);
+        const rnd = (k: number) => { const v = h1 * (k * 1.37 + 0.71) + h2 * (k * 2.13 + 1.17); return v - Math.floor(v); };
+        const x = tx + 0.06 + rnd(3) * 0.88, z = tz + 0.06 + rnd(4) * 0.88;
+        const isFlower = flowerTile && rnd(9) < 0.06;
+        const H = (0.34 + rnd(5) * 0.36) * (1 - dry * 0.22) * (isFlower ? 1.18 : 1);
+        const W = 0.09 + rnd(6) * 0.075;
+        d0.push(x, this.groundY(x, z), z, H);
+        d1.push(W, rnd(7) * Math.PI * 2, isFlower ? 1.5 + Math.floor(rnd(10) * 4) : rnd(10), (rnd(8) - 0.5) * 0.4);
+        if (d0.length / 4 >= MAX_BLADES_PER_CHUNK) break outer;
       }
     }
-    if (!idx.length) return null;
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-    g.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
-    g.setAttribute('aCol', new THREE.Float32BufferAttribute(col, 3));
-    g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
-    g.setIndex(idx);
+    if (!d0.length) return null;
+    const g = new THREE.InstancedBufferGeometry();
+    // unit blade: base edge at y=0 (x = ±0.5), tip at y=1 — position.y doubles as the bend weight
+    g.setAttribute('position', new THREE.Float32BufferAttribute([-0.5, 0, 0, 0.5, 0, 0, 0, 1, 0], 3));
+    g.setAttribute('aData0', new THREE.InstancedBufferAttribute(new Float32Array(d0), 4));
+    g.setAttribute('aData1', new THREE.InstancedBufferAttribute(new Float32Array(d1), 4));
+    g.instanceCount = d0.length / 4;
     return g;
-  }
-
-  /** One tuft of 4-6 blades radiating from a centre. Returns the number of blades added. */
-  private addTuft(pos: number[], nrm: number[], col: number[], uv: number[], idx: number[],
-    x: number, z: number, seed: number, dry: number, flower: boolean): number {
-    // All the tuft's randomness comes from 2 hashes; extra draws are cheap arithmetic remixes of
-    // those two (chunk builds are hot — this keeps them under a millisecond).
-    const h1 = hash2(seed, 0, 1), h2 = hash2(seed, 0, 2);
-    const frac = (v: number) => v - Math.floor(v);
-    const rnd = (k: number) => frac(h1 * (k * 1.37 + 0.71) + h2 * (k * 2.13 + 1.17));
-    // per-tuft tint: a shade of green nudged cool or dry by the region ([r,g,b] linear triples)
-    const mix = (a: readonly number[], b: readonly number[], t: number) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
-    let base = mix(C_BASE, C_COOL, rnd(9) * 0.35);
-    let tip = mix(C_TIP, C_TIP_L, rnd(10));
-    if (dry > 0) { tip = mix(tip, C_DRY, dry); base = mix(base, C_DRY, dry * 0.6); }
-    const mid = mix(base, tip, 0.45);
-    const petal = PETALS[Math.floor(rnd(12) * PETALS.length)];
-    const n = 4 + Math.floor(rnd(11) * 3);
-    const flowerBlade = flower ? Math.floor(rnd(13) * n) : -1;
-    for (let i = 0; i < n; i++) {
-      const isFlower = i === flowerBlade;
-      const bi = i + 2; // per-blade draw offset
-      const h = (0.42 + rnd(bi * 7 + 1) * 0.34) * (isFlower ? 1.15 : 1);
-      const yaw = rnd(bi * 7 + 2) * Math.PI;
-      const dirX = Math.cos(yaw), dirZ = Math.sin(yaw); // the blade's width axis
-      const rad = rnd(bi * 7 + 3) * 0.17, ang = rnd(bi * 7 + 4) * Math.PI * 2;
-      const bx = x + Math.cos(ang) * rad, bz = z + Math.sin(ang) * rad;
-      const y = this.groundY(bx, bz);                        // the blade extrudes from the ground at its centre
-      const hw = 0.055 + rnd(bi * 7 + 5) * 0.045;       // half width
-      const lean = (rnd(bi * 7 + 6) - 0.5) * hw * 1.2;   // the tip curls a little
-      const phase = rnd(bi * 7 + 7) * Math.PI * 2;
-      const vi = pos.length / 3;
-      const V = (px: number, py: number, pz: number, bend: number) => {
-        pos.push(px, py, pz);
-        nrm.push(-dirZ, 0, dirX); // blade-face normal (shading uses abs(dot))
-        uv.push(bend, phase);
-      };
-      // root corners sit exactly on the drawn ground plane (their own xz, not the blade centre's,
-      // so the base edge never floats or sinks on slopes)
-      V(bx - hw * dirX, this.groundY(bx - hw * dirX, bz - hw * dirZ), bz - hw * dirZ, 0);
-      V(bx + hw * dirX, this.groundY(bx + hw * dirX, bz + hw * dirZ), bz + hw * dirZ, 0);
-      V(bx - hw * 0.55 * dirX, y + h * 0.52, bz - hw * 0.55 * dirZ, 0.52);
-      V(bx + hw * 0.55 * dirX, y + h * 0.52, bz + hw * 0.55 * dirZ, 0.52);
-      V(bx + lean * dirX, y + h, bz + lean * dirZ, 1);
-      const cMid = isFlower ? mix(mid, petal, 0.4) : mid;
-      const cTip = isFlower ? petal : tip;
-      col.push(...base, ...base, ...cMid, ...cMid, ...cTip);
-      idx.push(vi, vi + 1, vi + 2, vi + 2, vi + 1, vi + 3, vi + 2, vi + 3, vi + 4);
-    }
-    return n;
   }
 
   /**

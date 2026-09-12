@@ -677,6 +677,7 @@ export class Game implements GameCtx {
       this.time, this.cam.x, this.cam.z,
       Math.hypot(this.viewW, this.viewH) / PX_PER_TILE / 2 + 2,
       this.player.pos.x, this.player.pos.z,
+      this.viewAngle,
     );
     this.renderer.setRenderTarget(this.rt);
     this.renderer.render(this.scene, this.camera);
