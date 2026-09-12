@@ -1005,6 +1005,31 @@ export class World {
     return [+m[0], +m[1], +m[2]];
   }
 
+  /** Ground types that get a soft blended natural surface (and edge feathering). */
+  private static isNatural(t: Tile): boolean {
+    return t === Tile.Grass || t === Tile.Flowers || t === Tile.Heather || t === Tile.Mud || t === Tile.ForestFloor || t === Tile.Gravel || t === Tile.DryGrass;
+  }
+
+  /** Water's-edge tile: a natural tile right by water, painted as the sand/mud/gravel strip. */
+  private isShore(x: number, z: number): boolean {
+    return World.isNatural(this.tile(x, z)) && this.riverDist[z * this.w + x] < 0.9;
+  }
+
+  /** Water's-edge blend weights: sand by the meadows, mud by the marsh, gravel on the highland. */
+  private shoreWeights(x: number, z: number, bw?: Record<Biome, number>) {
+    const w = bw ?? this.biomeWeights(x, z);
+    const sandW0 = w.meadow + w.lake + w.farm, mudW0 = w.marsh + w.moor * 0.3, gravW0 = w.highland + w.mesa;
+    const bsum = sandW0 + mudW0 + gravW0 || 1;
+    return { sandW: sandW0 / bsum, mudW: mudW0 / bsum, gravW: gravW0 / bsum };
+  }
+
+  /** The colour actually painted on a water's-edge tile; natBase must report this or the feather pass grouts shore tiles with grass. */
+  private shoreBase(x: number, z: number, bw?: Record<Biome, number>): string {
+    const { sandW, mudW, gravW } = this.shoreWeights(x, z, bw);
+    const s = [217, 196, 140], mu = [74, 58, 40], gr = [160, 154, 138];
+    return `rgb(${Math.round(sandW * s[0] + mudW * mu[0] + gravW * gr[0])},${Math.round(sandW * s[1] + mudW * mu[1] + gravW * gr[1])},${Math.round(sandW * s[2] + mudW * gr[2])})`;
+  }
+
   /** Mix the biome palettes at (x,z) into concrete colours; shading variants come off one base at fixed contrast. */
   private mixColors(x: number, z: number, bw?: Record<Biome, number>): MixedColors {
     const w = bw ?? this.biomeWeights(x, z);
@@ -1069,7 +1094,7 @@ export class World {
     const cv = document.createElement('canvas');
     cv.width = this.w * T; cv.height = this.h * T;
     const g = cv.getContext('2d')!;
-    const natural = (t: Tile) => t === Tile.Grass || t === Tile.Flowers || t === Tile.Heather || t === Tile.Mud || t === Tile.ForestFloor || t === Tile.Gravel || t === Tile.DryGrass;
+    const natural = (t: Tile) => World.isNatural(t);
     const land = (t: Tile) => t !== Tile.Water && t !== Tile.Bridge;
     // base colours of each natural ground type (used for edge feathering)
     const BASE: Record<number, string> = {
@@ -1077,6 +1102,13 @@ export class World {
     };
     const grassBaseCache = new Map<number, string>();
     const natBase = (t: Tile, x: number, z: number): string | null => {
+      if (this.isShore(x, z)) {
+        // the tile was painted as the water's-edge strip, so that — not its tile type — is its base colour
+        const k = x * 1000 + z;
+        let v = grassBaseCache.get(k);
+        if (!v) { v = this.shoreBase(x, z); grassBaseCache.set(k, v); }
+        return v;
+      }
       if (t === Tile.Grass || t === Tile.Flowers) {
         const k = x * 1000 + z;
         let v = grassBaseCache.get(k);
@@ -1089,18 +1121,23 @@ export class World {
       const ca = World.parseColor(a), cb = World.parseColor(b);
       return `rgb(${Math.round(ca[0] + (cb[0] - ca[0]) * k)},${Math.round(ca[1] + (cb[1] - ca[1]) * k)},${Math.round(ca[2] + (cb[2] - ca[2]) * k)})`;
     };
+    // feather only where the bases really differ: neighbouring tiles of the same surface (shore→shore,
+    // or grass→grass along a biome ramp) vary by a few units per tile, and feathering between them
+    // would draw grout lines across an otherwise continuous surface
+    const colDiff = (a: string, b: string) => {
+      const ca = World.parseColor(a), cb = World.parseColor(b);
+      return Math.max(Math.abs(ca[0] - cb[0]), Math.abs(ca[1] - cb[1]), Math.abs(ca[2] - cb[2]));
+    };
+    const FEATHER_MIN = 10;
     for (let tz = 0; tz < this.h; tz++) for (let tx = 0; tx < this.w; tx++) {
       const t = this.tile(tx, tz);
       const ox = tx * T, oz = tz * T;
       const N = this.tile(tx, tz - 1), S = this.tile(tx, tz + 1), E = this.tile(tx + 1, tz), W = this.tile(tx - 1, tz);
       const bw = this.biomeWeights(tx, tz);
-      if (natural(t) && this.riverDist[tz * this.w + tx] < 0.9) {
+      if (this.isShore(tx, tz)) {
         // water's edge strip: sand by the meadows, mud by the marsh, gravel on the highland — blended by biome weight
-        const sandW0 = bw.meadow + bw.lake + bw.farm, mudW0 = bw.marsh + bw.moor * 0.3, gravW0 = bw.highland + bw.mesa;
-        const bsum = sandW0 + mudW0 + gravW0 || 1;
-        const sandW = sandW0 / bsum, mudW = mudW0 / bsum, gravW = gravW0 / bsum;
-        const s = [217, 196, 140], mu = [74, 58, 40], gr = [160, 154, 138];
-        g.fillStyle = `rgb(${Math.round(sandW * s[0] + mudW * mu[0] + gravW * gr[0])},${Math.round(sandW * s[1] + mudW * mu[1] + gravW * gr[1])},${Math.round(sandW * s[2] + mudW * mu[2] + gravW * gr[2])})`;
+        const { sandW, mudW, gravW } = this.shoreWeights(tx, tz, bw);
+        g.fillStyle = this.shoreBase(tx, tz, bw);
         g.fillRect(ox, oz, T, T);
         const dotC = mudW > sandW && mudW > gravW ? ['#5c4a34', '#3a2e20'] : gravW >= sandW && gravW >= mudW ? ['#b8b2a2', '#847e70'] : ['#e8d6a2', '#bfa66c'];
         for (let i = 0; i < 6; i++) { g.fillStyle = i % 2 ? dotC[0] : dotC[1]; g.fillRect(ox + Math.floor(hash2(tx, tz, i) * (T - 2)), oz + Math.floor(hash2(tx, tz, i + 20) * T), 2, 1); }
@@ -1262,7 +1299,7 @@ export class World {
         const own = natBase(t, tx, tz);
         if (own) {
           const nN = natBase(N, tx, tz - 1), nS = natBase(S, tx, tz + 1), nE = natBase(E, tx + 1, tz), nW = natBase(W, tx - 1, tz);
-          if (nN && nN !== own) {
+          if (nN && colDiff(nN, own) > FEATHER_MIN) {
             const hN = blendCss(own, nN, 0.5);
             for (let i = 0; i < T; i++) {
               g.fillStyle = nN; g.fillRect(ox + i, oz, 1, 1);
@@ -1270,7 +1307,7 @@ export class World {
               if (hash2(tx * T + i, tz * 7 + 8) < 0.4) { g.fillStyle = nN; g.fillRect(ox + i, oz + 2, 1, 1); }
             }
           }
-          if (nS && nS !== own) {
+          if (nS && colDiff(nS, own) > FEATHER_MIN) {
             const hS = blendCss(own, nS, 0.5);
             for (let i = 0; i < T; i++) {
               g.fillStyle = nS; g.fillRect(ox + i, oz + T - 1, 1, 1);
@@ -1278,7 +1315,7 @@ export class World {
               if (hash2(tx * T + i, tz * 7 + 9) < 0.4) { g.fillStyle = nS; g.fillRect(ox + i, oz + T - 3, 1, 1); }
             }
           }
-          if (nW && nW !== own) {
+          if (nW && colDiff(nW, own) > FEATHER_MIN) {
             const hW = blendCss(own, nW, 0.5);
             for (let i = 0; i < T; i++) {
               g.fillStyle = nW; g.fillRect(ox, oz + i, 1, 1);
@@ -1286,7 +1323,7 @@ export class World {
               if (hash2(tz * T + i, tx * 7 + 8) < 0.4) { g.fillStyle = nW; g.fillRect(ox + 2, oz + i, 1, 1); }
             }
           }
-          if (nE && nE !== own) {
+          if (nE && colDiff(nE, own) > FEATHER_MIN) {
             const hE = blendCss(own, nE, 0.5);
             for (let i = 0; i < T; i++) {
               g.fillStyle = nE; g.fillRect(ox + T - 1, oz + i, 1, 1);
