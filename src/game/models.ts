@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { TreeSpec, HouseSpec, EnemyKind, PropSpec } from './world';
+import { RNG } from './constants';
 
 // ---------------------------------------------------------------- materials
 let gradientMap: THREE.DataTexture | null = null;
@@ -14,6 +15,22 @@ export function getGradientMap(): THREE.DataTexture {
   gradientMap.generateMipmaps = false;
   gradientMap.needsUpdate = true;
   return gradientMap;
+}
+
+let groundGradientMap: THREE.DataTexture | null = null;
+/** Fine toon ramp for the ground mesh: with only 5 bands the gentle meadow slopes snap between
+ *  light and dark shading in broad flat patches; 16 close-spaced steps read as a smooth ramp
+ *  while slopes still catch the sun. Characters and props keep the punchier 5-step map. */
+export function getGroundGradientMap(): THREE.DataTexture {
+  if (groundGradientMap) return groundGradientMap;
+  const n = 16, lo = 0.62;
+  const data = new Uint8Array(Array.from({ length: n }, (_, i) => Math.round((lo + (1 - lo) * (i / (n - 1))) * 255)));
+  groundGradientMap = new THREE.DataTexture(data, n, 1, THREE.RedFormat);
+  groundGradientMap.minFilter = THREE.NearestFilter;
+  groundGradientMap.magFilter = THREE.NearestFilter;
+  groundGradientMap.generateMipmaps = false;
+  groundGradientMap.needsUpdate = true;
+  return groundGradientMap;
 }
 
 export function toon(color: string | number | THREE.Color): THREE.MeshToonMaterial {
@@ -261,22 +278,45 @@ export function buildSoldier(kind: EnemyKind): Humanoid {
 }
 
 // ---------------------------------------------------------------- props
+export type TreeKind = 'oak' | 'pine' | 'autumn' | 'birch' | 'blossom';
+
+/** Trees are rendered as one instanced trio (trunk/canopy/shadow) per kind so the map can mix species. */
 export function buildTrees(trees: TreeSpec[]): THREE.Object3D[] {
-  const canopyMat = toon('#3f9a3d');
-  const trunkMat = toon('#6b4226');
+  const out: THREE.Object3D[] = [];
+  for (const kind of ['oak', 'pine', 'autumn', 'birch', 'blossom'] as TreeKind[]) {
+    const list = trees.filter((t) => (t.kind ?? 'oak') === kind);
+    if (list.length) out.push(...buildTreeVariant(list, kind));
+  }
+  return out;
+}
+
+function buildTreeVariant(trees: TreeSpec[], kind: TreeKind): THREE.Object3D[] {
   const mk = (r: number, sx: number, sy: number, sz: number, x: number, y: number, z: number) => {
     const g = new THREE.SphereGeometry(r, 12, 8);
     g.scale(sx, sy, sz);
     g.translate(x, y, z);
     return g;
   };
-  const canopyGeo = mergeGeometries([
-    mk(1.0, 1, 0.62, 0.8, 0, 0.9, 0),
-    mk(0.5, 1, 0.9, 0.9, -0.55, 1.25, -0.1),
-    mk(0.5, 1, 0.9, 0.9, 0.55, 1.25, -0.1),
-    mk(0.48, 1, 0.9, 0.9, 0, 1.45, 0.25),
-    mk(0.44, 1, 0.9, 0.9, 0.05, 1.3, -0.35),
-  ])!;
+  let canopyGeo: THREE.BufferGeometry;
+  if (kind === 'pine') {
+    // tall stacked cones: the conifers of the Amber Highland
+    const cone = (r: number, h: number, y: number) => {
+      const g = new THREE.ConeGeometry(r, h, 9);
+      g.translate(0, y + h / 2, 0);
+      return g;
+    };
+    canopyGeo = mergeGeometries([cone(1.0, 1.5, 0.75), cone(0.76, 1.35, 1.45), cone(0.52, 1.15, 2.1)])!;
+  } else {
+    canopyGeo = mergeGeometries([
+      mk(1.0, 1, 0.62, 0.8, 0, 0.9, 0),
+      mk(0.5, 1, 0.9, 0.9, -0.55, 1.25, -0.1),
+      mk(0.5, 1, 0.9, 0.9, 0.55, 1.25, -0.1),
+      mk(0.48, 1, 0.9, 0.9, 0, 1.45, 0.25),
+      mk(0.44, 1, 0.9, 0.9, 0.05, 1.3, -0.35),
+    ])!;
+  }
+  const canopyMat = toon(kind === 'pine' ? '#2e7a4a' : kind === 'autumn' ? '#d18a2e' : kind === 'birch' ? '#9ac04a' : kind === 'blossom' ? '#e89ac0' : '#3f9a3d');
+  const trunkMat = toon(kind === 'birch' ? '#e8e0d0' : '#6b4226');
   const trunkGeo = new THREE.CylinderGeometry(0.2, 0.28, 0.95, 8).translate(0, 0.47, 0);
   const shadowGeo = new THREE.CircleGeometry(0.9, 12).rotateX(-Math.PI / 2).scale(1, 1, 0.7).translate(0, 0.015, 0.1);
   const canopy = new THREE.InstancedMesh(canopyGeo, canopyMat, trees.length);
@@ -312,15 +352,154 @@ export function buildBush(): THREE.Group {
   return g;
 }
 
+/** Bush studded with red berries — a colour break in the green undergrowth. */
+export function buildBerryBush(): THREE.Group {
+  const g = new THREE.Group();
+  const m = toon('#3f8f3d'), mL = toon('#5cb04a'), mD = toon('#2a6e2a');
+  const berry = toon('#e04a3a'); berry.emissive.set('#a02010'); berry.emissiveIntensity = 0.4;
+  g.add(part(UNIT_SPHERE, m, [0, 0.33, 0], [0.76, 0.56, 0.62]));
+  g.add(part(UNIT_SPHERE, mL, [-0.16, 0.48, 0.02], [0.34, 0.28, 0.3]));
+  g.add(part(UNIT_SPHERE, mL, [0.14, 0.5, -0.06], [0.3, 0.26, 0.26]));
+  g.add(part(UNIT_SPHERE, m, [0.06, 0.42, 0.2], [0.34, 0.28, 0.3]));
+  g.add(part(UNIT_CYL, mD, [0, 0.03, 0], [0.82, 0.06, 0.68]));
+  for (const [x, y, z] of [[-0.2, 0.45, 0.2], [0.18, 0.55, 0.05], [0.0, 0.36, 0.3], [0.26, 0.38, -0.16], [-0.28, 0.34, -0.1]] as [number, number, number][])
+    g.add(part(UNIT_SPHERE, berry, [x, y, z], [0.09, 0.09, 0.08]));
+  return g;
+}
+
+// ---------------------------------------------------------------- undergrowth (vertex-coloured, instanced)
+/** Paint a flat vertex colour across a geometry so several parts can be merged into one material. */
+function withColor(geo: THREE.BufferGeometry, hex: string, k = 1): THREE.BufferGeometry {
+  const c = new THREE.Color(hex).multiplyScalar(k);
+  const n = geo.attributes.position.count;
+  const arr = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) { arr[i * 3] = c.r; arr[i * 3 + 1] = c.g; arr[i * 3 + 2] = c.b; }
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(arr, 3));
+  return geo;
+}
+
+export function vertexToon(): THREE.MeshToonMaterial {
+  return new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: getGradientMap() });
+}
+
+/** A single-mesh view of a vegetation geometry (model viewer). */
+export function vegObject(geo: THREE.BufferGeometry): THREE.Mesh {
+  return new THREE.Mesh(geo, vertexToon());
+}
+
+/** Bracken fern: a fan of drooping fronds on a short stem. */
+export function buildFernGeo(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  for (let i = 0; i < 7; i++) {
+    const a = (i / 7) * Math.PI * 2 + (i % 3) * 0.3;
+    const len = 0.55 + (i % 4) * 0.12;
+    const g = new THREE.ConeGeometry(0.1, len, 4);
+    g.translate(0, len / 2, 0);
+    g.rotateZ(0.85 + (i % 3) * 0.12);
+    g.rotateY(a);
+    parts.push(withColor(g, i % 2 ? '#2f7a3a' : '#3f8f46'));
+  }
+  parts.push(withColor(new THREE.ConeGeometry(0.09, 0.5, 4).translate(0, 0.25, 0).rotateZ(0.4).rotateY(1.2), '#58b04a'));
+  parts.push(withColor(new THREE.CylinderGeometry(0.03, 0.05, 0.18, 5).translate(0, 0.09, 0), '#6b4a2c'));
+  return mergeGeometries(parts)!;
+}
+
+/** Tall swaying grass tuft. */
+export function buildTallGrassGeo(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const cols = ['#6faf4e', '#7fbf5a', '#5a9a42'];
+  for (let i = 0; i < 9; i++) {
+    const a = (i / 9) * Math.PI * 2 + (i % 2) * 0.4;
+    const hgt = 0.5 + (i % 5) * 0.12;
+    const g = new THREE.BoxGeometry(0.035, hgt, 0.035);
+    g.translate(0, hgt / 2, 0);
+    g.rotateZ(((i % 3) - 1) * 0.22);
+    g.rotateY(a);
+    parts.push(withColor(g, cols[i % 3]));
+  }
+  return mergeGeometries(parts)!;
+}
+
+/** Thorny briar thicket. */
+export function buildBriarGeo(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const core = new THREE.IcosahedronGeometry(0.42, 0); core.scale(1, 0.8, 1); core.translate(0, 0.32, 0);
+  parts.push(withColor(core, '#2e4a2a'));
+  parts.push(withColor(new THREE.IcosahedronGeometry(0.3, 0).scale(1, 0.7, 1).translate(0.16, 0.5, 0.1), '#3a5a32'));
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2 + 0.4;
+    const t = new THREE.ConeGeometry(0.035, 0.22, 4);
+    t.translate(0, 0.11, 0); t.rotateZ(Math.PI / 2 + 0.5); t.rotateY(a); t.translate(0.3, 0.35, 0);
+    // icosahedrons are non-indexed: the cones must be too, or mergeGeometries() rejects the mix
+    parts.push(withColor(t.toNonIndexed()!, '#4a3018'));
+  }
+  return mergeGeometries(parts)!;
+}
+
+/** Lily pads with a single blossom (floats on water). */
+export function buildLilyGeo(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const pad = (r: number, x: number, z: number, c: string) => {
+    const g = new THREE.CylinderGeometry(r * 0.92, r, 0.035, 10);
+    g.translate(x, 0, z); parts.push(withColor(g, c));
+  };
+  pad(0.34, 0.08, 0.05, '#4a9a44');
+  pad(0.28, -0.2, -0.14, '#58a84e');
+  pad(0.2, 0.14, -0.26, '#4a9a44');
+  parts.push(withColor(new THREE.SphereGeometry(0.07, 8, 6).translate(0.08, 0.06, 0.05), '#f2f2f2'));
+  parts.push(withColor(new THREE.SphereGeometry(0.035, 6, 5).translate(0.08, 0.1, 0.05), '#f2c14e'));
+  return mergeGeometries(parts)!;
+}
+
+/** Big faceted boulder with a moss cap. */
+export function buildBoulderGeo(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const main = new THREE.IcosahedronGeometry(0.72, 0); main.scale(1.15, 0.78, 0.98); main.translate(0, 0.34, 0);
+  parts.push(withColor(main, '#a2a29a'));
+  parts.push(withColor(new THREE.IcosahedronGeometry(0.4, 0).scale(1, 0.8, 1).translate(0.62, 0.18, 0.3), '#84847c'));
+  parts.push(withColor(new THREE.IcosahedronGeometry(0.34, 0).scale(1.1, 0.5, 0.9).translate(-0.12, 0.62, 0.08), '#5f9a4a'));
+  parts.push(withColor(new THREE.IcosahedronGeometry(0.2, 0).translate(0.2, 0.08, -0.5), '#6f6f6a'));
+  return mergeGeometries(parts)!;
+}
+
+export interface VegSpot { x: number; y: number; z: number }
+
+/** One InstancedMesh for a scatter of vegetation (single draw call, per-instance yaw/scale/position jitter). */
+export function makeVegInstances(geo: THREE.BufferGeometry, spots: VegSpot[], seed: number): THREE.InstancedMesh {
+  const im = new THREE.InstancedMesh(geo, vertexToon(), spots.length);
+  const rng = new RNG(seed);
+  const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), p = new THREE.Vector3(), s = new THREE.Vector3();
+  const up = new THREE.Vector3(0, 1, 0);
+  spots.forEach((t, i) => {
+    p.set(t.x + (rng.next() - 0.5) * 0.4, t.y, t.z + (rng.next() - 0.5) * 0.4);
+    q.setFromAxisAngle(up, rng.next() * Math.PI * 2);
+    s.set(0.8 + rng.next() * 0.4, 0.8 + rng.next() * 0.45, 0.8 + rng.next() * 0.4);
+    m4.compose(p, q, s);
+    im.setMatrixAt(i, m4);
+  });
+  im.instanceMatrix.needsUpdate = true;
+  return im;
+}
+
 export function buildStump(): THREE.Mesh {
   return part(UNIT_CYL, toon('#2f7a2f'), [0, 0.03, 0], [0.5, 0.06, 0.42]);
 }
 
-export function buildRock(): THREE.Group {
+/** v: 0 plain, 1 mossy (forests), 2 crystal (mesa/highland) */
+export function buildRock(v = 0): THREE.Group {
   const g = new THREE.Group();
   g.add(part(UNIT_SPHERE, toon('#a9a9a2'), [0, 0.26, 0], [0.7, 0.52, 0.6]));
   g.add(part(UNIT_SPHERE, toon('#c6c6be'), [-0.12, 0.42, -0.05], [0.3, 0.2, 0.26]));
   g.add(part(UNIT_CYL, toon('#63635e'), [0, 0.03, 0], [0.76, 0.06, 0.64]));
+  if (v === 1) {
+    g.add(part(UNIT_BOX, toon('#5f9a4a'), [-0.08, 0.5, 0.02], [0.5, 0.14, 0.42]));
+    g.add(part(UNIT_BOX, toon('#4a7a3a'), [0.18, 0.3, 0.2], [0.3, 0.1, 0.2]));
+  } else if (v === 2) {
+    const cry = toon('#7a5ac8'), cryL = toon('#a88ae8');
+    g.add(part(UNIT_OCTA, cry, [0.16, 0.55, 0.1], [0.2, 0.3, 0.2]).rotateZ(-0.2));
+    g.add(part(UNIT_OCTA, cryL, [-0.14, 0.5, 0.18], [0.14, 0.2, 0.14]).rotateZ(0.35));
+    g.add(part(UNIT_OCTA, cry, [-0.02, 0.52, -0.2], [0.12, 0.16, 0.12]));
+  }
   return g;
 }
 
@@ -706,6 +885,165 @@ export function buildProp(p: PropSpec): THREE.Group {
       g.add(c);
       const glow = new THREE.Mesh(UNIT_CIRCLE, new THREE.MeshBasicMaterial({ color: 0xffb040, transparent: true, opacity: 0.25, depthWrite: false }));
       glow.scale.set(3, 1, 3); glow.position.y = 0.64; g.add(glow);
+      break;
+    }
+    case 'windmill': {
+      const red = toon('#b73c3c');
+      // tapered four-sided stone body
+      const body = new THREE.Mesh(new THREE.CylinderGeometry(0.95, 1.45, 2.4, 4).rotateY(Math.PI / 4), stone);
+      body.position.y = 1.2; g.add(body);
+      g.add(part(UNIT_CYL, stoneD, [0, 0.08, 0], [2.9, 0.16, 2.9]).rotateY(Math.PI / 4));
+      // arched door + amber windows
+      g.add(part(UNIT_BOX, woodD, [0, 0.5, 1.22], [0.55, 1.0, 0.1]));
+      g.add(part(UNIT_CYL, woodD, [0, 1.0, 1.22], [0.55, 0.06, 0.55]).rotateX(Math.PI / 2));
+      for (const sx of [-0.55, 0.55]) g.add(part(UNIT_BOX, toon('#f6b83c'), [sx, 1.7, 0.8], [0.26, 0.32, 0.05]));
+      // conical cap
+      g.add(part(UNIT_PYRAMID, red, [0, 2.9, 0], [2.0, 1.0, 2.0]));
+      // hub + four rotating sails (spun about Z by the game)
+      const hub = new THREE.Group(); hub.position.set(0, 2.45, 0.95); g.add(hub);
+      hub.add(part(UNIT_SPHERE, woodD, [0, 0, 0.02], [0.3, 0.3, 0.3]));
+      const sails = new THREE.Group(); sails.name = 'mill'; hub.add(sails);
+      for (let i = 0; i < 4; i++) {
+        const arm = new THREE.Group(); arm.rotation.z = i * Math.PI / 2 + Math.PI / 4;
+        arm.add(part(UNIT_BOX, woodL, [0.8, 0, 0], [1.6, 0.1, 0.08]));
+        arm.add(part(UNIT_BOX, toon('#f6f1e6'), [1.0, 0.45, 0], [0.42, 0.9, 0.03]));
+        sails.add(arm);
+      }
+      g.add(blobShadow(1.5));
+      break;
+    }
+    case 'anvil': {
+      g.add(part(UNIT_BOX, woodD, [0, 0.2, 0], [0.6, 0.4, 0.42]));
+      g.add(part(UNIT_BOX, iron, [0, 0.48, 0], [0.48, 0.14, 0.2]));
+      g.add(part(UNIT_BOX, iron, [-0.3, 0.47, 0], [0.26, 0.12, 0.12])); // horn
+      g.add(part(UNIT_BOX, iron, [0, 0.57, 0], [0.54, 0.06, 0.24])); // face
+      g.add(part(UNIT_BOX, toon('#6b7382'), [0.18, 0.5, 0.05], [0.1, 0.04, 0.06])); // glint
+      break;
+    }
+    case 'forge': {
+      g.add(part(UNIT_BOX, stone, [0, 0.35, 0], [1.1, 0.7, 0.9]));
+      g.add(part(UNIT_BOX, stoneD, [0, 0.08, 0], [1.24, 0.16, 1.04]));
+      g.add(part(UNIT_BOX, stoneD, [0, 0.72, 0], [1.16, 0.08, 0.96]));
+      // glowing fire mouth
+      g.add(part(UNIT_BOX, toon('#1a1a22'), [0, 0.3, 0.46], [0.62, 0.52, 0.06]));
+      const coals = toon('#ff7a1e'); coals.emissive.set('#ff5500'); coals.emissiveIntensity = 0.9;
+      g.add(part(UNIT_BOX, coals, [0, 0.26, 0.49], [0.44, 0.32, 0.03]));
+      // chimney pipe
+      g.add(part(UNIT_CYL, iron, [0.32, 1.1, -0.25], [0.16, 1.0, 0.16]));
+      g.add(part(UNIT_CYL, iron, [0.32, 1.55, -0.25], [0.26, 0.06, 0.26]));
+      // hammer + tongs resting on the side
+      g.add(part(UNIT_BOX, wood, [-0.72, 0.3, 0.3], [0.5, 0.05, 0.05]).rotateZ(0.9));
+      g.add(part(UNIT_BOX, iron, [-0.52, 0.48, 0.3], [0.2, 0.14, 0.12]));
+      break;
+    }
+    case 'cauldron': {
+      const pot = toon('#2a2a32'), potD = toon('#1c1c24');
+      for (const a of [0.5, 2.6, 4.7]) g.add(part(UNIT_BOX, potD, [Math.cos(a) * 0.28, 0.05, Math.sin(a) * 0.28], [0.1, 0.12, 0.1]));
+      g.add(part(UNIT_CYL, pot, [0, 0.34, 0], [0.56, 0.44, 0.56]));
+      g.add(part(UNIT_CYL, potD, [0, 0.56, 0], [0.62, 0.07, 0.62])); // rim
+      const potion = toon('#5aff6a'); potion.emissive.set('#20d040'); potion.emissiveIntensity = 0.8;
+      g.add(part(UNIT_CYL, potion, [0, 0.57, 0], [0.52, 0.03, 0.52])); // glowing brew
+      g.add(part(UNIT_SPHERE, pot, [0.3, 0.52, 0.2], [0.08, 0.08, 0.08])); // bubble
+      break;
+    }
+    case 'grave': {
+      const moss = toon('#5f9a4a');
+      g.add(part(UNIT_BOX, stoneD, [0, 0.05, 0], [0.72, 0.1, 0.5]));
+      g.add(part(UNIT_BOX, stone, [0, 0.42, 0], [0.5, 0.72, 0.12]).rotateZ(0.04));
+      g.add(part(UNIT_CYL, stone, [0, 0.78, 0], [0.5, 0.06, 0.12]).rotateZ(Math.PI / 2).rotateZ(0.04));
+      g.add(part(UNIT_BOX, stoneD, [0, 0.45, 0.07], [0.08, 0.3, 0.02])); // carved cross
+      g.add(part(UNIT_BOX, stoneD, [0, 0.55, 0.07], [0.24, 0.07, 0.02]));
+      g.add(part(UNIT_BOX, moss, [-0.14, 0.12, 0.05], [0.32, 0.12, 0.07]));
+      g.add(part(UNIT_BOX, moss, [0.12, 0.7, -0.02], [0.16, 0.1, 0.05]));
+      break;
+    }
+    case 'deadtree': {
+      const bark = toon('#4a3524'), barkD = toon('#3a2a1c');
+      g.add(part(UNIT_CYL, bark, [0, 0.9, 0], [0.22, 1.8, 0.22]).rotateZ(0.06));
+      g.add(part(UNIT_BOX, barkD, [0.5, 1.7, 0], [1.0, 0.1, 0.1]).rotateZ(0.5));
+      g.add(part(UNIT_BOX, barkD, [-0.45, 1.9, 0.1], [0.9, 0.08, 0.08]).rotateZ(-0.45).rotateY(0.5));
+      g.add(part(UNIT_BOX, barkD, [0.15, 1.4, -0.15], [0.7, 0.08, 0.08]).rotateZ(0.9).rotateY(-0.8));
+      g.add(part(UNIT_BOX, barkD, [0.02, 2.1, 0.05], [0.06, 0.5, 0.06]).rotateZ(-0.12));
+      g.add(blobShadow(0.5));
+      break;
+    }
+    case 'reeds': {
+      const leaf = toon('#4a8f3a'), leafL = toon('#69b04a'), spike = toon('#7a4a24');
+      g.add(part(UNIT_CYL, toon('#8a7a4a'), [0, 0.03, 0], [0.5, 0.05, 0.5])); // wet earth
+      for (let i = 0; i < 8; i++) {
+        const a = i * 2.39996, r = 0.06 + (i % 3) * 0.11;
+        const x = Math.cos(a) * r, z = Math.sin(a) * r;
+        const hgt = 0.75 + (i % 4) * 0.17;
+        g.add(part(UNIT_BOX, i % 2 ? leaf : leafL, [x, hgt / 2, z], [0.045, hgt, 0.045]).rotateZ((i % 2 ? -1 : 1) * 0.09));
+        if (i % 2 === 0) g.add(part(UNIT_CYL, spike, [x, hgt + 0.07, z], [0.09, 0.22, 0.09])); // cattail head
+      }
+      break;
+    }
+    case 'rosebush': {
+      g.add(part(UNIT_SPHERE, toon('#3f9a3d'), [0, 0.3, 0], [0.6, 0.5, 0.5]));
+      g.add(part(UNIT_SPHERE, toon('#2a6e2a'), [0, 0.12, 0], [0.62, 0.24, 0.52]));
+      for (const [x, y, z, c] of [[-0.18, 0.4, 0.22, '#e83a3a'], [0.2, 0.5, 0.12, '#f05a6a'], [0.05, 0.24, 0.28, '#e83a3a'], [-0.05, 0.6, -0.05, '#f05a6a']] as [number, number, number, string][])
+        g.add(part(UNIT_SPHERE, toon(c), [x, y, z], [0.13, 0.13, 0.1]));
+      break;
+    }
+    case 'beehive': {
+      g.add(part(UNIT_CYL, wood, [0, 0.8, 0], [0.1, 1.5, 0.1]));
+      g.add(part(UNIT_BOX, woodL, [0, 1.65, 0], [0.55, 0.5, 0.55]));
+      g.add(part(UNIT_BOX, wood, [0, 1.92, 0], [0.6, 0.06, 0.6]));
+      g.add(part(UNIT_BOX, woodD, [0, 1.5, 0.28], [0.2, 0.06, 0.02])); // entrance slit
+      g.add(part(UNIT_BOX, woodL, [0.14, 1.44, 0.34], [0.28, 0.04, 0.14]).rotateZ(-0.4)); // landing board
+      g.add(blobShadow(0.3));
+      break;
+    }
+    case 'wheelbarrow': {
+      g.add(part(UNIT_BOX, woodL, [0, 0.42, 0], [0.5, 0.24, 0.7]));
+      g.add(part(UNIT_BOX, toon('#5a3a1e'), [0, 0.56, 0.05], [0.44, 0.1, 0.5])); // load of dirt
+      g.add(part(UNIT_BOX, wood, [-0.26, 0.3, 0.05], [0.05, 0.05, 0.6]));
+      g.add(part(UNIT_BOX, wood, [0.26, 0.3, 0.05], [0.05, 0.05, 0.6]));
+      for (const x of [-0.16, 0.16]) g.add(part(UNIT_CYL, woodD, [x, 0.22, -0.42], [0.05, 0.5, 0.05]));
+      g.add(part(UNIT_CYL, iron, [0, 0.2, 0.4], [0.4, 0.06, 0.4]).rotateX(Math.PI / 2));
+      break;
+    }
+    case 'statue': {
+      const marble = toon('#cfd2da'), marbleD = toon('#9aa0ac'), moss = toon('#5f9a4a');
+      g.add(part(UNIT_BOX, marbleD, [0, 0.1, 0], [1.6, 0.2, 1.2]));
+      g.add(part(UNIT_BOX, marble, [0, 0.22, 0.2], [1.5, 0.14, 1.1]));
+      // seated knight
+      g.add(part(UNIT_BOX, marble, [0, 0.72, -0.05], [0.5, 0.8, 0.42]));
+      g.add(part(UNIT_SPHERE, marble, [0, 1.25, -0.05], [0.4, 0.44, 0.4]));
+      g.add(part(UNIT_BOX, marbleD, [0, 1.18, 0.12], [0.3, 0.1, 0.2])); // visor slit
+      for (const sx of [-0.24, 0.24]) g.add(part(UNIT_BOX, marble, [sx, 0.5, 0.32], [0.18, 0.5, 0.22]));
+      g.add(part(UNIT_BOX, marbleD, [-0.5, 0.28, 0.05], [0.6, 0.16, 0.3])); // fallen arm
+      g.add(part(UNIT_BOX, marbleD, [0.6, 0.32, 0.32], [0.5, 0.1, 0.14]).rotateZ(0.15)); // broken sword
+      g.add(part(UNIT_BOX, moss, [-0.3, 0.62, 0.2], [0.18, 0.3, 0.06]));
+      g.add(part(UNIT_BOX, moss, [0.25, 1.42, -0.1], [0.14, 0.1, 0.05]));
+      g.add(blobShadow(0.9));
+      break;
+    }
+    case 'mushroom': {
+      const stem = toon('#e8e0c8'), cap = toon('#d04838'), spot = toon('#f6f1e6');
+      const shroom = (x: number, z: number, s: number) => {
+        g.add(part(UNIT_CYL, stem, [x, 0.14 * s, z], [0.14 * s, 0.28 * s, 0.14 * s]));
+        g.add(part(UNIT_SPHERE, cap, [x, 0.3 * s, z], [0.34 * s, 0.22 * s, 0.34 * s]));
+        g.add(part(UNIT_SPHERE, spot, [x + 0.08 * s, 0.34 * s, z + 0.05 * s], [0.08 * s, 0.06 * s, 0.08 * s]));
+        g.add(part(UNIT_SPHERE, spot, [x - 0.1 * s, 0.32 * s, z - 0.04 * s], [0.07 * s, 0.05 * s, 0.07 * s]));
+      };
+      shroom(0, 0, 1); shroom(0.3, 0.18, 0.7); shroom(-0.24, 0.24, 0.55);
+      g.add(part(UNIT_CYL, toon('#3f9a3d'), [0, 0.02, 0], [0.8, 0.04, 0.8]));
+      break;
+    }
+    case 'amberrock': {
+      // amber chunks glowing out of a grey boulder (Amber Highland)
+      const amber = toon('#ffb52e'); amber.emissive.set('#ff8a00'); amber.emissiveIntensity = 0.75;
+      const b = new THREE.Mesh(new THREE.IcosahedronGeometry(0.55, 0), stone);
+      b.scale.set(1.5, 1, 1.3); b.position.y = 0.28; g.add(b);
+      g.add(part(UNIT_SPHERE, stoneD, [0.4, 0.12, 0.35], [0.4, 0.26, 0.36]));
+      g.add(part(UNIT_OCTA, amber, [0.15, 0.5, 0.28], [0.22, 0.3, 0.22]).rotateZ(-0.25));
+      g.add(part(UNIT_OCTA, amber, [-0.3, 0.44, 0.2], [0.16, 0.22, 0.16]).rotateZ(0.4));
+      g.add(part(UNIT_OCTA, toon('#ffd23f'), [0.05, 0.36, 0.42], [0.12, 0.18, 0.12]));
+      const glow = new THREE.Mesh(UNIT_CIRCLE, new THREE.MeshBasicMaterial({ color: 0xffb040, transparent: true, opacity: 0.18, depthWrite: false }));
+      glow.scale.set(2.4, 1, 2.2); glow.position.y = 0.05; g.add(glow);
+      g.add(blobShadow(1.0));
       break;
     }
   }

@@ -16,14 +16,15 @@
  *  - All animation lives in the vertex shader: travelling gusts (a noise field scrolled in world
  *    space), per-blade idle sway, gust shimmer, and radial parting around the player.
  *
- * Per-instance data (two vec4 attributes):
+ * Per-instance data:
  *   aData0 = (root.x, root.y, root.z, height)
  *   aData1 = (width, phase, tintCode, lean)
+ *   aData2 = dryness (0 = lush green, 1 = bleached amber; follows the world's biome blend)
  * `tintCode` doubles as a flower flag: values > 1.4 mark a flower blade, 1.5+ = petal index.
  */
 import * as THREE from 'three';
 import { clamp, hash2, MAP_W, MAP_H, Tile } from './constants';
-import type { World } from './world';
+import type { World, Biome } from './world';
 
 export const GRASS_CHUNK = 16;  // tiles per chunk side
 const BUILD_PER_FRAME = 2;      // chunk budget per frame (avoids hitches while travelling)
@@ -56,10 +57,10 @@ uniform float uPlayerR;
 uniform float uPush;
 uniform float uAmbient;
 uniform float uSun;
-uniform float uDry;
 uniform vec2 uRight;   // camera-right direction in world XZ: blades always face the screen
 attribute vec4 aData0; // xyz = root on the ground plane, w = blade height
 attribute vec4 aData1; // x = width, y = phase, z = tint code, w = lean
+attribute float aData2; // dryness: 0 lush, 1 bleached (tracks the world's biome blend per blade)
 varying vec3 vCol;
 varying float vShade;
 varying float vGust;
@@ -81,6 +82,7 @@ void main() {
   float phase = aData1.y;
   float tint = aData1.z;
   float lean = aData1.w;
+  float dry = aData2;
 
   // erect the blade: base edge along the screen-right axis, tip straight up
   vec3 p = root;
@@ -110,8 +112,8 @@ void main() {
     vCol = bend > 0.6 ? petal : mix(C_BASE, C_TIP, 0.5);
   } else {
     vec3 tip = mix(C_TIP, C_TIPL, tint);
-    tip = mix(tip, C_DRY, uDry);
-    vec3 base = mix(C_BASE, C_DRY, uDry * 0.65);
+    tip = mix(tip, C_DRY, dry);
+    vec3 base = mix(C_BASE, C_DRY, dry * 0.65);
     vCol = mix(base, tip, bend);
   }
 
@@ -149,20 +151,23 @@ function clumpNoise(tx: number, tz: number): number {
   return 0.7 * valueNoise(tx, tz, 5, 7) + 0.3 * valueNoise(tx, tz, 2, 17);
 }
 
-/** Lushness per region (mirrors the world's flower placement: meadows bloom, the moor barely grows). */
-function regionDensity(tx: number, tz: number): number {
-  if (tx > 150 && tz < 40) return 0.25;                // Amber Highland: sparse
-  if (tx > 140 && tz > 60 && tz < 120) return 0.4;     // Grey Moor
-  if (tx >= 1 && tx <= 32 && tz >= 1 && tz <= 29) return 0.8; // Thistledown: kept lawns
-  if (tx < 60 && tz < 50) return 1.0;                  // the home meadow
-  return 0.78;
-}
-/** 0 = lush green, 1 = dry amber (blades bleach on the highland and the moor). */
-function regionDryness(tx: number, tz: number): number {
-  if (tx > 150 && tz < 40) return 0.55;
-  if (tx > 140 && tz > 60 && tz < 120) return 0.35;
-  if (tx > 140 && tz >= 120) return 0.2; // the Drowned Field
-  return 0;
+/**
+ * Lushness + dryness per biome, blended with the world's own soft biome weights so the carpet
+ * transitions across borders exactly like the ground colours do (no hard lines at region edges).
+ * Meadows grow a full BotW carpet; the rocky mesa and the amber highland only sparse steppe.
+ */
+const BIOME_DENSITY: Record<Biome, number> = { meadow: 1.0, lake: 0.95, farm: 0.85, marsh: 0.55, moor: 0.45, mesa: 0.35, highland: 0.25 };
+const BIOME_DRY: Record<Biome, number> = { meadow: 0, lake: 0, farm: 0.05, marsh: 0.2, moor: 0.25, mesa: 0.4, highland: 0.7 };
+function biomeMix(w: World, tx: number, tz: number): { density: number; dry: number } {
+  const bw = w.biomeWeights(tx, tz);
+  let density = 0, dry = 0;
+  for (const b of Object.keys(BIOME_DENSITY) as Biome[]) {
+    const wt = bw[b];
+    if (!wt) continue;
+    density += wt * BIOME_DENSITY[b];
+    dry += wt * BIOME_DRY[b];
+  }
+  return { density, dry };
 }
 
 // ------------------------------------------------------------------ system
@@ -194,7 +199,6 @@ export class GrassSystem {
         uPush: { value: 0.42 },
         uAmbient: { value: 0.6 },
         uSun: { value: 0.42 },
-        uDry: { value: 0 },
         uRight: { value: new THREE.Vector2(1, 0) },
       },
       vertexShader: VERT,
@@ -273,7 +277,7 @@ export class GrassSystem {
     const a0 = geo.getAttribute('aData0') as THREE.InstancedBufferAttribute | undefined;
     if (a0) for (let i = 0; i < a0.count; i++) { a0.setXYZ(i, a0.getX(i) - cx, a0.getY(i) - cy, a0.getZ(i) - cz); }
     geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0.5, 0), Math.hypot(wTiles, hTiles) / 2 + 2);
-    return this.makeMesh(geo, regionDryness(Math.floor(cx), Math.floor(cz)));
+    return this.makeMesh(geo);
   }
 
   // ------------------------------------------------------------------ internals
@@ -283,15 +287,13 @@ export class GrassSystem {
     const geo = this.buildGeometry(tx0, tz0, GRASS_CHUNK, GRASS_CHUNK);
     if (!geo) { this.chunks.set(key, null); return; }
     geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(tx0 + GRASS_CHUNK / 2, 0.5, tz0 + GRASS_CHUNK / 2), GRASS_CHUNK * 0.71 + 2);
-    this.chunks.set(key, this.addMesh(this.makeMesh(geo, regionDryness(tx0 + 8, tz0 + 8))));
+    this.chunks.set(key, this.addMesh(this.makeMesh(geo)));
   }
 
-  /** One shared material; each chunk patches its region dryness in just before it draws. */
-  private makeMesh(geo: THREE.BufferGeometry, dry: number): THREE.Mesh {
+  /** All chunks share one material; dryness is a per-instance attribute. */
+  private makeMesh(geo: THREE.BufferGeometry): THREE.Mesh {
     const mesh = new THREE.Mesh(geo, this.material);
     mesh.matrixAutoUpdate = false; // static, already in world space
-    mesh.userData.dry = dry;
-    mesh.onBeforeRender = () => { this.material.uniforms.uDry.value = mesh.userData.dry; };
     return mesh;
   }
 
@@ -303,15 +305,18 @@ export class GrassSystem {
   /** Scatter every blade inside a tile rectangle into one instanced geometry (null if nothing grows). */
   private buildGeometry(tx0: number, tz0: number, wTiles: number, hTiles: number): THREE.InstancedBufferGeometry | null {
     const w = this.world;
-    const d0: number[] = [], d1: number[] = [];
+    const d0: number[] = [], d1: number[] = [], d2: number[] = [];
     outer:
     for (let tz = tz0; tz < tz0 + hTiles; tz++) for (let tx = tx0; tx < tx0 + wTiles; tx++) {
       if (!w.canGrowGrass(tx, tz)) continue;
+      const t = w.tile(tx, tz);
+      const { density, dry } = biomeMix(w, tx, tz);
+      // heather clumps and the dry steppe keep their own character: sparser blades between them
+      const tileMul = t === Tile.Heather ? 0.45 : t === Tile.DryGrass ? 0.7 : 1;
       const clump = clumpNoise(tx, tz);
-      const count = Math.min(44, Math.round(BLADES_PER_TILE * regionDensity(tx, tz) * (0.6 + 0.85 * clump)));
+      const count = Math.min(44, Math.round(BLADES_PER_TILE * density * tileMul * (0.6 + 0.85 * clump)));
       if (!count) continue;
-      const flowerTile = w.tile(tx, tz) === Tile.Flowers;
-      const dry = regionDryness(tx, tz);
+      const flowerTile = t === Tile.Flowers;
       const seed = tx * 731 + tz * 197;
       for (let i = 0; i < count; i++) {
         // every random value for this blade derives from two hashes (chunk builds are hot)
@@ -323,6 +328,7 @@ export class GrassSystem {
         const W = 0.09 + rnd(6) * 0.075;
         d0.push(x, this.groundY(x, z), z, H);
         d1.push(W, rnd(7) * Math.PI * 2, isFlower ? 1.5 + Math.floor(rnd(10) * 4) : rnd(10), (rnd(8) - 0.5) * 0.4);
+        d2.push(dry);
         if (d0.length / 4 >= MAX_BLADES_PER_CHUNK) break outer;
       }
     }
@@ -332,6 +338,7 @@ export class GrassSystem {
     g.setAttribute('position', new THREE.Float32BufferAttribute([-0.5, 0, 0, 0.5, 0, 0, 0, 1, 0], 3));
     g.setAttribute('aData0', new THREE.InstancedBufferAttribute(new Float32Array(d0), 4));
     g.setAttribute('aData1', new THREE.InstancedBufferAttribute(new Float32Array(d1), 4));
+    g.setAttribute('aData2', new THREE.InstancedBufferAttribute(new Float32Array(d2), 1));
     g.instanceCount = d0.length / 4;
     return g;
   }

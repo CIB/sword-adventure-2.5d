@@ -44,6 +44,11 @@ export enum Tile {
   Flowers = 5,
   Cobble = 6,
   Bed = 7, // flower bed / crops (village)
+  Heather = 8, // heather moor (Grey Moor)
+  Mud = 9, // marsh mud (Drowned Field, wet spots)
+  ForestFloor = 10, // mossy earth & fallen leaves under the woods
+  Gravel = 11, // rocky gravel (highland, mesa top)
+  DryGrass = 12, // dry ochre steppe grass (highland)
 }
 
 /** 8-way facing: 0 south, then clockwise (seen from above) in 45° steps: 1 SE, 2 east, 3 NE, 4 north, 5 NW, 6 west, 7 SW */

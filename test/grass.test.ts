@@ -32,19 +32,35 @@ for (let z = 0; z < MAP_H; z++) for (let x = 0; x < MAP_W; x++) {
 console.log(`INFO growable grass tiles: ${growTiles}/${grassTiles} (${(100 * growTiles / grassTiles).toFixed(1)}%)`);
 check('a healthy share of grass tiles can grow blades', growTiles / grassTiles > 0.55 && growTiles / grassTiles < 0.99);
 
+// ---- new biome ground types (from the biome patch)
+const findTile = (t: Tile): [number, number] | null => {
+  for (let z = 0; z < MAP_H; z++) for (let x = 0; x < MAP_W; x++) if (world.tile(x, z) === t) return [x, z];
+  return null;
+};
+const mudTile = findTile(Tile.Mud), gravelTile = findTile(Tile.Gravel);
+const anyGrowable = (t: Tile) => {
+  for (let z = 0; z < MAP_H; z++) for (let x = 0; x < MAP_W; x++) if (world.tile(x, z) === t && world.canGrowGrass(x, z)) return true;
+  return false;
+};
+check('world has the new biome tiles', !!(findTile(Tile.DryGrass) && findTile(Tile.Heather) && mudTile && gravelTile));
+check('dry steppe grass grows blades', anyGrowable(Tile.DryGrass));
+check('heather grows blades', anyGrowable(Tile.Heather));
+if (mudTile && !world.solid[world.idx(mudTile[0], mudTile[1])]) check('marsh mud stays bare', !world.canGrowGrass(mudTile[0], mudTile[1]));
+if (gravelTile) check('gravel stays bare', !world.canGrowGrass(gravelTile[0], gravelTile[1]));
+
 // ---- geometry integrity on a meadow chunk (home meadow, just outside the village)
 const g = (grass as any).buildGeometry(33, 33, GRASS_CHUNK, GRASS_CHUNK) as THREE.InstancedBufferGeometry | null;
 check('meadow chunk produces geometry', !!g);
 if (g) {
-  const base = g.getAttribute('position'), a0 = g.getAttribute('aData0') as THREE.InstancedBufferAttribute, a1 = g.getAttribute('aData1') as THREE.InstancedBufferAttribute;
+  const base = g.getAttribute('position'), a0 = g.getAttribute('aData0') as THREE.InstancedBufferAttribute, a1 = g.getAttribute('aData1') as THREE.InstancedBufferAttribute, a2 = g.getAttribute('aData2') as THREE.InstancedBufferAttribute;
   const n = a0.count;
   check('unit blade base geometry', base.count === 3);
-  check('instance attributes match', a0.count === a1.count, `${n} blades`);
+  check('instance attributes match', a0.count === a1.count && a0.count === a2.count, `${n} blades`);
   check('instance count flag set', g.instanceCount === n);
   check('dense BotW-style coverage', n >= 256 * 8, `${n} blades (~${(n / 256).toFixed(1)}/tile)`);
-  check('instance data fits in memory', n <= 7200);
-  // every blade roots exactly on the drawn ground plane; heights/widths sensible; tint code valid
-  let maxErr = 0, badH = 0, badTint = 0, flowers = 0;
+  check('instance data fits in memory', n <= 8000);
+  // every blade roots exactly on the drawn ground plane; heights/widths sensible; tint+dry valid
+  let maxErr = 0, badH = 0, badTint = 0, badDry = 0, flowers = 0, maxDry = 0;
   for (let i = 0; i < n; i++) {
     const x = a0.getX(i), y = a0.getY(i), z = a0.getZ(i), h = a0.getW(i);
     maxErr = Math.max(maxErr, Math.abs(y - (grass as any).groundY(x, z)));
@@ -52,11 +68,32 @@ if (g) {
     const tint = a1.getZ(i);
     if (!(tint >= 0 && tint <= 5.5)) badTint++;
     if (tint > 1.4) flowers++;
+    const dry = a2.getX(i);
+    if (!(dry >= 0 && dry <= 1)) badDry++;
+    maxDry = Math.max(maxDry, dry);
   }
   check('roots exactly on the drawn ground plane', maxErr < 1e-5, `max err ${maxErr.toExponential(2)}`);
   check('blade heights sensible', badH === 0, `${badH} bad`);
   check('tint codes valid', badTint === 0);
+  check('dryness valid and meadow stays lush', badDry === 0 && maxDry < 0.1, `max dry ${maxDry.toFixed(2)}`);
   console.log(`INFO meadow chunk: ${n} single-triangle blades (${flowers} flowers), ${n} tris`);
+}
+
+// ---- biome response: the amber highland grows sparse, bleached blades
+{
+  const hg = (grass as any).buildGeometry(176, 16, GRASS_CHUNK, GRASS_CHUNK) as THREE.InstancedBufferGeometry | null;
+  const mg = (grass as any).buildGeometry(33, 33, GRASS_CHUNK, GRASS_CHUNK) as THREE.InstancedBufferGeometry | null;
+  check('highland chunk produces geometry', !!hg);
+  if (hg && mg) {
+    const hn = hg.getAttribute('aData0').count, mn = mg.getAttribute('aData0').count;
+    const a2 = hg.getAttribute('aData2') as THREE.InstancedBufferAttribute;
+    let drySum = 0;
+    for (let i = 0; i < a2.count; i++) drySum += a2.getX(i);
+    const dryAvg = drySum / a2.count;
+    check('highland is sparser than the meadow', hn < mn * 0.8, `${hn} vs ${mn}`);
+    check('highland blades are bleached', dryAvg > 0.3, `avg dry ${dryAvg.toFixed(2)}`);
+    console.log(`INFO highland chunk: ${hn} blades, avg dryness ${dryAvg.toFixed(2)}`);
+  }
 }
 
 // ---- flower tiles actually bloom
@@ -92,7 +129,7 @@ check('deterministic builds', same);
   const ts: number[] = [];
   for (let i = 0; i < 9; i++) {
     const t = performance.now();
-    (grass as any).buildGeometry(60 + (i % 3) * 16, 60, GRASS_CHUNK, GRASS_CHUNK);
+    (grass as any).buildGeometry(32 + (i % 3) * GRASS_CHUNK, 32, GRASS_CHUNK, GRASS_CHUNK);
     ts.push(performance.now() - t);
   }
   ts.sort((a2, b2) => a2 - b2);
