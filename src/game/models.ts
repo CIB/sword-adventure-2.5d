@@ -282,9 +282,9 @@ export type TreeKind = 'oak' | 'pine' | 'autumn' | 'birch' | 'blossom';
 
 // ------------------------------------------------------------------ BotW-inspired particle foliage
 // The old solid-sphere trees and bush blobs have been replaced by a particle system:
-//  - each broadleaf tree is a cloud of small circular leaf puffs (3 crossing quads per puff)
-//  - pines are layered needle cards arranged in rings
 //  - bushes are merged puff clusters with wind, plus tiny berry puffs for berry bushes
+//  - tree canopies use the exact same puff-cluster recipe as bushes, only stretched
+//    a bit wider in proportion (all kinds, pines included – only the colour differs)
 //  - all foliage shares the same wind noise texture as the grass (travelling gusts)
 //  - trunks stay as instanced cylinders for performance, shadows as before
 // See src/game/foliage.ts for the full implementation.

@@ -7,8 +7,11 @@
  *  - Wind effect shared with grass (same noise texture, same direction)
  *  - Performant: trees are instanced globally (one draw call per foliage type),
  *    bushes are merged per-bush but still a single mesh per bush with wind in shader.
- *  - BotW look: soft, slightly toon-shaded, circular leaf puffs, layered pine needles,
+ *  - BotW look: soft, slightly toon-shaded, circular leaf puffs,
  *    colour variation per puff, quantized shading.
+ *  - Tree canopies are built from the *exact same* puff-cluster recipe as bushes
+ *    (same placement, puffs, colour jitter and per-puff wind), only stretched a
+ *    bit wider in proportion — so a tree reads as a big bush on a trunk.
  */
 
 import * as THREE from 'three';
@@ -128,71 +131,7 @@ function createPuffBase(): THREE.BufferGeometry {
   return g;
 }
 
-function createNeedleBase(): THREE.BufferGeometry {
-  // European spruce: dense small needle clusters – 2 crossing quads per puff,
-  // each quad slightly tapered, not a single large palm-like frond
-  const pos: number[] = [], norm: number[] = [], uv: number[] = [], idx: number[] = [];
-  let v = 0;
-  const addQuad = (rotY: number) => {
-    const c = Math.cos(rotY), s = Math.sin(rotY);
-    const corners: [number, number, number, number, number][] = [
-      [-0.5, -0.45, 0, 0, 0],
-      [0.5, -0.45, 0, 1, 0],
-      [0.5, 0.55, 0, 1, 1],
-      [-0.5, 0.55, 0, 0, 1],
-    ];
-    for (const [x, y, z, u, v_] of corners) {
-      const rx = x * c - z * s, rz = x * s + z * c, ry = y;
-      pos.push(rx, ry, rz);
-      const nx = 0, ny = 0, nz = 1;
-      const rnx = nx * c - nz * s, rnz = nx * s + nz * c;
-      norm.push(rnx, 0, rnz);
-      uv.push(u, v_);
-    }
-    idx.push(v, v + 1, v + 2, v, v + 2, v + 3);
-    v += 4;
-  };
-  addQuad(0);
-  addQuad(Math.PI / 2);
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  g.setAttribute('normal', new THREE.Float32BufferAttribute(norm, 3));
-  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
-  g.setIndex(idx);
-  return g;
-}
-
 const puffBase = createPuffBase();
-const needleBase = createNeedleBase();
-
-// wider, flatter puff for trees – single larger bush look, wider proportion as requested
-function createWidePuffBase(): THREE.BufferGeometry {
-  const g = createPuffBase();
-  const pos = g.getAttribute('position') as THREE.BufferAttribute;
-  for (let i = 0; i < pos.count; i++) {
-    pos.setX(i, pos.getX(i) * 1.45);
-    pos.setZ(i, pos.getZ(i) * 1.42);
-    pos.setY(i, pos.getY(i) * 0.82);
-  }
-  pos.needsUpdate = true;
-  g.computeBoundingSphere();
-  return g;
-}
-const treeWidePuffBase = createWidePuffBase();
-
-function createWideNeedleBase(): THREE.BufferGeometry {
-  const g = createNeedleBase();
-  const pos = g.getAttribute('position') as THREE.BufferAttribute;
-  for (let i = 0; i < pos.count; i++) {
-    pos.setX(i, pos.getX(i) * 1.35);
-    pos.setZ(i, pos.getZ(i) * 1.35);
-    pos.setY(i, pos.getY(i) * 0.90);
-  }
-  pos.needsUpdate = true;
-  g.computeBoundingSphere();
-  return g;
-}
-const treeWideNeedleBase = createWideNeedleBase();
 
 // ------------------------------------------------------------------ shaders
 const INSTANCED_VERT = /* glsl */ `
@@ -210,6 +149,10 @@ attribute float aRotY;
 attribute vec3 aColor;
 attribute float aPhase;
 attribute float aWindFactor;
+// per-vertex (baked into the canopy cluster): same per-puff variation bushes get
+attribute vec3 aVTint;   // the puff's own colour (baked per kind, bush recipe); aColor is a per-tree brightness jitter
+attribute float aVPhase; // per-puff flutter phase
+attribute float aVWind;  // per-puff wind factor (outer puffs ride the wind more)
 varying vec3 vColor;
 varying float vShade;
 varying vec2 vUv;
@@ -224,14 +167,16 @@ void main() {
   rpos.z = pos.x * s + pos.z * c;
   vec3 worldPos = aCenter + rpos;
 
-  // wind: same travelling noise as grass, plus per-puff flutter
+  // wind: exact same recipe as bushes (BUSH_VERT) – gentle travelling gusts plus
+  // per-puff flutter, so canopies move like the bushes they are built from
   vec2 wuv = worldPos.xz / uWindScale + uWindDir * (uTime * 0.13);
   float gust = texture2D(uWindTex, wuv).r;
-  vec2 windOff = uWindDir * ((gust - 0.42) * uGust);
-  windOff += vec2(sin(uTime * 1.25 + aPhase), cos(uTime * 0.95 + aPhase * 1.31)) * uSway * aWindFactor;
-  // outer puffs ride wind more
-  worldPos.xz += windOff * aWindFactor;
-  worldPos.y -= length(windOff) * aWindFactor * 0.12;
+  float wf = aWindFactor * aVWind;
+  float ph = aPhase + aVPhase;
+  vec2 windOff = uWindDir * ((gust - 0.42) * uGust * 0.55);
+  windOff += vec2(sin(uTime * 0.9 + ph), cos(uTime * 0.7 + ph * 1.2)) * uSway * 0.55 * wf;
+  worldPos.xz += windOff * wf;
+  worldPos.y -= length(windOff) * wf * 0.10;
 
   vec3 norm = normal;
   vec3 rnorm;
@@ -244,7 +189,7 @@ void main() {
   float q = floor(shade * 3.0 + 0.25) / 3.0;
   q = 0.42 + q * 0.58;
 
-  vColor = aColor;
+  vColor = aColor * aVTint;
   vShade = (uAmbient + uSun * q);
   vWind = gust;
 
@@ -265,23 +210,6 @@ void main() {
   float edge = smoothstep(0.35, 0.5, d);
   vec3 col = vColor * (vShade + vWind * 0.05);
   col = mix(col, col * 0.92, edge * 0.28);
-  gl_FragColor = vec4(col, 1.0);
-}
-`;
-
-const NEEDLE_FRAG = /* glsl */ `
-varying vec3 vColor;
-varying float vShade;
-varying vec2 vUv;
-varying float vWind;
-void main() {
-  vec2 uv = vUv;
-  float dx = abs(uv.x - 0.5) * 2.0;
-  float dy = abs(uv.y - 0.5) * 2.0;
-  // soft diamond cut for dense spruce – keep more of quad for solidity
-  if (dx + dy * 0.55 > 1.08) discard;
-  vec3 col = vColor * (vShade + vWind * 0.04);
-  col *= 0.92 + 0.08 * uv.y;
   gl_FragColor = vec4(col, 1.0);
 }
 `;
@@ -349,8 +277,8 @@ function makeBushMaterial(): THREE.ShaderMaterial {
 }
 
 // shared materials for performance: one program per foliage type
-const sharedPuffMat = makeInstancedMaterial(PUFF_FRAG);
-const sharedNeedleMat = makeInstancedMaterial(NEEDLE_FRAG);
+// (trees and bushes share the same puff fragment shader – canopies are big bushes)
+const sharedCanopyMat = makeInstancedMaterial(PUFF_FRAG);
 const sharedBushMat = makeBushMaterial();
 
 // ------------------------------------------------------------------ colour helpers
@@ -391,6 +319,118 @@ function varyColor(baseHex: string, h1: number, h2: number, kind: TreeKind): THR
   return c;
 }
 
+// ------------------------------------------------------------------ tree canopy = a bush, wider
+// The canopy cluster is generated with the exact same recipe as the bush
+// (buildBushMerged): same 14 puffs, same dome placement, same puff base,
+// same per-puff colour jitter and wind factors – only stretched a bit wider
+// in proportion (CANOPY_WIDEN) and kept from getting too tall (CANOPY_FLATTEN).
+//
+// Because the cluster is instanced (one draw call for all trees of a kind),
+// the per-puff data lives in per-vertex attributes instead of the per-vertex
+// `color` the bush mesh uses:
+//   aVTint   – the puff's own colour (varied around the kind's base colour with
+//              the very same varyColor call bushes use around their base green),
+//              baked per kind so canopies are as colourful as bushes
+//   aVPhase  – per-puff flutter phase (added to the per-tree aPhase)
+//   aVWind   – per-puff wind factor (multiplied with the per-tree aWindFactor)
+// The per-instance aColor then acts as a subtle per-tree brightness jitter.
+const CANOPY_WIDEN = 1.18;   // a bit wider in proportion than a bush
+const CANOPY_FLATTEN = 0.92; // keep the dome from growing too tall
+
+function buildCanopyClusterBase(kind: TreeKind): THREE.BufferGeometry {
+  const puffCount = 14; // same as a bush
+  const base = puffBase;
+  const basePos = base.getAttribute('position') as THREE.BufferAttribute;
+  const baseNorm = base.getAttribute('normal') as THREE.BufferAttribute;
+  const baseUv = base.getAttribute('uv') as THREE.BufferAttribute;
+  const baseIdx = base.getIndex()!;
+  const pos: number[] = [];
+  const norm: number[] = [];
+  const uv: number[] = [];
+  const tint: number[] = [];
+  const vphase: number[] = [];
+  const vwind: number[] = [];
+  const idx: number[] = [];
+  let vertOff = 0;
+
+  for (let pi = 0; pi < puffCount; pi++) {
+    // identical placement recipe to buildBushMerged (same hashes → same dome)
+    const h1 = hash2(pi, 0, 31), h2 = hash2(pi, 1, 33), h3 = hash2(pi, 2, 35), h4 = hash2(pi, 3, 37);
+    const theta = h1 * Math.PI * 2;
+    const phi = Math.acos(1 - h2 * 0.88);
+    const r = 0.34 * (0.45 + h3 * 0.55);
+    const ox = r * Math.sin(phi) * Math.cos(theta);
+    const oy = 0.28 + r * Math.cos(phi) * 0.62 + (h4 - 0.5) * 0.06;
+    const oz = r * Math.sin(phi) * Math.sin(theta);
+    const pScale = 0.30 + h1 * 0.18;
+    const rotY = h2 * Math.PI * 2;
+    const cosY = Math.cos(rotY), sinY = Math.sin(rotY);
+    // per-puff colour, varied around the kind's base exactly like bush puffs are
+    // varied around the bush green (a few blossom puffs stay green, as before)
+    const c = varyColor(TREE_BASE[kind], h3, h4, kind);
+    if (kind === 'blossom' && h4 < 0.15) {
+      const g = varyColor('#4a9a3a', h2, h3, 'oak');
+      c.lerp(g, 0.35);
+    }
+    const windF = 0.45 + (r / 0.34) * 0.5 + h1 * 0.15;
+    const ph = h1 * 10 + pi * 0.7;
+
+    for (let vi = 0; vi < basePos.count; vi++) {
+      const x = basePos.getX(vi) * pScale;
+      const y = basePos.getY(vi) * pScale;
+      const z = basePos.getZ(vi) * pScale;
+      const rx = x * cosY - z * sinY;
+      const rz = x * sinY + z * cosY;
+      const ry = y;
+      // the only difference to a bush: a bit wider in proportion
+      pos.push((rx + ox) * CANOPY_WIDEN, (ry + oy) * CANOPY_FLATTEN, (rz + oz) * CANOPY_WIDEN);
+      const nx = baseNorm.getX(vi), ny = baseNorm.getY(vi), nz = baseNorm.getZ(vi);
+      const rnx = nx * cosY - nz * sinY;
+      const rnz = nx * sinY + nz * cosY;
+      const rny = ny;
+      // normals go through the inverse of the non-uniform stretch
+      const sx = rnx / CANOPY_WIDEN, sy = rny / CANOPY_FLATTEN, sz = rnz / CANOPY_WIDEN;
+      const len = Math.hypot(sx, sy, sz) || 1;
+      norm.push(sx / len, sy / len, sz / len);
+      uv.push(baseUv.getX(vi), baseUv.getY(vi));
+      tint.push(c.r, c.g, c.b);
+      vphase.push(ph);
+      vwind.push(windF);
+    }
+    for (let ii = 0; ii < baseIdx.count; ii++) {
+      idx.push(baseIdx.getX(ii) + vertOff);
+    }
+    vertOff += basePos.count;
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(norm, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  geo.setAttribute('aVTint', new THREE.Float32BufferAttribute(tint, 3));
+  geo.setAttribute('aVPhase', new THREE.Float32BufferAttribute(vphase, 1));
+  geo.setAttribute('aVWind', new THREE.Float32BufferAttribute(vwind, 1));
+  geo.setIndex(idx);
+  geo.computeBoundingSphere();
+  return geo;
+}
+
+// one tiny baked cluster per kind (168 verts each), built on first use
+const canopyBases = new Map<TreeKind, THREE.BufferGeometry>();
+function getCanopyBase(kind: TreeKind): THREE.BufferGeometry {
+  let g = canopyBases.get(kind);
+  if (!g) { g = buildCanopyClusterBase(kind); canopyBases.set(kind, g); }
+  return g;
+}
+
+// local y of the cluster's underside – used to seat canopies onto their trunks
+// (all kinds share the bush placement recipe, so one bounding box fits all)
+const CANOPY_UNDER = (() => {
+  const g = getCanopyBase('oak');
+  g.computeBoundingBox();
+  return g.boundingBox!.min.y;
+})();
+
 // ------------------------------------------------------------------ trunk + shadow helpers
 const trunkGeo = new THREE.CylinderGeometry(0.2, 0.28, 0.95, 8).translate(0, 0.47, 0);
 const shadowGeo = new THREE.CircleGeometry(0.9, 12).rotateX(-Math.PI / 2).scale(1, 1, 0.7).translate(0, 0.015, 0.1);
@@ -415,7 +455,7 @@ function buildInstancedGeo(instances: FoliageInstance[], base: THREE.BufferGeome
   const geo = new THREE.InstancedBufferGeometry();
   // copy base attributes
   geo.setIndex(base.getIndex()!);
-  for (const name of ['position', 'normal', 'uv']) {
+  for (const name of ['position', 'normal', 'uv', 'aVTint', 'aVPhase', 'aVWind']) {
     const attr = base.getAttribute(name) as THREE.BufferAttribute;
     geo.setAttribute(name, attr);
   }
@@ -460,41 +500,25 @@ function buildInstancedGeo(instances: FoliageInstance[], base: THREE.BufferGeome
   return geo;
 }
 
-function generateBroadleafInstances(trees: TreeSpec[], kind: TreeKind): FoliageInstance[] {
+function generateCanopyInstances(trees: TreeSpec[]): FoliageInstance[] {
   const out: FoliageInstance[] = [];
-  const baseHex = TREE_BASE[kind];
   for (let ti = 0; ti < trees.length; ti++) {
     const t = trees[ti];
     const scale = t.scale;
-    const yBase = (t.y ?? 0) + 1.28 * scale;
-    // SINGLE larger bush per tree – solid, no disjointed leaves, wider proportion
-    const h1 = hash2(ti, 0, 11), h2 = hash2(ti, 0, 13), h3 = hash2(ti, 0, 17);
+    const h1 = hash2(ti, 0, 11), h2 = hash2(ti, 0, 13);
+    // big trees ≈ 2.2 units across, small ≈ 1.1 – same wide-dome ratio as bushes,
+    // plus per-tree size jitter (the cluster itself is already CANOPY_WIDEN wider)
+    const cScale = (scale < 0.8 ? 1.55 : 2.0) * scale * (0.94 + h1 * 0.12);
+    // the baked cluster's underside sits at local y ≈ 0.07 (CANOPY_UNDER); drop the
+    // origin so the canopy's bottom overlaps the top of the trunk (0.95 * scale)
+    const yBase = (t.y ?? 0) + 0.85 * scale - CANOPY_UNDER * cScale;
     const center = new THREE.Vector3(t.x, yBase, t.z);
-    // wider bush: 1.75*scale for big trees, 1.25 for small – matches bush ratio that looked good
-    const pScale = (scale < 0.8 ? 1.25 : 1.75) * scale * (0.92 + h1 * 0.16);
-    const col = varyColor(baseHex, h3, h2, kind);
-    if (kind === 'blossom' && h1 < 0.15) {
-      const g = varyColor('#4a9a3a', h2, h3, 'oak');
-      col.lerp(g, 0.35);
-    }
-    out.push({ center, scale: pScale, rotY: h1 * Math.PI * 2, color: col, phase: h1 * 5 + ti * 0.15, wind: 0.10 });
-  }
-  return out;
-}
-
-function generatePineInstances(trees: TreeSpec[]): FoliageInstance[] {
-  const out: FoliageInstance[] = [];
-  const baseHex = TREE_BASE.pine;
-  for (let ti = 0; ti < trees.length; ti++) {
-    const t = trees[ti];
-    const scale = t.scale;
-    const yBase = t.y ?? 0;
-    // Pine as single larger bush but slightly taller – solid, wider at base, no disjointed lobes
-    const h1 = hash2(ti, 0, 21), h2 = hash2(ti, 0, 23);
-    const center = new THREE.Vector3(t.x, yBase + 1.10 * scale, t.z);
-    const pScale = (scale < 0.8 ? 1.15 : 1.60) * scale * (0.90 + h1 * 0.14);
-    const col = varyColor(baseHex, h1, h2, 'pine');
-    out.push({ center, scale: pScale, rotY: h1 * Math.PI * 2, color: col, phase: h1 * 5 + ti * 0.15, wind: 0.08 });
+    // puff colours are baked per kind in the cluster (aVTint); the instance colour
+    // is just a subtle per-tree brightness jitter so no two trees match exactly
+    const bri = 0.93 + h2 * 0.14;
+    const col = new THREE.Color(bri, bri, bri);
+    // per-puff wind is baked into the cluster (aVWind); the instance factor stays 1
+    out.push({ center, scale: cScale, rotY: h1 * Math.PI * 2, color: col, phase: h1 * 5 + ti * 0.15, wind: 1.0 });
   }
   return out;
 }
@@ -530,23 +554,13 @@ export function buildTrees(trees: TreeSpec[]): THREE.Object3D[] {
     shadowMesh.instanceMatrix.needsUpdate = true;
     out.push(trunkMesh, shadowMesh);
 
-    // foliage – single larger bush per tree, wider proportion, solid like bushes
-    if (kind === 'pine') {
-      const instances = generatePineInstances(list);
-      if (instances.length) {
-        const geo = buildInstancedGeo(instances, treeWideNeedleBase);
-        const mesh = new THREE.Mesh(geo, sharedNeedleMat);
-        mesh.frustumCulled = false;
-        out.push(mesh);
-      }
-    } else {
-      const instances = generateBroadleafInstances(list, kind);
-      if (instances.length) {
-        const geo = buildInstancedGeo(instances, treeWidePuffBase);
-        const mesh = new THREE.Mesh(geo, sharedPuffMat);
-        mesh.frustumCulled = false;
-        out.push(mesh);
-      }
+    // canopy – a bush cluster (same recipe as the bushes, a bit wider), instanced
+    const instances = generateCanopyInstances(list);
+    if (instances.length) {
+      const geo = buildInstancedGeo(instances, getCanopyBase(kind));
+      const mesh = new THREE.Mesh(geo, sharedCanopyMat);
+      mesh.frustumCulled = false;
+      out.push(mesh);
     }
   }
   return out;
@@ -968,11 +982,9 @@ export function disposeFoliage() {
   windTex.dispose();
   gradMap?.dispose();
   puffBase.dispose();
-  needleBase.dispose();
-  treeWidePuffBase.dispose();
-  treeWideNeedleBase.dispose();
-  sharedPuffMat.dispose();
-  sharedNeedleMat.dispose();
+  for (const g of canopyBases.values()) g.dispose();
+  canopyBases.clear();
+  sharedCanopyMat.dispose();
   sharedBushMat.dispose();
   sharedVegWindMat.dispose();
 }
