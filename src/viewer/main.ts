@@ -11,6 +11,7 @@ import {
 } from '../game/models';
 import type { PropKind, HouseSpec, EnemyKind } from '../game/world';
 import { World } from '../game/world';
+import { GrassSystem } from '../game/grass';
 import { POST_VS, POST_FS } from '../game/game';
 import { VIEW_W, VIEW_H, VIEW_TILES_X, VIEW_TILES_Y, CAM_HEIGHT, SHEAR, FACING_ANGLE } from '../game/constants';
 
@@ -20,6 +21,7 @@ type Cat = { name: string; items: Entry[] };
 const hum = (h: Humanoid) => ({ obj: h.root, humanoid: h });
 const PROPS: PropKind[] = ['well', 'sign', 'stall', 'bench', 'weathercock', 'lamp', 'barrel', 'crate', 'flowerpot', 'hedge', 'log', 'menhir', 'cart', 'hay', 'scarecrow', 'campfire', 'tent', 'banner', 'tower', 'ruinwall', 'pillar', 'crown', 'windmill', 'anvil', 'forge', 'cauldron', 'grave', 'deadtree', 'reeds', 'rosebush', 'beehive', 'wheelbarrow', 'statue', 'mushroom', 'amberrock'];
 const world = new World();
+const grass = new GrassSystem(world);
 
 const catalog: Cat[] = [
   { name: 'Heroine', items: [{ name: 'Aria', build: () => hum(buildHeroine()) }] },
@@ -41,6 +43,7 @@ const catalog: Cat[] = [
     { name: 'Briar', build: () => ({ obj: vegObject(buildBriarGeo()) }) },
     { name: 'Lily pads', build: () => ({ obj: vegObject(buildLilyGeo()) }) },
     { name: 'Fence post', build: () => ({ obj: buildFence() }) },
+    { name: 'Grass (animated)', build: () => ({ obj: grass.buildPatch(36, 22, 12, 12), footprint: 12 }) },
   ] },
   { name: 'Props', items: PROPS.map((k) => ({ name: k[0].toUpperCase() + k.slice(1), build: () => ({ obj: buildProp({ kind: k, x: 0, z: 0 }), footprint: k === 'tower' || k === 'windmill' ? 6 : k === 'statue' ? 3 : k === 'tent' || k === 'stall' ? 4 : k === 'deadtree' ? 2.5 : 2 }) })) },
   { name: 'Pickups & projectiles', items: [
@@ -203,8 +206,11 @@ layout();
 
 // ------------------------------------------------------------------ loop
 let last = performance.now();
+let grassTime = 0;
 function frame(now: number) {
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  grassTime += dt;
+  grass.setTime(grassTime); // keep the wind blowing even on non-grass entries (it's one uniform)
   animate(dt);
   gridHelper.visible = gridCb.checked && mode === 'free';
   if (mode === 'game') {

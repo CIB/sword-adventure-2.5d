@@ -816,6 +816,15 @@ export class World {
 
   isWaterUnder(tx: number, tz: number): boolean { return this.riverDist[this.idx(tx, tz)] < 0; }
 
+  /** May decorative grass blades grow here? (grass-like tile, walkable, not on the wet shore strip) */
+  canGrowGrass(tx: number, tz: number): boolean {
+    if (tx < 0 || tz < 0 || tx >= this.w || tz >= this.h) return false;
+    const t = this.tile(tx, tz);
+    if (t !== Tile.Grass && t !== Tile.Flowers && t !== Tile.DryGrass && t !== Tile.Heather) return false;
+    const i = this.idx(tx, tz);
+    if (this.solid[i]) return false; // trees, houses, props, rocks...
+    return this.riverDist[i] > 1.0;  // keep the sand/mud/gravel banks clean
+  }
 
 
   /** Height of the walkable surface (terrain, or the bridge deck when standing on a bridge) */

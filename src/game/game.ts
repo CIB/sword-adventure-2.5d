@@ -13,6 +13,7 @@ import {
   buildTrees, buildBush, buildBerryBush, buildStump, buildRock, buildFence, buildHouse, buildProp, getGroundGradientMap, buildVillager, buildDog, VILLAGER_LOOKS,
   buildFernGeo, buildTallGrassGeo, buildBriarGeo, buildLilyGeo, buildBoulderGeo, makeVegInstances,
 } from './models';
+import { GrassSystem } from './grass';
 import { Hud } from './hud';
 
 export type Phase = 'title' | 'playing' | 'paused' | 'gameover';
@@ -79,6 +80,7 @@ export class Game implements GameCtx {
   npcs: Npc[] = [];
   quests: QuestState = newQuestState();
   talking = false;
+  grass!: GrassSystem;
   private convo: Conversation | null = null;
   private convoPage = 0;
   private convoId = '';
@@ -256,6 +258,10 @@ export class Game implements GameCtx {
       const mill = mesh.getObjectByName('mill');
       if (mill) this.millSpinners.push(mill);
     }
+
+    // BotW-style animated grass, streamed around the camera
+    this.grass = new GrassSystem(w);
+    this.scene.add(this.grass.root);
   }
 
   private spawnAllEnemies() {
@@ -429,6 +435,7 @@ export class Game implements GameCtx {
       b.alive = true;
       this.scene.add(b.mesh);
       this.world.setSolid(b.tx, b.tz, true);
+      this.grass.invalidate(b.tx, b.tz); // no grass inside the respawned bush
       if (b.stump) { this.scene.remove(b.stump); b.stump = undefined; }
     }
     const ps = this.world.playerStart;
@@ -451,6 +458,7 @@ export class Game implements GameCtx {
   dispose() {
     cancelAnimationFrame(this.raf);
     this.audio.stopMusic();
+    this.grass.dispose();
     this.renderer.dispose();
   }
 
@@ -585,6 +593,7 @@ export class Game implements GameCtx {
     this.quests.bushes++;
     this.scene.remove(b.mesh);
     this.world.setSolid(b.tx, b.tz, false);
+    this.grass.invalidate(b.tx, b.tz); // grass may now grow where the bush stood
     b.stump = buildStump();
     b.stump.position.set(b.tx + 0.5, this.world.tileH(b.tx, b.tz), b.tz + 0.5);
     this.scene.add(b.stump);
@@ -683,6 +692,13 @@ export class Game implements GameCtx {
 
   // ------------------------------------------------------------------ render
   private render() {
+    // BotW-style grass: stream chunks around the camera, animate wind, part around the player
+    this.grass.update(
+      this.time, this.cam.x, this.cam.z,
+      Math.hypot(this.viewW, this.viewH) / PX_PER_TILE / 2 + 2,
+      this.player.pos.x, this.player.pos.z,
+      this.viewAngle,
+    );
     this.renderer.setRenderTarget(this.rt);
     this.renderer.render(this.scene, this.camera);
     this.renderer.setRenderTarget(null);
