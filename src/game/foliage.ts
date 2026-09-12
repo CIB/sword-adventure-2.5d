@@ -546,7 +546,9 @@ export class FoliageSystem {
       },
       vertexShader: LEAF_VERT,
       fragmentShader: LEAF_FRAG,
-      side: THREE.FrontSide,   // billboards always face the screen: one-sided is enough
+      // DoubleSide like the grass: under the sheared ortho projection the billboard winding comes
+      // out clockwise in view space, so a one-sided material culls every card (invisible canopies).
+      side: THREE.DoubleSide,
     });
     this.trunkMat = new THREE.MeshToonMaterial({ color: '#ffffff', gradientMap: getGradientMap() });
     // trunks ride the same gust field as their crowns (a whole tree bends together)

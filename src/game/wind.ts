@@ -99,6 +99,12 @@ vec2 gustPush(float gust) {
 `;
 
 // ------------------------------------------------------------------ sway for standard materials
+/** Declared separately from WIND_GLSL: only injected materials carry these two uniforms. */
+const SWAY_UNIFORMS = /* glsl */ `
+uniform float uSwayGain;
+uniform float uSwayTop;
+`;
+
 const SWAY_BODY = /* glsl */ `
 #include <begin_vertex>
 // ---- shared-gust sway: bend by height up the plant, computed in world space ----
@@ -140,7 +146,7 @@ export function swayMaterial<T extends THREE.Material>(mat: T, gain: { value: nu
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uWindTex = { value: windTexture() };
     Object.assign(shader.uniforms, windUniforms, { uSwayGain: gain, uSwayTop: top });
-    shader.vertexShader = WIND_GLSL + shader.vertexShader.replace('#include <begin_vertex>', SWAY_BODY);
+    shader.vertexShader = WIND_GLSL + SWAY_UNIFORMS + shader.vertexShader.replace('#include <begin_vertex>', SWAY_BODY);
   };
   return mat;
 }
