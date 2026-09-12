@@ -1295,11 +1295,25 @@ export class World {
         g.fillStyle = '#5a3a1e'; g.fillRect(ox, oz, T, 1); g.fillRect(ox, oz, 1, T);
       }
       // feather this tile's edges into differently-coloured natural neighbours: a wavy, dithered
-      // gradient band (pure neighbour colour at the seam, stepping back into own with dither),
-      // so surfaces melt into each other instead of drawing an outline
+      // gradient band (pure neighbour colour at the seam, stepping back into own with dither).
+      // ONE-SIDED: only the lower-ranked surface of a pair paints the band, so the seam reads as
+      // grass-then-sand-fringe-then-sand instead of grass|sand sliver|grass sliver|sand.
+      // Ranks: the meadow background yields to everything, wet/rocky surfaces stay solid longest.
       if (natural(t)) {
         const own = natBase(t, tx, tz);
         if (own) {
+          const rank = (tt: Tile, x: number, z: number): number => {
+            if (this.isShore(x, z)) return 6;
+            switch (tt) {
+              case Tile.Mud: return 5;
+              case Tile.Gravel: return 4;
+              case Tile.Heather: return 3;
+              case Tile.DryGrass: return 3;
+              case Tile.ForestFloor: return 2;
+              default: return 1; // Grass, Flowers: the background, yields to everything
+            }
+          };
+          const ownRank = rank(t, tx, tz);
           const nN = natBase(N, tx, tz - 1), nS = natBase(S, tx, tz + 1), nE = natBase(E, tx + 1, tz), nW = natBase(W, tx - 1, tz);
           const featherEdge = (n: string, seed: number, put: (i: number, d: number) => [number, number]) => {
             const c1 = blendCss(own, n, 0.65), c2 = blendCss(own, n, 0.35), c3 = blendCss(own, n, 0.15);
@@ -1320,10 +1334,16 @@ export class World {
               if (hash2(i + seed * 17, tx + tz, 83) < 0.3) paint(i, p + 2, c3);
             }
           };
-          if (nN && colDiff(nN, own) > FEATHER_MIN) featherEdge(nN, 0, (i, d) => [ox + i, oz + d]);
-          if (nS && colDiff(nS, own) > FEATHER_MIN) featherEdge(nS, 1, (i, d) => [ox + i, oz + T - 1 - d]);
-          if (nW && colDiff(nW, own) > FEATHER_MIN) featherEdge(nW, 2, (i, d) => [ox + d, oz + i]);
-          if (nE && colDiff(nE, own) > FEATHER_MIN) featherEdge(nE, 3, (i, d) => [ox + T - 1 - d, oz + i]);
+          // exactly one tile of each pair paints: the lower rank, ties broken deterministically
+          const side = (n: string | null, nt: Tile, nx: number, nz: number, seed: number, put: (i: number, d: number) => [number, number]) => {
+            if (!n || colDiff(n, own) <= FEATHER_MIN) return;
+            const nr = rank(nt, nx, nz);
+            if (ownRank < nr || (ownRank === nr && own < n)) featherEdge(n, seed, put);
+          };
+          side(nN, N, tx, tz - 1, 0, (i, d) => [ox + i, oz + d]);
+          side(nS, S, tx, tz + 1, 1, (i, d) => [ox + i, oz + T - 1 - d]);
+          side(nW, W, tx - 1, tz, 2, (i, d) => [ox + d, oz + i]);
+          side(nE, E, tx + 1, tz, 3, (i, d) => [ox + T - 1 - d, oz + i]);
         }
       }
     }
