@@ -1,21 +1,22 @@
 /**
- * BotW-inspired particle foliage: trees and bushes rendered as clusters of
- * small leaf cards / puffs, with wind.
+ * BotW-inspired particle foliage: bushes rendered as clusters of small leaf
+ * puffs, with wind.
  *
- * Goals:
- *  - Slightly more "particle" based than the old solid spheres
- *  - Wind effect shared with grass (same noise texture, same direction)
- *  - Performant: trees are instanced globally (one draw call per foliage type),
- *    bushes are merged per-bush but still a single mesh per bush with wind in shader.
- *  - BotW look: soft, slightly toon-shaded, circular leaf puffs, layered pine needles,
- *    colour variation per puff, quantized shading.
+ * Scope:
+ *  - bushes (plain + berry), hedges and rosebushes are merged puff clusters
+ *    with wind in the shader, plus tiny berry/rose puffs
+ *  - undergrowth (ferns, tall grass, briars) can opt into the same wind field
+ *  - trees are NOT built here: they are the classic solid toon canopies from
+ *    models.ts; only their gentle canopy sway borrows foliageUniforms so all
+ *    vegetation leans into the same travelling gusts
+ *  - wind is shared with the grass (same noise texture, same direction)
+ *  - Performant: one shared material per foliage type.
  */
 
 import * as THREE from 'three';
 import { hash2, clamp } from './constants';
-import type { TreeSpec } from './world';
 
-export type TreeKind = 'oak' | 'pine' | 'autumn' | 'birch' | 'blossom';
+type TreeKind = 'oak' | 'pine' | 'autumn' | 'birch' | 'blossom';
 
 // ------------------------------------------------------------------ wind
 function makeWindTexture(): THREE.CanvasTexture {
@@ -128,164 +129,9 @@ function createPuffBase(): THREE.BufferGeometry {
   return g;
 }
 
-function createNeedleBase(): THREE.BufferGeometry {
-  // European spruce: dense small needle clusters – 2 crossing quads per puff,
-  // each quad slightly tapered, not a single large palm-like frond
-  const pos: number[] = [], norm: number[] = [], uv: number[] = [], idx: number[] = [];
-  let v = 0;
-  const addQuad = (rotY: number) => {
-    const c = Math.cos(rotY), s = Math.sin(rotY);
-    const corners: [number, number, number, number, number][] = [
-      [-0.5, -0.45, 0, 0, 0],
-      [0.5, -0.45, 0, 1, 0],
-      [0.5, 0.55, 0, 1, 1],
-      [-0.5, 0.55, 0, 0, 1],
-    ];
-    for (const [x, y, z, u, v_] of corners) {
-      const rx = x * c - z * s, rz = x * s + z * c, ry = y;
-      pos.push(rx, ry, rz);
-      const nx = 0, ny = 0, nz = 1;
-      const rnx = nx * c - nz * s, rnz = nx * s + nz * c;
-      norm.push(rnx, 0, rnz);
-      uv.push(u, v_);
-    }
-    idx.push(v, v + 1, v + 2, v, v + 2, v + 3);
-    v += 4;
-  };
-  addQuad(0);
-  addQuad(Math.PI / 2);
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  g.setAttribute('normal', new THREE.Float32BufferAttribute(norm, 3));
-  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
-  g.setIndex(idx);
-  return g;
-}
-
 const puffBase = createPuffBase();
-const needleBase = createNeedleBase();
-
-// wider, flatter puff for trees – single larger bush look, wider proportion as requested
-function createWidePuffBase(): THREE.BufferGeometry {
-  const g = createPuffBase();
-  const pos = g.getAttribute('position') as THREE.BufferAttribute;
-  for (let i = 0; i < pos.count; i++) {
-    pos.setX(i, pos.getX(i) * 1.45);
-    pos.setZ(i, pos.getZ(i) * 1.42);
-    pos.setY(i, pos.getY(i) * 0.82);
-  }
-  pos.needsUpdate = true;
-  g.computeBoundingSphere();
-  return g;
-}
-const treeWidePuffBase = createWidePuffBase();
-
-function createWideNeedleBase(): THREE.BufferGeometry {
-  const g = createNeedleBase();
-  const pos = g.getAttribute('position') as THREE.BufferAttribute;
-  for (let i = 0; i < pos.count; i++) {
-    pos.setX(i, pos.getX(i) * 1.35);
-    pos.setZ(i, pos.getZ(i) * 1.35);
-    pos.setY(i, pos.getY(i) * 0.90);
-  }
-  pos.needsUpdate = true;
-  g.computeBoundingSphere();
-  return g;
-}
-const treeWideNeedleBase = createWideNeedleBase();
 
 // ------------------------------------------------------------------ shaders
-const INSTANCED_VERT = /* glsl */ `
-uniform float uTime;
-uniform sampler2D uWindTex;
-uniform float uWindScale;
-uniform vec2 uWindDir;
-uniform float uGust;
-uniform float uSway;
-uniform float uAmbient;
-uniform float uSun;
-attribute vec3 aCenter;
-attribute float aScale;
-attribute float aRotY;
-attribute vec3 aColor;
-attribute float aPhase;
-attribute float aWindFactor;
-varying vec3 vColor;
-varying float vShade;
-varying vec2 vUv;
-varying float vWind;
-void main() {
-  vUv = uv;
-  vec3 pos = position * aScale;
-  float c = cos(aRotY), s = sin(aRotY);
-  vec3 rpos;
-  rpos.x = pos.x * c - pos.z * s;
-  rpos.y = pos.y;
-  rpos.z = pos.x * s + pos.z * c;
-  vec3 worldPos = aCenter + rpos;
-
-  // wind: same travelling noise as grass, plus per-puff flutter
-  vec2 wuv = worldPos.xz / uWindScale + uWindDir * (uTime * 0.13);
-  float gust = texture2D(uWindTex, wuv).r;
-  vec2 windOff = uWindDir * ((gust - 0.42) * uGust);
-  windOff += vec2(sin(uTime * 1.25 + aPhase), cos(uTime * 0.95 + aPhase * 1.31)) * uSway * aWindFactor;
-  // outer puffs ride wind more
-  worldPos.xz += windOff * aWindFactor;
-  worldPos.y -= length(windOff) * aWindFactor * 0.12;
-
-  vec3 norm = normal;
-  vec3 rnorm;
-  rnorm.x = norm.x * c - norm.z * s;
-  rnorm.y = norm.y;
-  rnorm.z = norm.x * s + norm.z * c;
-  vec3 sunDir = normalize(vec3(-0.15, 1.0, 0.42));
-  float nd = dot(normalize(rnorm), sunDir);
-  float shade = 0.5 + 0.5 * nd;
-  float q = floor(shade * 3.0 + 0.25) / 3.0;
-  q = 0.42 + q * 0.58;
-
-  vColor = aColor;
-  vShade = (uAmbient + uSun * q);
-  vWind = gust;
-
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(worldPos, 1.0);
-}
-`;
-
-const PUFF_FRAG = /* glsl */ `
-varying vec3 vColor;
-varying float vShade;
-varying vec2 vUv;
-varying float vWind;
-void main() {
-  vec2 uv = vUv;
-  float d = length(uv - 0.5);
-  if (d > 0.5) discard;
-  // softer, less distinct edge – previous 0.82 darkening made each puff pop like separate palm leaf
-  float edge = smoothstep(0.35, 0.5, d);
-  vec3 col = vColor * (vShade + vWind * 0.05);
-  col = mix(col, col * 0.92, edge * 0.28);
-  gl_FragColor = vec4(col, 1.0);
-}
-`;
-
-const NEEDLE_FRAG = /* glsl */ `
-varying vec3 vColor;
-varying float vShade;
-varying vec2 vUv;
-varying float vWind;
-void main() {
-  vec2 uv = vUv;
-  float dx = abs(uv.x - 0.5) * 2.0;
-  float dy = abs(uv.y - 0.5) * 2.0;
-  // soft diamond cut for dense spruce – keep more of quad for solidity
-  if (dx + dy * 0.55 > 1.08) discard;
-  vec3 col = vColor * (vShade + vWind * 0.04);
-  col *= 0.92 + 0.08 * uv.y;
-  gl_FragColor = vec4(col, 1.0);
-}
-`;
-
 const BUSH_VERT = /* glsl */ `
 uniform float uTime;
 uniform sampler2D uWindTex;
@@ -330,14 +176,22 @@ void main() {
 }
 `;
 
-function makeInstancedMaterial(frag: string): THREE.ShaderMaterial {
-  return new THREE.ShaderMaterial({
-    uniforms: foliageUniforms as any,
-    vertexShader: INSTANCED_VERT,
-    fragmentShader: frag,
-    side: THREE.DoubleSide,
-  });
+const PUFF_FRAG = /* glsl */ `
+varying vec3 vColor;
+varying float vShade;
+varying vec2 vUv;
+varying float vWind;
+void main() {
+  vec2 uv = vUv;
+  float d = length(uv - 0.5);
+  if (d > 0.5) discard;
+  // softer, less distinct edge – previous 0.82 darkening made each puff pop like separate palm leaf
+  float edge = smoothstep(0.35, 0.5, d);
+  vec3 col = vColor * (vShade + vWind * 0.05);
+  col = mix(col, col * 0.92, edge * 0.28);
+  gl_FragColor = vec4(col, 1.0);
 }
+`;
 
 function makeBushMaterial(): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
@@ -348,24 +202,13 @@ function makeBushMaterial(): THREE.ShaderMaterial {
   });
 }
 
-// shared materials for performance: one program per foliage type
-const sharedPuffMat = makeInstancedMaterial(PUFF_FRAG);
-const sharedNeedleMat = makeInstancedMaterial(NEEDLE_FRAG);
+// shared material for performance: one program for all puff bushes
 const sharedBushMat = makeBushMaterial();
 
 // ------------------------------------------------------------------ colour helpers
 function linColor(hex: string): THREE.Color {
   return new THREE.Color(hex).convertSRGBToLinear();
 }
-
-const TREE_BASE: Record<TreeKind, string> = {
-  // European palette: deeper oak green, dark spruce, muted autumn, light birch
-  oak: '#2e6b30',
-  pine: '#234d2a',
-  autumn: '#c46a1e',
-  birch: '#7fb34a',
-  blossom: '#e8a8b8',
-};
 
 function varyColor(baseHex: string, h1: number, h2: number, kind: TreeKind): THREE.Color {
   const base = linColor(baseHex);
@@ -392,165 +235,7 @@ function varyColor(baseHex: string, h1: number, h2: number, kind: TreeKind): THR
 }
 
 // ------------------------------------------------------------------ trunk + shadow helpers
-const trunkGeo = new THREE.CylinderGeometry(0.2, 0.28, 0.95, 8).translate(0, 0.47, 0);
-const shadowGeo = new THREE.CircleGeometry(0.9, 12).rotateX(-Math.PI / 2).scale(1, 1, 0.7).translate(0, 0.015, 0.1);
 const shadowMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.32, depthWrite: false });
-
-function trunkMatFor(kind: TreeKind): THREE.MeshToonMaterial {
-  const col = kind === 'birch' ? '#e8e0d0' : '#6b4226';
-  return new THREE.MeshToonMaterial({ color: col, gradientMap: getGrad() });
-}
-
-// ------------------------------------------------------------------ instanced foliage builders
-interface FoliageInstance {
-  center: THREE.Vector3;
-  scale: number;
-  rotY: number;
-  color: THREE.Color;
-  phase: number;
-  wind: number;
-}
-
-function buildInstancedGeo(instances: FoliageInstance[], base: THREE.BufferGeometry): THREE.InstancedBufferGeometry {
-  const geo = new THREE.InstancedBufferGeometry();
-  // copy base attributes
-  geo.setIndex(base.getIndex()!);
-  for (const name of ['position', 'normal', 'uv']) {
-    const attr = base.getAttribute(name) as THREE.BufferAttribute;
-    geo.setAttribute(name, attr);
-  }
-  const n = instances.length;
-  const centers = new Float32Array(n * 3);
-  const scales = new Float32Array(n);
-  const rotYs = new Float32Array(n);
-  const colors = new Float32Array(n * 3);
-  const phases = new Float32Array(n);
-  const winds = new Float32Array(n);
-  for (let i = 0; i < n; i++) {
-    const it = instances[i];
-    centers[i * 3] = it.center.x;
-    centers[i * 3 + 1] = it.center.y;
-    centers[i * 3 + 2] = it.center.z;
-    scales[i] = it.scale;
-    rotYs[i] = it.rotY;
-    colors[i * 3] = it.color.r;
-    colors[i * 3 + 1] = it.color.g;
-    colors[i * 3 + 2] = it.color.b;
-    phases[i] = it.phase;
-    winds[i] = it.wind;
-  }
-  geo.setAttribute('aCenter', new THREE.InstancedBufferAttribute(centers, 3));
-  geo.setAttribute('aScale', new THREE.InstancedBufferAttribute(scales, 1));
-  geo.setAttribute('aRotY', new THREE.InstancedBufferAttribute(rotYs, 1));
-  geo.setAttribute('aColor', new THREE.InstancedBufferAttribute(colors, 3));
-  geo.setAttribute('aPhase', new THREE.InstancedBufferAttribute(phases, 1));
-  geo.setAttribute('aWindFactor', new THREE.InstancedBufferAttribute(winds, 1));
-  geo.instanceCount = n;
-  // bounding sphere: approximate from centers
-  let minX = Infinity, minY = Infinity, minZ = Infinity, maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-  for (let i = 0; i < n; i++) {
-    const x = centers[i * 3], y = centers[i * 3 + 1], z = centers[i * 3 + 2];
-    if (x < minX) minX = x; if (x > maxX) maxX = x;
-    if (y < minY) minY = y; if (y > maxY) maxY = y;
-    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
-  }
-  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2, cz = (minZ + maxZ) / 2;
-  const r = Math.hypot(maxX - minX, maxY - minY, maxZ - minZ) / 2 + 3;
-  geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(cx, cy, cz), r);
-  return geo;
-}
-
-function generateBroadleafInstances(trees: TreeSpec[], kind: TreeKind): FoliageInstance[] {
-  const out: FoliageInstance[] = [];
-  const baseHex = TREE_BASE[kind];
-  for (let ti = 0; ti < trees.length; ti++) {
-    const t = trees[ti];
-    const scale = t.scale;
-    const yBase = (t.y ?? 0) + 1.28 * scale;
-    // SINGLE larger bush per tree – solid, no disjointed leaves, wider proportion
-    const h1 = hash2(ti, 0, 11), h2 = hash2(ti, 0, 13), h3 = hash2(ti, 0, 17);
-    const center = new THREE.Vector3(t.x, yBase, t.z);
-    // wider bush: 1.75*scale for big trees, 1.25 for small – matches bush ratio that looked good
-    const pScale = (scale < 0.8 ? 1.25 : 1.75) * scale * (0.92 + h1 * 0.16);
-    const col = varyColor(baseHex, h3, h2, kind);
-    if (kind === 'blossom' && h1 < 0.15) {
-      const g = varyColor('#4a9a3a', h2, h3, 'oak');
-      col.lerp(g, 0.35);
-    }
-    out.push({ center, scale: pScale, rotY: h1 * Math.PI * 2, color: col, phase: h1 * 5 + ti * 0.15, wind: 0.10 });
-  }
-  return out;
-}
-
-function generatePineInstances(trees: TreeSpec[]): FoliageInstance[] {
-  const out: FoliageInstance[] = [];
-  const baseHex = TREE_BASE.pine;
-  for (let ti = 0; ti < trees.length; ti++) {
-    const t = trees[ti];
-    const scale = t.scale;
-    const yBase = t.y ?? 0;
-    // Pine as single larger bush but slightly taller – solid, wider at base, no disjointed lobes
-    const h1 = hash2(ti, 0, 21), h2 = hash2(ti, 0, 23);
-    const center = new THREE.Vector3(t.x, yBase + 1.10 * scale, t.z);
-    const pScale = (scale < 0.8 ? 1.15 : 1.60) * scale * (0.90 + h1 * 0.14);
-    const col = varyColor(baseHex, h1, h2, 'pine');
-    out.push({ center, scale: pScale, rotY: h1 * Math.PI * 2, color: col, phase: h1 * 5 + ti * 0.15, wind: 0.08 });
-  }
-  return out;
-}
-
-// ------------------------------------------------------------------ public tree builder
-export function buildTrees(trees: TreeSpec[]): THREE.Object3D[] {
-  const out: THREE.Object3D[] = [];
-  // group by kind
-  const byKind = new Map<TreeKind, TreeSpec[]>();
-  for (const t of trees) {
-    const k = (t.kind ?? 'oak') as TreeKind;
-    if (!byKind.has(k)) byKind.set(k, []);
-    byKind.get(k)!.push(t);
-  }
-
-  for (const [kind, list] of byKind) {
-    if (!list.length) continue;
-    // trunk
-    const tMat = trunkMatFor(kind);
-    const trunkMesh = new THREE.InstancedMesh(trunkGeo, tMat, list.length);
-    const shadowMesh = new THREE.InstancedMesh(shadowGeo, shadowMat, list.length);
-    const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), p = new THREE.Vector3(), s = new THREE.Vector3();
-    const up = new THREE.Vector3(0, 1, 0);
-    list.forEach((t, i) => {
-      p.set(t.x, t.y ?? 0, t.z);
-      q.setFromAxisAngle(up, hash2(i, 0, 91) * Math.PI * 2);
-      s.set(t.scale, t.scale, t.scale);
-      m4.compose(p, q, s);
-      trunkMesh.setMatrixAt(i, m4);
-      shadowMesh.setMatrixAt(i, m4);
-    });
-    trunkMesh.instanceMatrix.needsUpdate = true;
-    shadowMesh.instanceMatrix.needsUpdate = true;
-    out.push(trunkMesh, shadowMesh);
-
-    // foliage – single larger bush per tree, wider proportion, solid like bushes
-    if (kind === 'pine') {
-      const instances = generatePineInstances(list);
-      if (instances.length) {
-        const geo = buildInstancedGeo(instances, treeWideNeedleBase);
-        const mesh = new THREE.Mesh(geo, sharedNeedleMat);
-        mesh.frustumCulled = false;
-        out.push(mesh);
-      }
-    } else {
-      const instances = generateBroadleafInstances(list, kind);
-      if (instances.length) {
-        const geo = buildInstancedGeo(instances, treeWidePuffBase);
-        const mesh = new THREE.Mesh(geo, sharedPuffMat);
-        mesh.frustumCulled = false;
-        out.push(mesh);
-      }
-    }
-  }
-  return out;
-}
 
 // ------------------------------------------------------------------ bush builder (per-bush merged)
 // European boxwood-like bushes: denser, smaller, rounded – not palm fronds
@@ -960,19 +645,11 @@ export function makeVegInstancesWind(geo: THREE.BufferGeometry, spots: VegSpot[]
   return im;
 }
 
-// ------------------------------------------------------------------ keep old API for rocks/stumps etc re-exported from models?
-// This file only handles trees/bushes. Other foliage (ferns etc) stays in models.ts
-
 // ------------------------------------------------------------------ dispose
 export function disposeFoliage() {
   windTex.dispose();
   gradMap?.dispose();
   puffBase.dispose();
-  needleBase.dispose();
-  treeWidePuffBase.dispose();
-  treeWideNeedleBase.dispose();
-  sharedPuffMat.dispose();
-  sharedNeedleMat.dispose();
   sharedBushMat.dispose();
   sharedVegWindMat.dispose();
 }

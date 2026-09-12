@@ -280,18 +280,115 @@ export function buildSoldier(kind: EnemyKind): Humanoid {
 // ---------------------------------------------------------------- props
 export type TreeKind = 'oak' | 'pine' | 'autumn' | 'birch' | 'blossom';
 
-// ------------------------------------------------------------------ BotW-inspired particle foliage
-// The old solid-sphere trees and bush blobs have been replaced by a particle system:
-//  - each broadleaf tree is a cloud of small circular leaf puffs (3 crossing quads per puff)
-//  - pines are layered needle cards arranged in rings
-//  - bushes are merged puff clusters with wind, plus tiny berry puffs for berry bushes
-//  - all foliage shares the same wind noise texture as the grass (travelling gusts)
-//  - trunks stay as instanced cylinders for performance, shadows as before
-// See src/game/foliage.ts for the full implementation.
-import { buildTrees as buildTreesFoliage, buildBush as buildBushFoliage, buildBerryBush as buildBerryBushFoliage, buildHedge as buildHedgeFoliage, buildRosebush as buildRosebushFoliage } from './foliage';
+// Bushes, hedges and rosebushes keep the particle-foliage look from this branch
+// (see foliage.ts). Trees are the classic solid toon canopies as on main, with a
+// gentle shader-driven canopy sway (applyTreeWind below) so they move slightly
+// in the wind without changing how they look.
+import { buildBush as buildBushFoliage, buildBerryBush as buildBerryBushFoliage, buildHedge as buildHedgeFoliage, buildRosebush as buildRosebushFoliage, foliageUniforms } from './foliage';
 
+/** Trees are rendered as one instanced trio (trunk/canopy/shadow) per kind so the map can mix species. */
 export function buildTrees(trees: TreeSpec[]): THREE.Object3D[] {
-  return buildTreesFoliage(trees);
+  const out: THREE.Object3D[] = [];
+  for (const kind of ['oak', 'pine', 'autumn', 'birch', 'blossom'] as TreeKind[]) {
+    const list = trees.filter((t) => (t.kind ?? 'oak') === kind);
+    if (list.length) out.push(...buildTreeVariant(list, kind));
+  }
+  return out;
+}
+
+/** Gentle wind sway for the instanced tree canopies — look untouched, motion only.
+ *  The canopy leans into the same travelling gusts as the grass and bushes (shared
+ *  uTime / wind texture / wind direction uniforms), applied in world space after the
+ *  instance transform so every tree bows with the same wind. Vertices bend more the
+ *  higher they sit: the crown rustles while the part hugging the trunk stays put. */
+function applyTreeWind(mat: THREE.MeshToonMaterial) {
+  mat.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, foliageUniforms);
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+        uniform float uTime;
+        uniform sampler2D uWindTex;
+        uniform float uWindScale;
+        uniform vec2 uWindDir;
+        uniform float uGust;
+        uniform float uSway;`,
+      )
+      .replace(
+        '#include <project_vertex>',
+        `vec4 mvPosition = vec4( transformed, 1.0 );
+        #ifdef USE_INSTANCING
+          mvPosition = instanceMatrix * mvPosition;
+          // canopy wind, in world space (these meshes sit untransformed in the scene)
+          float treeScale = length( instanceMatrix[0].xyz );
+          float bend = clamp( ( position.y - 0.8 ) * 0.45, 0.0, 1.0 );
+          bend = bend * bend * 0.65 + bend * 0.35;
+          vec2 wuv = mvPosition.xz / uWindScale + uWindDir * ( uTime * 0.13 );
+          float gust = texture2D( uWindTex, wuv ).r;
+          float phase = instanceMatrix[3].x * 1.7 + instanceMatrix[3].z * 2.3;
+          vec2 windOff = uWindDir * ( ( gust - 0.42 ) * uGust );
+          windOff += vec2( sin( uTime * 1.1 + phase ), cos( uTime * 0.85 + phase * 1.31 ) ) * uSway;
+          windOff *= treeScale * bend * 1.8;
+          mvPosition.xz += windOff;
+          mvPosition.y -= ( abs( windOff.x ) + abs( windOff.y ) ) * 0.3;
+        #endif
+        mvPosition = modelViewMatrix * mvPosition;
+        gl_Position = projectionMatrix * mvPosition;`,
+      );
+  };
+}
+
+function buildTreeVariant(trees: TreeSpec[], kind: TreeKind): THREE.Object3D[] {
+  const mk = (r: number, sx: number, sy: number, sz: number, x: number, y: number, z: number) => {
+    const g = new THREE.SphereGeometry(r, 12, 8);
+    g.scale(sx, sy, sz);
+    g.translate(x, y, z);
+    return g;
+  };
+  let canopyGeo: THREE.BufferGeometry;
+  if (kind === 'pine') {
+    // tall stacked cones: the conifers of the Amber Highland
+    const cone = (r: number, h: number, y: number) => {
+      const g = new THREE.ConeGeometry(r, h, 9);
+      g.translate(0, y + h / 2, 0);
+      return g;
+    };
+    canopyGeo = mergeGeometries([cone(1.0, 1.5, 0.75), cone(0.76, 1.35, 1.45), cone(0.52, 1.15, 2.1)])!;
+  } else {
+    canopyGeo = mergeGeometries([
+      mk(1.0, 1, 0.62, 0.8, 0, 0.9, 0),
+      mk(0.5, 1, 0.9, 0.9, -0.55, 1.25, -0.1),
+      mk(0.5, 1, 0.9, 0.9, 0.55, 1.25, -0.1),
+      mk(0.48, 1, 0.9, 0.9, 0, 1.45, 0.25),
+      mk(0.44, 1, 0.9, 0.9, 0.05, 1.3, -0.35),
+    ])!;
+  }
+  const canopyMat = toon(kind === 'pine' ? '#2e7a4a' : kind === 'autumn' ? '#d18a2e' : kind === 'birch' ? '#9ac04a' : kind === 'blossom' ? '#e89ac0' : '#3f9a3d');
+  applyTreeWind(canopyMat);
+  const trunkMat = toon(kind === 'birch' ? '#e8e0d0' : '#6b4226');
+  const trunkGeo = new THREE.CylinderGeometry(0.2, 0.28, 0.95, 8).translate(0, 0.47, 0);
+  const shadowGeo = new THREE.CircleGeometry(0.9, 12).rotateX(-Math.PI / 2).scale(1, 1, 0.7).translate(0, 0.015, 0.1);
+  const canopy = new THREE.InstancedMesh(canopyGeo, canopyMat, trees.length);
+  const trunk = new THREE.InstancedMesh(trunkGeo, trunkMat, trees.length);
+  const shadow = new THREE.InstancedMesh(shadowGeo, shadowMat, trees.length);
+  const mat = new THREE.Matrix4();
+  const q = new THREE.Quaternion();
+  const pos = new THREE.Vector3();
+  const scl = new THREE.Vector3();
+  trees.forEach((t, i) => {
+    pos.set(t.x, t.y ?? 0, t.z);
+    scl.set(t.scale, t.scale, t.scale);
+    q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), ((i * 37) % 7) * 0.3);
+    mat.compose(pos, q, scl);
+    canopy.setMatrixAt(i, mat);
+    trunk.setMatrixAt(i, mat);
+    shadow.setMatrixAt(i, mat);
+  });
+  canopy.instanceMatrix.needsUpdate = true;
+  trunk.instanceMatrix.needsUpdate = true;
+  shadow.instanceMatrix.needsUpdate = true;
+  return [trunk, canopy, shadow];
 }
 
 export function buildBush(): THREE.Group {
