@@ -128,11 +128,31 @@ function createPuffBase(): THREE.BufferGeometry {
 }
 
 function createNeedleBase(): THREE.BufferGeometry {
-  // single vertical quad, slightly tapered via uv shape in fragment shader
-  const pos = [-0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0];
-  const norm = [0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1];
-  const uv = [0, 0, 1, 0, 1, 1, 0, 1];
-  const idx = [0, 1, 2, 0, 2, 3];
+  // European spruce: dense small needle clusters – 2 crossing quads per puff,
+  // each quad slightly tapered, not a single large palm-like frond
+  const pos: number[] = [], norm: number[] = [], uv: number[] = [], idx: number[] = [];
+  let v = 0;
+  const addQuad = (rotY: number) => {
+    const c = Math.cos(rotY), s = Math.sin(rotY);
+    const corners: [number, number, number, number, number][] = [
+      [-0.5, -0.45, 0, 0, 0],
+      [0.5, -0.45, 0, 1, 0],
+      [0.5, 0.55, 0, 1, 1],
+      [-0.5, 0.55, 0, 0, 1],
+    ];
+    for (const [x, y, z, u, v_] of corners) {
+      const rx = x * c - z * s, rz = x * s + z * c, ry = y;
+      pos.push(rx, ry, rz);
+      const nx = 0, ny = 0, nz = 1;
+      const rnx = nx * c - nz * s, rnz = nx * s + nz * c;
+      norm.push(rnx, 0, rnz);
+      uv.push(u, v_);
+    }
+    idx.push(v, v + 1, v + 2, v, v + 2, v + 3);
+    v += 4;
+  };
+  addQuad(0);
+  addQuad(Math.PI / 2);
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   g.setAttribute('normal', new THREE.Float32BufferAttribute(norm, 3));
@@ -317,11 +337,12 @@ function linColor(hex: string): THREE.Color {
 }
 
 const TREE_BASE: Record<TreeKind, string> = {
-  oak: '#3f9a3d',
-  pine: '#2e7a4a',
-  autumn: '#d18a2e',
-  birch: '#9ac04a',
-  blossom: '#e89ac0',
+  // European palette: deeper oak green, dark spruce, muted autumn, light birch
+  oak: '#2e6b30',
+  pine: '#234d2a',
+  autumn: '#c46a1e',
+  birch: '#7fb34a',
+  blossom: '#e8a8b8',
 };
 
 function varyColor(baseHex: string, h1: number, h2: number, kind: TreeKind): THREE.Color {
@@ -423,34 +444,56 @@ function generateBroadleafInstances(trees: TreeSpec[], kind: TreeKind): FoliageI
   for (let ti = 0; ti < trees.length; ti++) {
     const t = trees[ti];
     const scale = t.scale;
-    const count = Math.round(10 + scale * 14 + hash2(ti, 0, 7) * 4); // 10-28
-    const canopyY = 1.35 * scale;
-    const radius = (kind === 'birch' ? 0.9 : 1.05) * scale;
+    // European broadleaf: denser, smaller puffs, rounded dome – not sparse palm
+    const isBirch = kind === 'birch';
+    const isSmall = scale < 0.8;
+    const outerCount = isSmall ? 18 : 26 + Math.floor(hash2(ti, 0, 7) * 8); // 26-34 for big
+    const innerCount = isSmall ? 8 : 14;
+    const canopyY = (isBirch ? 1.25 : 1.35) * scale;
+    const radius = (isBirch ? 0.85 : 1.05) * scale;
     const yBase = (t.y ?? 0) + canopyY;
-    for (let pi = 0; pi < count; pi++) {
+
+    // outer shell – slightly flattened ellipsoid, more coverage on top
+    for (let pi = 0; pi < outerCount; pi++) {
       const h1 = hash2(ti, pi, 11), h2 = hash2(ti, pi, 13), h3 = hash2(ti, pi, 17), h4 = hash2(ti, pi, 19);
-      // spherical distribution, biased to upper hemisphere and surface
       const theta = h1 * Math.PI * 2;
-      const phi = Math.acos(1 - h2 * 1.2); // 0..~130deg, more top
-      const r = radius * (0.55 + Math.pow(h3, 0.7) * 0.55);
+      // bias to upper hemisphere, but keep some lower to close bottom
+      const phi = Math.acos(THREE.MathUtils.lerp(-0.2, 0.95, h2));
+      const r = radius * (0.68 + Math.pow(h3, 0.65) * 0.42);
       const ox = r * Math.sin(phi) * Math.cos(theta);
-      const oy = r * Math.cos(phi) * 0.7 + (h4 - 0.5) * 0.15; // slightly flattened vertical
+      const oy = r * Math.cos(phi) * 0.55 + (h4 - 0.5) * 0.12;
       const oz = r * Math.sin(phi) * Math.sin(theta);
       const center = new THREE.Vector3(t.x + ox, yBase + oy, t.z + oz);
-      // scale variation: outer puffs slightly larger
       const distNorm = r / radius;
-      const pScale = (0.55 + distNorm * 0.35 + h1 * 0.25) * scale * (kind === 'blossom' ? 0.95 : 1);
+      // smaller European leaves: 0.28-0.48 * scale
+      const pScale = (0.28 + distNorm * 0.18 + h1 * 0.12) * scale * (kind === 'blossom' ? 0.9 : 1);
+      const rotY = h2 * Math.PI * 2 + h3 * 0.6;
+      const col = varyColor(baseHex, h3, h4, kind);
+      if (kind === 'blossom' && h1 < 0.15) {
+        const g = varyColor('#4a9a3a', h2, h3, 'oak');
+        col.lerp(g, 0.55);
+      }
+      const phase = h1 * Math.PI * 18 + ti * 0.7;
+      const wind = 0.32 + distNorm * 0.6 + h3 * 0.12;
+      out.push({ center, scale: pScale, rotY, color: col, phase, wind });
+    }
+    // inner darker filler for depth – makes oak look solid, not palm
+    for (let pi = 0; pi < innerCount; pi++) {
+      const h1 = hash2(ti, pi + 100, 11), h2 = hash2(ti, pi + 100, 13), h3 = hash2(ti, pi + 100, 17), h4 = hash2(ti, pi + 100, 19);
+      const theta = h1 * Math.PI * 2;
+      const phi = Math.acos(THREE.MathUtils.lerp(0.1, 0.85, h2));
+      const r = radius * 0.45 * (0.4 + h3 * 0.6);
+      const ox = r * Math.sin(phi) * Math.cos(theta);
+      const oy = r * Math.cos(phi) * 0.45 + (h4 - 0.5) * 0.08;
+      const oz = r * Math.sin(phi) * Math.sin(theta);
+      const center = new THREE.Vector3(t.x + ox, yBase + oy * 0.8, t.z + oz);
+      const pScale = (0.22 + h1 * 0.12) * scale;
       const rotY = h2 * Math.PI * 2;
       const col = varyColor(baseHex, h3, h4, kind);
-      // blossom: occasional green leaf mixed in? keep mostly pink
-      if (kind === 'blossom' && h1 < 0.12) {
-        // a few green leaves
-        const g = varyColor('#4faa4a', h2, h3, 'oak');
-        // blend toward green slightly
-        col.lerp(g, 0.6);
-      }
-      const phase = h1 * Math.PI * 20 + ti * 0.7;
-      const wind = 0.35 + distNorm * 0.75 + h3 * 0.15; // outer = more wind
+      // darken inner
+      col.multiplyScalar(0.82);
+      const phase = h1 * Math.PI * 12 + ti * 0.5;
+      const wind = 0.18 + h3 * 0.12;
       out.push({ center, scale: pScale, rotY, color: col, phase, wind });
     }
   }
@@ -464,39 +507,54 @@ function generatePineInstances(trees: TreeSpec[]): FoliageInstance[] {
     const t = trees[ti];
     const scale = t.scale;
     const yBase = t.y ?? 0;
-    // 3 tiers
+    // European spruce/fir: dense conical, 5 tiers, many small clusters
     const tiers = [
-      { h: 0.75, r: 1.0, n: 8, s: 0.95 },
-      { h: 1.45, r: 0.76, n: 6, s: 0.78 },
-      { h: 2.1, r: 0.52, n: 5, s: 0.62 },
+      { h: 0.55, r: 1.08, n: 10, s: 0.52 },
+      { h: 1.0, r: 0.88, n: 9, s: 0.46 },
+      { h: 1.42, r: 0.68, n: 7, s: 0.40 },
+      { h: 1.82, r: 0.48, n: 5, s: 0.34 },
+      { h: 2.15, r: 0.30, n: 3, s: 0.28 },
     ];
     for (let tierIdx = 0; tierIdx < tiers.length; tierIdx++) {
       const tier = tiers[tierIdx];
       const th = yBase + tier.h * scale;
       const tr = tier.r * scale;
       for (let j = 0; j < tier.n; j++) {
-        const h1 = hash2(ti, tierIdx * 10 + j, 21), h2 = hash2(ti, tierIdx * 10 + j, 23);
-        const ang = (j / tier.n) * Math.PI * 2 + h1 * 0.35;
-        const rad = tr * (0.85 + h1 * 0.3);
+        const h1 = hash2(ti, tierIdx * 10 + j, 21), h2 = hash2(ti, tierIdx * 10 + j, 23), h3 = hash2(ti, tierIdx * 10 + j, 25);
+        const ang = (j / tier.n) * Math.PI * 2 + h1 * 0.45;
+        const rad = tr * (0.78 + h1 * 0.32);
         const cx = t.x + Math.cos(ang) * rad;
         const cz = t.z + Math.sin(ang) * rad;
-        const cy = th + (h2 - 0.5) * 0.18 * scale;
+        const cy = th + (h2 - 0.5) * 0.14 * scale;
         const center = new THREE.Vector3(cx, cy, cz);
-        const pScale = tier.s * scale * (0.85 + h2 * 0.35);
-        const rotY = ang + Math.PI / 2 + (h1 - 0.5) * 0.3; // face outward
+        const pScale = tier.s * scale * (0.88 + h2 * 0.24);
+        // random orientation, not just outward – avoids palm look
+        const rotY = ang + (h3 - 0.5) * 0.8;
         const col = varyColor(baseHex, h1, h2, 'pine');
-        const phase = h1 * 15 + tierIdx * 2;
-        const wind = 0.25 + tierIdx * 0.25 + h1 * 0.2;
+        // slight darkening toward bottom tiers
+        if (tierIdx < 2) col.multiplyScalar(0.92);
+        const phase = h1 * 12 + tierIdx * 1.6;
+        const wind = 0.18 + tierIdx * 0.18 + h1 * 0.15;
         out.push({ center, scale: pScale, rotY, color: col, phase, wind });
-        // second ring slightly inner for density (BotW pines have dense layers)
-        if (tierIdx < 2 && j % 2 === 0) {
-          const rad2 = rad * 0.55;
-          const cx2 = t.x + Math.cos(ang + 0.3) * rad2;
-          const cz2 = t.z + Math.sin(ang + 0.3) * rad2;
-          const center2 = new THREE.Vector3(cx2, cy + 0.08 * scale, cz2);
+
+        // inner filler for density – makes spruce solid
+        if (tierIdx < 3) {
+          const rad2 = rad * (0.42 + h2 * 0.2);
+          const ang2 = ang + 0.35 + (h3 - 0.5) * 0.3;
+          const cx2 = t.x + Math.cos(ang2) * rad2;
+          const cz2 = t.z + Math.sin(ang2) * rad2;
+          const center2 = new THREE.Vector3(cx2, cy + 0.06 * scale, cz2);
           const col2 = varyColor(baseHex, h2, h1, 'pine');
-          out.push({ center: center2, scale: pScale * 0.85, rotY: rotY + 0.4, color: col2, phase: phase + 1.1, wind: wind * 0.9 });
+          col2.multiplyScalar(0.88);
+          out.push({ center: center2, scale: pScale * 0.78, rotY: rotY + 0.7, color: col2, phase: phase + 1.3, wind: wind * 0.75 });
         }
+      }
+      // top leader shoot
+      if (tierIdx === tiers.length - 1) {
+        const h = hash2(ti, tierIdx, 29);
+        const top = new THREE.Vector3(t.x + (h - 0.5) * 0.08 * scale, yBase + (tier.h + 0.32) * scale, t.z + (hash2(ti, tierIdx, 31) - 0.5) * 0.08 * scale);
+        const col = varyColor(baseHex, h, 0.5, 'pine');
+        out.push({ center: top, scale: 0.22 * scale, rotY: h * Math.PI * 2, color: col, phase: h * 10, wind: 0.65 });
       }
     }
   }
@@ -558,9 +616,9 @@ export function buildTrees(trees: TreeSpec[]): THREE.Object3D[] {
 }
 
 // ------------------------------------------------------------------ bush builder (per-bush merged)
-// For bushes we merge puffs into one BufferGeometry with vertex colours and wind attributes
+// European boxwood-like bushes: denser, smaller, rounded – not palm fronds
 function buildBushMerged(isBerry: boolean): THREE.BufferGeometry {
-  const puffCount = isBerry ? 11 : 9;
+  const puffCount = isBerry ? 16 : 14;
   const base = puffBase;
   const basePos = base.getAttribute('position') as THREE.BufferAttribute;
   const baseNorm = base.getAttribute('normal') as THREE.BufferAttribute;
@@ -575,34 +633,30 @@ function buildBushMerged(isBerry: boolean): THREE.BufferGeometry {
   const idx: number[] = [];
   let vertOff = 0;
 
-  const bushBaseHex = '#3f9a3d';
+  const bushBaseHex = '#2f6d2f';
   for (let pi = 0; pi < puffCount; pi++) {
     const h1 = hash2(pi, 0, 31), h2 = hash2(pi, 1, 33), h3 = hash2(pi, 2, 35), h4 = hash2(pi, 3, 37);
-    // hemisphere distribution
     const theta = h1 * Math.PI * 2;
-    const phi = Math.acos(1 - h2 * 0.95); // upper hemisphere
-    const r = 0.38 * (0.5 + h3 * 0.6);
+    const phi = Math.acos(1 - h2 * 0.88);
+    const r = 0.34 * (0.45 + h3 * 0.55);
     const ox = r * Math.sin(phi) * Math.cos(theta);
-    const oy = 0.33 + r * Math.cos(phi) * 0.7 + (h4 - 0.5) * 0.08;
+    const oy = 0.28 + r * Math.cos(phi) * 0.62 + (h4 - 0.5) * 0.06;
     const oz = r * Math.sin(phi) * Math.sin(theta);
-    const pScale = 0.52 + h1 * 0.32 + (isBerry ? 0.05 : 0);
+    const pScale = (0.30 + h1 * 0.18 + (isBerry ? 0.04 : 0));
     const rotY = h2 * Math.PI * 2;
     const cosY = Math.cos(rotY), sinY = Math.sin(rotY);
     const c = varyColor(bushBaseHex, h3, h4, 'oak');
-    // slight light variation per puff
-    const windF = 0.5 + (r / 0.38) * 0.6 + h1 * 0.2;
-    const ph = h1 * 12 + pi * 0.9;
+    const windF = 0.45 + (r / 0.34) * 0.5 + h1 * 0.15;
+    const ph = h1 * 10 + pi * 0.7;
 
     for (let vi = 0; vi < basePos.count; vi++) {
       let x = basePos.getX(vi) * pScale;
       let y = basePos.getY(vi) * pScale;
       let z = basePos.getZ(vi) * pScale;
-      // rotY
       const rx = x * cosY - z * sinY;
       const rz = x * sinY + z * cosY;
       const ry = y;
       pos.push(rx + ox, ry + oy, rz + oz);
-      // normal rotated
       const nx = baseNorm.getX(vi), ny = baseNorm.getY(vi), nz = baseNorm.getZ(vi);
       const rnx = nx * cosY - nz * sinY;
       const rnz = nx * sinY + nz * cosY;
@@ -707,7 +761,7 @@ export function buildBerryBush(): THREE.Group {
 
 // ------------------------------------------------------------------ hedge & rosebush (particle versions of props)
 function buildHedgeMerged(): THREE.BufferGeometry {
-  // hedge is ~1 tile long, low and dense: 3 bush clusters along X
+  // European trimmed hedge: low, dense boxwood – many small puffs, not large palm leaves
   const clusters = [
     { x: -0.3, z: 0, s: 1.0 },
     { x: 0, z: 0.08, s: 1.05 },
@@ -722,21 +776,21 @@ function buildHedgeMerged(): THREE.BufferGeometry {
   let vertOff = 0;
   for (let ci = 0; ci < clusters.length; ci++) {
     const cl = clusters[ci];
-    const puffCount = 7;
+    const puffCount = 11;
     for (let pi = 0; pi < puffCount; pi++) {
       const h1 = hash2(ci, pi, 51), h2 = hash2(ci, pi, 53), h3 = hash2(ci, pi, 55), h4 = hash2(ci, pi, 57);
       const theta = h1 * Math.PI * 2;
-      const phi = Math.acos(1 - h2 * 0.9);
-      const r = 0.32 * (0.5 + h3 * 0.6);
-      const ox = cl.x + r * Math.sin(phi) * Math.cos(theta) * 0.9;
-      const oy = 0.28 + r * Math.cos(phi) * 0.6 + (h4 - 0.5) * 0.06;
-      const oz = cl.z + r * Math.sin(phi) * Math.sin(theta) * 0.6;
-      const pScale = (0.42 + h1 * 0.28) * cl.s;
+      const phi = Math.acos(1 - h2 * 0.82);
+      const r = 0.28 * (0.45 + h3 * 0.5);
+      const ox = cl.x + r * Math.sin(phi) * Math.cos(theta) * 0.85;
+      const oy = 0.26 + r * Math.cos(phi) * 0.55 + (h4 - 0.5) * 0.05;
+      const oz = cl.z + r * Math.sin(phi) * Math.sin(theta) * 0.55;
+      const pScale = (0.26 + h1 * 0.16) * cl.s;
       const rotY = h2 * Math.PI * 2;
       const cosY = Math.cos(rotY), sinY = Math.sin(rotY);
-      const c = varyColor('#3f9a3d', h3, h4, 'oak');
-      const windF = 0.4 + (r / 0.32) * 0.5;
-      const ph = h1 * 10 + ci * 2;
+      const c = varyColor('#2f6d2f', h3, h4, 'oak');
+      const windF = 0.35 + (r / 0.28) * 0.4;
+      const ph = h1 * 9 + ci * 2;
       for (let vi = 0; vi < basePos.count; vi++) {
         let x = basePos.getX(vi) * pScale, y = basePos.getY(vi) * pScale, z = basePos.getZ(vi) * pScale;
         const rx = x * cosY - z * sinY, rz = x * sinY + z * cosY, ry = y;
@@ -781,7 +835,7 @@ export function buildHedge(): THREE.Group {
 }
 
 function buildRosebushMerged(): THREE.BufferGeometry {
-  const puffCount = 8;
+  const puffCount = 12;
   const base = puffBase;
   const basePos = base.getAttribute('position') as THREE.BufferAttribute;
   const baseNorm = base.getAttribute('normal') as THREE.BufferAttribute;
@@ -791,17 +845,17 @@ function buildRosebushMerged(): THREE.BufferGeometry {
   let vertOff = 0;
   for (let pi = 0; pi < puffCount; pi++) {
     const h1 = hash2(pi, 0, 61), h2 = hash2(pi, 1, 63), h3 = hash2(pi, 2, 65), h4 = hash2(pi, 3, 67);
-    const theta = h1 * Math.PI * 2, phi = Math.acos(1 - h2 * 0.9);
-    const r = 0.30 * (0.5 + h3 * 0.6);
+    const theta = h1 * Math.PI * 2, phi = Math.acos(1 - h2 * 0.85);
+    const r = 0.28 * (0.45 + h3 * 0.5);
     const ox = r * Math.sin(phi) * Math.cos(theta);
-    const oy = 0.30 + r * Math.cos(phi) * 0.6;
+    const oy = 0.28 + r * Math.cos(phi) * 0.55;
     const oz = r * Math.sin(phi) * Math.sin(theta);
-    const pScale = 0.40 + h1 * 0.24;
+    const pScale = 0.26 + h1 * 0.16;
     const rotY = h2 * Math.PI * 2;
     const cosY = Math.cos(rotY), sinY = Math.sin(rotY);
-    const c = varyColor('#3f9a3d', h3, h4, 'oak');
-    const windF = 0.5 + (r / 0.30) * 0.5;
-    const ph = h1 * 10;
+    const c = varyColor('#2f6d2f', h3, h4, 'oak');
+    const windF = 0.42 + (r / 0.28) * 0.4;
+    const ph = h1 * 9;
     for (let vi = 0; vi < basePos.count; vi++) {
       let x = basePos.getX(vi) * pScale, y = basePos.getY(vi) * pScale, z = basePos.getZ(vi) * pScale;
       const rx = x * cosY - z * sinY, rz = x * sinY + z * cosY, ry = y;
