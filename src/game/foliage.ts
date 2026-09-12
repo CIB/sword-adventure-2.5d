@@ -165,6 +165,35 @@ function createNeedleBase(): THREE.BufferGeometry {
 const puffBase = createPuffBase();
 const needleBase = createNeedleBase();
 
+// wider, flatter puff for trees – single larger bush look, wider proportion as requested
+function createWidePuffBase(): THREE.BufferGeometry {
+  const g = createPuffBase();
+  const pos = g.getAttribute('position') as THREE.BufferAttribute;
+  for (let i = 0; i < pos.count; i++) {
+    pos.setX(i, pos.getX(i) * 1.45);
+    pos.setZ(i, pos.getZ(i) * 1.42);
+    pos.setY(i, pos.getY(i) * 0.82);
+  }
+  pos.needsUpdate = true;
+  g.computeBoundingSphere();
+  return g;
+}
+const treeWidePuffBase = createWidePuffBase();
+
+function createWideNeedleBase(): THREE.BufferGeometry {
+  const g = createNeedleBase();
+  const pos = g.getAttribute('position') as THREE.BufferAttribute;
+  for (let i = 0; i < pos.count; i++) {
+    pos.setX(i, pos.getX(i) * 1.35);
+    pos.setZ(i, pos.getZ(i) * 1.35);
+    pos.setY(i, pos.getY(i) * 0.90);
+  }
+  pos.needsUpdate = true;
+  g.computeBoundingSphere();
+  return g;
+}
+const treeWideNeedleBase = createWideNeedleBase();
+
 // ------------------------------------------------------------------ shaders
 const INSTANCED_VERT = /* glsl */ `
 uniform float uTime;
@@ -437,40 +466,18 @@ function generateBroadleafInstances(trees: TreeSpec[], kind: TreeKind): FoliageI
   for (let ti = 0; ti < trees.length; ti++) {
     const t = trees[ti];
     const scale = t.scale;
-    const isBirch = kind === 'birch';
-    const isSmall = scale < 0.8;
-    // Tree as SINGLE larger bush – user says bushes look good, trees should be same but bigger & wider
-    // Use 1 huge central puff + 3-4 overlapping side puffs, all large, heavy overlap = solid bush look
-    const yBase = (t.y ?? 0) + (isBirch ? 1.20 : 1.30) * scale;
-
-    const add = (ox: number, oy: number, oz: number, s: number, dark = 0) => {
-      const h1 = hash2(ti, out.length, 11), h2 = hash2(ti, out.length, 13), h3 = hash2(ti, out.length, 17);
-      const center = new THREE.Vector3(t.x + ox, yBase + oy, t.z + oz);
-      const col = varyColor(baseHex, h3, h2, kind);
-      if (dark) col.multiplyScalar(1 - dark);
-      if (kind === 'blossom' && h1 < 0.10) {
-        const g = varyColor('#4a9a3a', h2, h3, 'oak');
-        col.lerp(g, 0.4);
-      }
-      out.push({ center, scale: s, rotY: h1 * Math.PI * 2, color: col, phase: h1 * 6 + ti * 0.2, wind: 0.12 + dark * 0.05 });
-    };
-
-    // central huge bush
-    add(0, 0.12 * scale, 0, (isSmall ? 1.15 : 1.55) * scale, 0);
-    // 3-4 side puffs making it wider in XZ (European broad, not tall palm)
-    const sideCount = isSmall ? 3 : 4;
-    const sideR = (isSmall ? 0.42 : 0.62) * scale;
-    const sideS = (isSmall ? 0.78 : 1.05) * scale;
-    for (let i = 0; i < sideCount; i++) {
-      const ang = (i / sideCount) * Math.PI * 2 + hash2(ti, i, 41) * 0.6;
-      const r = sideR * (0.85 + hash2(ti, i, 43) * 0.3);
-      const ox = Math.cos(ang) * r * 1.35; // wider XZ
-      const oz = Math.sin(ang) * r * 1.35;
-      const oy = (hash2(ti, i, 45) - 0.5) * 0.14 * scale + (isSmall ? 0.02 : 0.06) * scale;
-      add(ox, oy, oz, sideS * (0.88 + hash2(ti, i, 47) * 0.22), i % 2 ? 0.12 : 0);
+    const yBase = (t.y ?? 0) + 1.28 * scale;
+    // SINGLE larger bush per tree – solid, no disjointed leaves, wider proportion
+    const h1 = hash2(ti, 0, 11), h2 = hash2(ti, 0, 13), h3 = hash2(ti, 0, 17);
+    const center = new THREE.Vector3(t.x, yBase, t.z);
+    // wider bush: 1.75*scale for big trees, 1.25 for small – matches bush ratio that looked good
+    const pScale = (scale < 0.8 ? 1.25 : 1.75) * scale * (0.92 + h1 * 0.16);
+    const col = varyColor(baseHex, h3, h2, kind);
+    if (kind === 'blossom' && h1 < 0.15) {
+      const g = varyColor('#4a9a3a', h2, h3, 'oak');
+      col.lerp(g, 0.35);
     }
-    // one extra top puff for dome
-    add(0, (isSmall ? 0.38 : 0.52) * scale, 0, (isSmall ? 0.68 : 0.88) * scale, 0.08);
+    out.push({ center, scale: pScale, rotY: h1 * Math.PI * 2, color: col, phase: h1 * 5 + ti * 0.15, wind: 0.10 });
   }
   return out;
 }
@@ -482,39 +489,12 @@ function generatePineInstances(trees: TreeSpec[]): FoliageInstance[] {
     const t = trees[ti];
     const scale = t.scale;
     const yBase = t.y ?? 0;
-    // Pine as larger bush but conical – still solid bush look, 1 central + side puffs lower, wider at base
-    const add = (ox: number, oy: number, oz: number, s: number, dark = 0) => {
-      const h1 = hash2(ti, out.length, 21), h2 = hash2(ti, out.length, 23);
-      const center = new THREE.Vector3(t.x + ox, yBase + oy, t.z + oz);
-      const col = varyColor(baseHex, h1, h2, 'pine');
-      col.multiplyScalar(1 - dark);
-      out.push({ center, scale: s, rotY: h1 * Math.PI * 2, color: col, phase: h1 * 6 + ti * 0.2, wind: 0.10 + dark * 0.05 });
-    };
-
-    // solid core column
-    add(0, 1.15 * scale, 0, 1.25 * scale, 0.08);
-    add(0, 0.70 * scale, 0, 1.45 * scale, 0.12);
-    // wider base ring – makes it look like bush but conical
-    const baseCount = 5;
-    const baseR = 0.72 * scale;
-    for (let i = 0; i < baseCount; i++) {
-      const ang = (i / baseCount) * Math.PI * 2 + hash2(ti, i, 51) * 0.4;
-      const r = baseR * (0.85 + hash2(ti, i, 53) * 0.25);
-      const ox = Math.cos(ang) * r * 1.25;
-      const oz = Math.sin(ang) * r * 1.25;
-      const oy = 0.62 * scale + (hash2(ti, i, 55) - 0.5) * 0.12 * scale;
-      add(ox, oy, oz, 0.92 * scale, 0.10);
-    }
-    // mid ring
-    const midCount = 4;
-    const midR = 0.48 * scale;
-    for (let i = 0; i < midCount; i++) {
-      const ang = (i / midCount) * Math.PI * 2 + hash2(ti, i + 10, 61) * 0.4;
-      const r = midR * (0.85 + hash2(ti, i + 10, 63) * 0.25);
-      add(Math.cos(ang) * r, 1.35 * scale, Math.sin(ang) * r, 0.72 * scale, 0.06);
-    }
-    // top
-    add(0, 1.85 * scale, 0, 0.55 * scale, 0);
+    // Pine as single larger bush but slightly taller – solid, wider at base, no disjointed lobes
+    const h1 = hash2(ti, 0, 21), h2 = hash2(ti, 0, 23);
+    const center = new THREE.Vector3(t.x, yBase + 1.10 * scale, t.z);
+    const pScale = (scale < 0.8 ? 1.15 : 1.60) * scale * (0.90 + h1 * 0.14);
+    const col = varyColor(baseHex, h1, h2, 'pine');
+    out.push({ center, scale: pScale, rotY: h1 * Math.PI * 2, color: col, phase: h1 * 5 + ti * 0.15, wind: 0.08 });
   }
   return out;
 }
@@ -550,12 +530,11 @@ export function buildTrees(trees: TreeSpec[]): THREE.Object3D[] {
     shadowMesh.instanceMatrix.needsUpdate = true;
     out.push(trunkMesh, shadowMesh);
 
-    // foliage
+    // foliage – single larger bush per tree, wider proportion, solid like bushes
     if (kind === 'pine') {
       const instances = generatePineInstances(list);
       if (instances.length) {
-        const geo = buildInstancedGeo(instances, needleBase);
-        // share needle material across all pine groups
+        const geo = buildInstancedGeo(instances, treeWideNeedleBase);
         const mesh = new THREE.Mesh(geo, sharedNeedleMat);
         mesh.frustumCulled = false;
         out.push(mesh);
@@ -563,7 +542,7 @@ export function buildTrees(trees: TreeSpec[]): THREE.Object3D[] {
     } else {
       const instances = generateBroadleafInstances(list, kind);
       if (instances.length) {
-        const geo = buildInstancedGeo(instances, puffBase);
+        const geo = buildInstancedGeo(instances, treeWidePuffBase);
         const mesh = new THREE.Mesh(geo, sharedPuffMat);
         mesh.frustumCulled = false;
         out.push(mesh);
@@ -990,6 +969,8 @@ export function disposeFoliage() {
   gradMap?.dispose();
   puffBase.dispose();
   needleBase.dispose();
+  treeWidePuffBase.dispose();
+  treeWideNeedleBase.dispose();
   sharedPuffMat.dispose();
   sharedNeedleMat.dispose();
   sharedBushMat.dispose();
