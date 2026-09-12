@@ -12,8 +12,8 @@
  *    oblique shear, so a randomly-rotated vertical triangle would collapse to an invisible sliver
  *    whenever it sits edge-on to the view). Height stays true-3D, so shear, depth and the
  *    player-parting deformation all still work.
- *  - Blades grow in discrete Zelda-style TUFTS (up to four per tile, 5-10 blades each) rather than
- *    a uniform carpet: lush hearts of a meadow fill up, fringes thin out, many green tiles are bare.
+ *  - Blades grow in discrete Zelda-style TUFTS (up to four per tile, 5-10 blades each): every tile
+ *    that can grow grass carries tufts, denser in the lush meadows than in the sparse steppe.
  *  - Blades are instanced per 16×16-tile chunk (one draw call each), streamed around the camera.
  *  - All animation lives in the vertex shader: travelling gusts (a noise field scrolled in world
  *    space), per-blade idle sway, gust shimmer, and radial parting around the player.
@@ -183,69 +183,11 @@ void main() {
 `;
 
 // ------------------------------------------------------------------ placement rules
-/** Patchiness: smooth value noise (two octaves) so grass grows in BoTW-style clumps, not uniformly. */
-function valueNoise(x: number, z: number, cell: number, salt: number): number {
-  const x0 = Math.floor(x / cell), z0 = Math.floor(z / cell);
-  const fx = x / cell - x0, fz = z / cell - z0;
-  const sx = fx * fx * (3 - 2 * fx), sz = fz * fz * (3 - 2 * fz);
-  const h00 = hash2(x0, z0, salt), h10 = hash2(x0 + 1, z0, salt), h01 = hash2(x0, z0 + 1, salt), h11 = hash2(x0 + 1, z0 + 1, salt);
-  return (h00 * (1 - sx) + h10 * sx) * (1 - sz) + (h01 * (1 - sx) + h11 * sx) * sz;
-}
-/** Large, soft field that decides where grass patches lie (big cells -> broad, calm shapes). */
-function patchNoise(tx: number, tz: number): number {
-  return 0.65 * valueNoise(tx + 0.5, tz + 0.5, 9, 7) + 0.35 * valueNoise(tx + 0.5, tz + 0.5, 4, 17);
-}
-
-/**
- * Is this tile inside a grass patch? Zelda-style: patches are solid, organised areas with a hard
- * edge — a tile is either fully tufted or bare, never "a bit". The patch field is thresholded per
- * biome so the meadows carry broad patches while the mesa and highland get only a few small ones.
- */
-function inPatch(w: World, tx: number, tz: number): boolean {
-  if (!w.canGrowGrass(tx, tz)) return false;
-  const t = w.tile(tx, tz);
-  const { density } = biomeMix(w, tx, tz);
-  const tileMul = t === Tile.Heather ? 0.6 : t === Tile.DryGrass ? 0.75 : 1;
-  const threshold = 0.5 + (1 - density * tileMul) * 0.3;
-  return patchNoise(tx, tz) > threshold;
-}
-
-/**
- * Per-world patch mask, cached: the raw patch field, then lone tiles / one-tile spurs eroded away
- * (a tile needs at least two 4-neighbours) until stable, so every edge reads clean. Building it
- * costs one pass over the map at startup.
- */
-const patchMasks = new WeakMap<World, Uint8Array>();
-function patchMask(w: World): Uint8Array {
-  let m = patchMasks.get(w);
-  if (m) return m;
-  m = new Uint8Array(MAP_W * MAP_H);
-  for (let z = 0; z < MAP_H; z++) for (let x = 0; x < MAP_W; x++) if (inPatch(w, x, z)) m[z * MAP_W + x] = 1;
-  const at = (x: number, z: number) => (x < 0 || z < 0 || x >= MAP_W || z >= MAP_H ? 0 : m![z * MAP_W + x]);
-  for (let changed = true; changed;) {
-    changed = false;
-    for (let z = 0; z < MAP_H; z++) for (let x = 0; x < MAP_W; x++) {
-      if (!m[z * MAP_W + x]) continue;
-      if (at(x - 1, z) + at(x + 1, z) + at(x, z - 1) + at(x, z + 1) < 2) { m[z * MAP_W + x] = 0; changed = true; }
-    }
-  }
-  patchMasks.set(w, m);
-  return m;
-}
-
-/**
- * How many tufts a tile grows: MAX_TUFTS_PER_TILE inside a patch, 0 outside. Deterministic, so
- * the sword can ask about tiles whose chunk isn't built.
- */
-export function tuftCount(w: World, tx: number, tz: number): number {
-  if (tx < 0 || tz < 0 || tx >= MAP_W || tz >= MAP_H) return 0;
-  return patchMask(w)[tz * MAP_W + tx] ? MAX_TUFTS_PER_TILE : 0;
-}
-
 /**
  * Lushness + dryness per biome, blended with the world's own soft biome weights so the carpet
  * transitions across borders exactly like the ground colours do (no hard lines at region edges).
- * Meadows grow a full BotW carpet; the rocky mesa and the amber highland only sparse steppe.
+ * Meadows grow a full carpet of tufts; the rocky mesa and the amber highland a sparser steppe —
+ * but every grass tile carries at least one tuft, so the green ground is never bare.
  */
 const BIOME_DENSITY: Record<Biome, number> = { meadow: 1.0, lake: 0.95, farm: 0.85, marsh: 0.55, moor: 0.45, mesa: 0.35, highland: 0.25 };
 const BIOME_DRY: Record<Biome, number> = { meadow: 0, lake: 0, farm: 0.05, marsh: 0.2, moor: 0.25, mesa: 0.4, highland: 0.7 };
@@ -259,6 +201,21 @@ function biomeMix(w: World, tx: number, tz: number): { density: number; dry: num
     dry += wt * BIOME_DRY[b];
   }
   return { density, dry };
+}
+
+/**
+ * How many tufts a tile grows. Every tile that can grow grass carries tufts — a full 2×2 in the
+ * lush meadows, fewer (but never none) toward the dry mesa and highland, scaled by the local
+ * biome density so the steppe stays sparser than the meadow. Deterministic, so the sword can ask
+ * about tiles whose chunk isn't built.
+ */
+export function tuftCount(w: World, tx: number, tz: number): number {
+  if (tx < 0 || tz < 0 || tx >= MAP_W || tz >= MAP_H) return 0;
+  if (!w.canGrowGrass(tx, tz)) return 0;
+  const t = w.tile(tx, tz);
+  const { density } = biomeMix(w, tx, tz);
+  const tileMul = t === Tile.Heather ? 0.6 : t === Tile.DryGrass ? 0.75 : 1;
+  return Math.max(1, Math.min(MAX_TUFTS_PER_TILE, Math.round(MAX_TUFTS_PER_TILE * density * tileMul)));
 }
 
 // ------------------------------------------------------------------ system

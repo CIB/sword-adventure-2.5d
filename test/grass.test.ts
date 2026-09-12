@@ -57,7 +57,7 @@ if (g) {
   check('unit blade base geometry', base.count === 3);
   check('instance attributes match', a0.count === a1.count && a0.count === a2.count, `${n} blades`);
   check('instance count flag set', g.instanceCount === n);
-  check('tufted Zelda-style coverage (patchy, not a carpet)', n >= 256 * 3 && n <= 256 * 24, `${n} blades (~${(n / 256).toFixed(1)}/tile)`);
+  check('dense carpet of blades (full coverage)', n >= 256 * 8 && n <= 256 * 36, `${n} blades (~${(n / 256).toFixed(1)}/tile)`);
   const cutAttr = g.getAttribute('aCut') as THREE.InstancedBufferAttribute;
   let standing = 0;
   for (let i = 0; i < cutAttr.count; i++) if (cutAttr.getX(i) < 0) standing++;
@@ -66,6 +66,9 @@ if (g) {
   let rangeSum = 0;
   for (const [, r] of ranges) rangeSum += r[1];
   check('tile ranges cover every blade', rangeSum === n, `${ranges.size} tiles`);
+  let growableChunk = 0;
+  for (let z = 33; z < 49; z++) for (let x = 33; x < 49; x++) if (world.canGrowGrass(x, z)) growableChunk++;
+  check('every grass tile in the chunk carries tufts', ranges.size === growableChunk, `${ranges.size}/${growableChunk} tiles tufted`);
   check('instance data fits in memory', n <= 8000);
   // every blade roots exactly on the drawn ground plane; heights/widths sensible; tint+dry valid
   let maxErr = 0, badH = 0, badTint = 0, badDry = 0, flowers = 0, maxDry = 0;
@@ -89,7 +92,7 @@ if (g) {
 
 // ---- biome response: the amber highland grows sparse, bleached blades
 {
-  // pick the highland chunk with the most tufts (patches there are few and small, so don't hardcode one)
+  // pick the highland chunk with the most tufts (the steppe is sparse, so don't hardcode one)
   let best: [number, number] = [176, 16], bestN = -1;
   for (let cz = 0; cz < 48; cz += GRASS_CHUNK) for (let cx = 160; cx < MAP_W; cx += GRASS_CHUNK) {
     let n = 0;
@@ -132,25 +135,22 @@ if (g) {
   }
 }
 
-// ---- tuft distribution: solid organised patches with clean edges, bare green elsewhere
+// ---- tuft distribution: every grass tile carries tufts, denser in the meadow than the steppe
 {
-  let growable = 0, tufted = 0, partial = 0, lone = 0;
+  let growable = 0, tufted = 0, meadowFull = 0, meadowTot = 0, steppeSum = 0, steppeN = 0;
   for (let z = 0; z < MAP_H; z++) for (let x = 0; x < MAP_W; x++) {
     if (!world.canGrowGrass(x, z)) continue;
     growable++;
     const n = tuftCount(world, x, z);
-    if (n === 0) continue;
-    tufted++;
-    if (n !== 4) partial++; // inside a patch every tile is fully tufted (no half-density fringe)
-    let nb = 0;
-    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) if (tuftCount(world, x + dx, z + dz)) nb++;
-    if (nb === 0) lone++;
+    if (n > 0) tufted++;
+    const bw = world.biomeWeights(x, z);
+    if (bw.meadow > 0.9) { meadowTot++; if (n === 4) meadowFull++; }
+    if (bw.highland > 0.9 || bw.mesa > 0.9) { steppeSum += n; steppeN++; }
   }
-  const share = tufted / growable;
-  console.log(`INFO tufted green tiles: ${(100 * share).toFixed(1)}%, partial ${partial}, isolated ${lone}`);
-  check('patches cover a minority of the green', share > 0.15 && share < 0.55, `${(100 * share).toFixed(1)}%`);
-  check('tiles are either fully tufted or bare', partial === 0);
-  check('no isolated single-tile tufts', lone === 0, `${lone}`);
+  console.log(`INFO tufted grass tiles: ${tufted}/${growable} (${(100 * tufted / growable).toFixed(1)}%)`);
+  check('every grass tile carries tufts', tufted === growable, `${growable - tufted} bare`);
+  check('pure meadow tiles are fully tufted (2×2)', meadowFull === meadowTot, `${meadowFull}/${meadowTot}`);
+  check('steppe is sparser but never bare', steppeN > 0 && steppeSum / steppeN >= 1 && steppeSum / steppeN < 4, `${(steppeSum / steppeN).toFixed(1)} tufts/tile`);
   check('non-growable tiles never tuft', tuftCount(world, 120, 50) === 0 && tuftCount(world, 9, 8) === 0);
 }
 
