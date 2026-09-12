@@ -439,78 +439,62 @@ function generateBroadleafInstances(trees: TreeSpec[], kind: TreeKind): FoliageI
     const scale = t.scale;
     const isBirch = kind === 'birch';
     const isSmall = scale < 0.8;
-    // More solid European canopy: fewer but larger overlapping puffs + dense inner core
-    const outerCount = isSmall ? 14 : 20 + Math.floor(hash2(ti, 0, 7) * 6); // 20-26
-    const midCount = isSmall ? 8 : 12;
-    const innerCount = isSmall ? 6 : 10;
-    const canopyY = (isBirch ? 1.22 : 1.32) * scale;
-    const radius = (isBirch ? 0.82 : 1.02) * scale;
+    // Tree as larger bush – user says bushes look good, make trees same but bigger & wider
+    // Use bush logic: many overlapping puffs, but scaled up 2.5x and wider in XZ
+    const puffCount = isSmall ? 16 : 22;
+    const canopyY = (isBirch ? 1.18 : 1.28) * scale;
+    // wider proportion: XZ 1.35x, Y 0.75x of sphere
+    const rx = (isBirch ? 1.05 : 1.32) * scale;
+    const ry = 0.72 * scale;
+    const rz = (isBirch ? 1.05 : 1.32) * scale;
     const yBase = (t.y ?? 0) + canopyY;
 
-    // central core – large puff that fills gaps (makes tree solid)
+    // central solid core
     {
       const h = hash2(ti, 0, 99);
-      const center = new THREE.Vector3(t.x + (h - 0.5) * 0.12 * scale, yBase + 0.08 * scale, t.z + (hash2(ti, 1, 99) - 0.5) * 0.12 * scale);
-      const pScale = (isBirch ? 0.85 : 0.95) * scale;
+      const center = new THREE.Vector3(t.x, yBase + 0.12 * scale, t.z);
+      const pScale = (isSmall ? 0.95 : 1.25) * scale;
       const col = varyColor(baseHex, h, 0.5, kind);
-      col.multiplyScalar(0.92);
-      out.push({ center, scale: pScale, rotY: h * Math.PI * 2, color: col, phase: h * 8, wind: 0.18 });
+      col.multiplyScalar(0.88);
+      out.push({ center, scale: pScale, rotY: h * Math.PI * 2, color: col, phase: h * 6, wind: 0.12 });
     }
 
-    // outer shell – large overlapping puffs, flattened dome
-    for (let pi = 0; pi < outerCount; pi++) {
+    for (let pi = 0; pi < puffCount; pi++) {
       const h1 = hash2(ti, pi, 11), h2 = hash2(ti, pi, 13), h3 = hash2(ti, pi, 17), h4 = hash2(ti, pi, 19);
       const theta = h1 * Math.PI * 2;
-      const phi = Math.acos(THREE.MathUtils.lerp(-0.15, 0.88, h2));
-      const r = radius * (0.58 + Math.pow(h3, 0.6) * 0.52);
-      const ox = r * Math.sin(phi) * Math.cos(theta);
-      const oy = r * Math.cos(phi) * 0.52 + (h4 - 0.5) * 0.10;
-      const oz = r * Math.sin(phi) * Math.sin(theta);
+      const phi = Math.acos(THREE.MathUtils.lerp(-0.25, 0.88, h2));
+      // ellipsoid distribution, wider
+      const r = 0.92; // normalized radius factor, puffs placed near surface for bush look
+      const ox = r * rx * Math.sin(phi) * Math.cos(theta) * (0.55 + h3 * 0.45);
+      const oy = r * ry * Math.cos(phi) * 0.85 + (h4 - 0.5) * 0.12 * scale;
+      const oz = r * rz * Math.sin(phi) * Math.sin(theta) * (0.55 + h3 * 0.45);
       const center = new THREE.Vector3(t.x + ox, yBase + oy, t.z + oz);
-      const distNorm = r / radius;
-      // larger European leaves: 0.58-0.88 * scale – heavy overlap, not disjointed
-      const pScale = (0.58 + distNorm * 0.22 + h1 * 0.14) * scale * (kind === 'blossom' ? 0.92 : 1);
-      const rotY = h2 * Math.PI * 2 + h3 * 0.4;
+      // large overlapping – same ratio as bush (puff ~0.9 * cluster radius)
+      const pScale = (0.62 + h1 * 0.32) * scale;
+      const rotY = h2 * Math.PI * 2;
       const col = varyColor(baseHex, h3, h4, kind);
       if (kind === 'blossom' && h1 < 0.12) {
         const g = varyColor('#4a9a3a', h2, h3, 'oak');
-        col.lerp(g, 0.5);
+        col.lerp(g, 0.45);
       }
-      const phase = h1 * Math.PI * 14 + ti * 0.6;
-      const wind = 0.28 + distNorm * 0.45 + h3 * 0.10;
+      const phase = h1 * Math.PI * 10 + ti * 0.4;
+      const wind = 0.18 + (r * 0.25) + h3 * 0.08;
       out.push({ center, scale: pScale, rotY, color: col, phase, wind });
     }
-    // mid layer – medium puffs to bridge outer and inner
-    for (let pi = 0; pi < midCount; pi++) {
-      const h1 = hash2(ti, pi + 50, 11), h2 = hash2(ti, pi + 50, 13), h3 = hash2(ti, pi + 50, 17), h4 = hash2(ti, pi + 50, 19);
+    // extra inner filler for solidity
+    for (let pi = 0; pi < (isSmall ? 6 : 9); pi++) {
+      const h1 = hash2(ti, pi + 100, 11), h2 = hash2(ti, pi + 100, 13), h3 = hash2(ti, pi + 100, 17);
       const theta = h1 * Math.PI * 2;
-      const phi = Math.acos(THREE.MathUtils.lerp(0.05, 0.78, h2));
-      const r = radius * 0.62 * (0.5 + h3 * 0.5);
-      const ox = r * Math.sin(phi) * Math.cos(theta);
-      const oy = r * Math.cos(phi) * 0.42 + (h4 - 0.5) * 0.07;
-      const oz = r * Math.sin(phi) * Math.sin(theta);
-      const center = new THREE.Vector3(t.x + ox, yBase + oy * 0.85, t.z + oz);
-      const pScale = (0.48 + h1 * 0.14) * scale;
-      const rotY = h2 * Math.PI * 2;
-      const col = varyColor(baseHex, h3, h4, kind);
-      col.multiplyScalar(0.90);
-      out.push({ center, scale: pScale, rotY, color: col, phase: h1 * 10 + ti * 0.4, wind: 0.20 + h3 * 0.10 });
-    }
-    // inner dark filler
-    for (let pi = 0; pi < innerCount; pi++) {
-      const h1 = hash2(ti, pi + 100, 11), h2 = hash2(ti, pi + 100, 13), h3 = hash2(ti, pi + 100, 17), h4 = hash2(ti, pi + 100, 19);
-      const theta = h1 * Math.PI * 2;
-      const phi = Math.acos(THREE.MathUtils.lerp(0.15, 0.75, h2));
-      const r = radius * 0.38 * (0.4 + h3 * 0.5);
-      const ox = r * Math.sin(phi) * Math.cos(theta);
-      const oy = r * Math.cos(phi) * 0.38 + (h4 - 0.5) * 0.06;
-      const oz = r * Math.sin(phi) * Math.sin(theta);
-      const center = new THREE.Vector3(t.x + ox, yBase + oy * 0.7, t.z + oz);
-      const pScale = (0.38 + h1 * 0.12) * scale;
-      const rotY = h2 * Math.PI * 2;
-      const col = varyColor(baseHex, h3, h4, kind);
-      col.multiplyScalar(0.78);
-      out.push({ center, scale: pScale, rotY, color: col, phase: h1 * 9 + ti * 0.3, wind: 0.14 + h3 * 0.08 });
+      const phi = Math.acos(THREE.MathUtils.lerp(0.1, 0.7, h2));
+      const rr = 0.45 * (0.5 + h3 * 0.5);
+      const ox = rr * rx * Math.sin(phi) * Math.cos(theta);
+      const oy = rr * ry * Math.cos(phi) * 0.6;
+      const oz = rr * rz * Math.sin(phi) * Math.sin(theta);
+      const center = new THREE.Vector3(t.x + ox, yBase + oy, t.z + oz);
+      const pScale = (0.48 + h1 * 0.18) * scale;
+      const col = varyColor(baseHex, h3, h1, kind);
+      col.multiplyScalar(0.80);
+      out.push({ center, scale: pScale, rotY: h2 * Math.PI * 2, color: col, phase: h1 * 8, wind: 0.10 });
     }
   }
   return out;
@@ -523,55 +507,41 @@ function generatePineInstances(trees: TreeSpec[]): FoliageInstance[] {
     const t = trees[ti];
     const scale = t.scale;
     const yBase = t.y ?? 0;
-    // European spruce/fir: dense conical, 5 tiers, many small clusters
+    // Pine as larger bush but conical and wider at base – still solid like bush
     const tiers = [
-      { h: 0.55, r: 1.08, n: 10, s: 0.52 },
-      { h: 1.0, r: 0.88, n: 9, s: 0.46 },
-      { h: 1.42, r: 0.68, n: 7, s: 0.40 },
-      { h: 1.82, r: 0.48, n: 5, s: 0.34 },
-      { h: 2.15, r: 0.30, n: 3, s: 0.28 },
+      { h: 0.60, rx: 1.15, rz: 1.15, n: 8, s: 0.72 },
+      { h: 1.05, rx: 0.92, rz: 0.92, n: 7, s: 0.64 },
+      { h: 1.48, rx: 0.70, rz: 0.70, n: 6, s: 0.56 },
+      { h: 1.88, rx: 0.48, rz: 0.48, n: 4, s: 0.48 },
     ];
     for (let tierIdx = 0; tierIdx < tiers.length; tierIdx++) {
       const tier = tiers[tierIdx];
       const th = yBase + tier.h * scale;
-      const tr = tier.r * scale;
+      const trx = tier.rx * scale;
+      const trz = tier.rz * scale;
       for (let j = 0; j < tier.n; j++) {
-        const h1 = hash2(ti, tierIdx * 10 + j, 21), h2 = hash2(ti, tierIdx * 10 + j, 23), h3 = hash2(ti, tierIdx * 10 + j, 25);
-        const ang = (j / tier.n) * Math.PI * 2 + h1 * 0.45;
-        const rad = tr * (0.78 + h1 * 0.32);
-        const cx = t.x + Math.cos(ang) * rad;
-        const cz = t.z + Math.sin(ang) * rad;
-        const cy = th + (h2 - 0.5) * 0.14 * scale;
+        const h1 = hash2(ti, tierIdx * 10 + j, 21), h2 = hash2(ti, tierIdx * 10 + j, 23);
+        const ang = (j / tier.n) * Math.PI * 2 + h1 * 0.35;
+        const radX = trx * (0.75 + h1 * 0.28);
+        const radZ = trz * (0.75 + h1 * 0.28);
+        const cx = t.x + Math.cos(ang) * radX;
+        const cz = t.z + Math.sin(ang) * radZ;
+        const cy = th + (h2 - 0.5) * 0.10 * scale;
         const center = new THREE.Vector3(cx, cy, cz);
-        const pScale = tier.s * scale * (0.88 + h2 * 0.24);
-        // random orientation, not just outward – avoids palm look
-        const rotY = ang + (h3 - 0.5) * 0.8;
+        const pScale = tier.s * scale * (0.90 + h2 * 0.18);
+        const rotY = h1 * Math.PI * 2;
         const col = varyColor(baseHex, h1, h2, 'pine');
-        // slight darkening toward bottom tiers
         if (tierIdx < 2) col.multiplyScalar(0.92);
-        const phase = h1 * 12 + tierIdx * 1.6;
-        const wind = 0.18 + tierIdx * 0.18 + h1 * 0.15;
-        out.push({ center, scale: pScale, rotY, color: col, phase, wind });
-
-        // inner filler for density – makes spruce solid
-        if (tierIdx < 3) {
-          const rad2 = rad * (0.42 + h2 * 0.2);
-          const ang2 = ang + 0.35 + (h3 - 0.5) * 0.3;
-          const cx2 = t.x + Math.cos(ang2) * rad2;
-          const cz2 = t.z + Math.sin(ang2) * rad2;
-          const center2 = new THREE.Vector3(cx2, cy + 0.06 * scale, cz2);
-          const col2 = varyColor(baseHex, h2, h1, 'pine');
-          col2.multiplyScalar(0.88);
-          out.push({ center: center2, scale: pScale * 0.78, rotY: rotY + 0.7, color: col2, phase: phase + 1.3, wind: wind * 0.75 });
-        }
+        out.push({ center, scale: pScale, rotY, color: col, phase: h1 * 8 + tierIdx, wind: 0.14 + tierIdx * 0.08 });
       }
-      // top leader shoot
-      if (tierIdx === tiers.length - 1) {
-        const h = hash2(ti, tierIdx, 29);
-        const top = new THREE.Vector3(t.x + (h - 0.5) * 0.08 * scale, yBase + (tier.h + 0.32) * scale, t.z + (hash2(ti, tierIdx, 31) - 0.5) * 0.08 * scale);
-        const col = varyColor(baseHex, h, 0.5, 'pine');
-        out.push({ center: top, scale: 0.22 * scale, rotY: h * Math.PI * 2, color: col, phase: h * 10, wind: 0.65 });
-      }
+    }
+    // central column filler for solidity (like bush core)
+    {
+      const h = hash2(ti, 0, 88);
+      const center = new THREE.Vector3(t.x, yBase + 1.15 * scale, t.z);
+      const col = varyColor(baseHex, h, 0.5, 'pine');
+      col.multiplyScalar(0.85);
+      out.push({ center, scale: 1.05 * scale, rotY: h * Math.PI * 2, color: col, phase: h * 6, wind: 0.10 });
     }
   }
   return out;
