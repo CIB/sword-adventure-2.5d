@@ -5,8 +5,9 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import {
-  buildHeroine, buildSoldier, buildVillager, buildDog, VILLAGER_LOOKS, buildTrees, buildBush, buildRock, buildStump,
-  buildFence, buildHouse, buildProp, buildHeart, buildRupee, buildArrow, buildJavelinProjectile, type Humanoid,
+  buildHeroine, buildSoldier, buildVillager, buildDog, VILLAGER_LOOKS, buildTrees, buildBush, buildBerryBush, buildRock, buildStump,
+  buildFence, buildHouse, buildProp, buildHeart, buildRupee, buildArrow, buildJavelinProjectile,
+  buildFernGeo, buildTallGrassGeo, buildBriarGeo, buildLilyGeo, buildBoulderGeo, vegObject, type Humanoid,
 } from '../game/models';
 import type { PropKind, HouseSpec, EnemyKind } from '../game/world';
 import { World } from '../game/world';
@@ -17,7 +18,7 @@ type Entry = { name: string; build: () => { obj: THREE.Object3D; humanoid?: Huma
 type Cat = { name: string; items: Entry[] };
 
 const hum = (h: Humanoid) => ({ obj: h.root, humanoid: h });
-const PROPS: PropKind[] = ['well', 'sign', 'stall', 'bench', 'weathercock', 'lamp', 'barrel', 'crate', 'flowerpot', 'hedge', 'log', 'menhir', 'cart', 'hay', 'scarecrow', 'campfire', 'tent', 'banner', 'tower', 'ruinwall', 'pillar', 'crown'];
+const PROPS: PropKind[] = ['well', 'sign', 'stall', 'bench', 'weathercock', 'lamp', 'barrel', 'crate', 'flowerpot', 'hedge', 'log', 'menhir', 'cart', 'hay', 'scarecrow', 'campfire', 'tent', 'banner', 'tower', 'ruinwall', 'pillar', 'crown', 'windmill', 'anvil', 'forge', 'cauldron', 'grave', 'deadtree', 'reeds', 'rosebush', 'beehive', 'wheelbarrow', 'statue', 'mushroom', 'amberrock'];
 const world = new World();
 
 const catalog: Cat[] = [
@@ -28,10 +29,20 @@ const catalog: Cat[] = [
   { name: 'Foliage', items: [
     { name: 'Tree (big)', build: () => { const g = new THREE.Group(); for (const o of buildTrees([{ x: 0, z: 0, scale: 1 }])) g.add(o); return { obj: g, footprint: 4 }; } },
     { name: 'Tree (small)', build: () => { const g = new THREE.Group(); for (const o of buildTrees([{ x: 0, z: 0, scale: 0.6 }])) g.add(o); return { obj: g, footprint: 3 }; } },
-    { name: 'Bush', build: () => ({ obj: buildBush() }) }, { name: 'Bush stump', build: () => ({ obj: buildStump() }) },
-    { name: 'Rock', build: () => ({ obj: buildRock() }) }, { name: 'Fence post', build: () => ({ obj: buildFence() }) },
+    { name: 'Tree (pine)', build: () => { const g = new THREE.Group(); for (const o of buildTrees([{ x: 0, z: 0, scale: 1, kind: 'pine' }])) g.add(o); return { obj: g, footprint: 4 }; } },
+    { name: 'Tree (autumn)', build: () => { const g = new THREE.Group(); for (const o of buildTrees([{ x: 0, z: 0, scale: 1, kind: 'autumn' }])) g.add(o); return { obj: g, footprint: 4 }; } },
+    { name: 'Tree (birch)', build: () => { const g = new THREE.Group(); for (const o of buildTrees([{ x: 0, z: 0, scale: 1, kind: 'birch' }])) g.add(o); return { obj: g, footprint: 4 }; } },
+    { name: 'Tree (blossom)', build: () => { const g = new THREE.Group(); for (const o of buildTrees([{ x: 0, z: 0, scale: 1, kind: 'blossom' }])) g.add(o); return { obj: g, footprint: 4 }; } },
+    { name: 'Bush', build: () => ({ obj: buildBush() }) }, { name: 'Bush (berries)', build: () => ({ obj: buildBerryBush() }) }, { name: 'Bush stump', build: () => ({ obj: buildStump() }) },
+    { name: 'Rock', build: () => ({ obj: buildRock() }) }, { name: 'Rock (mossy)', build: () => ({ obj: buildRock(1) }) }, { name: 'Rock (crystal)', build: () => ({ obj: buildRock(2) }) },
+    { name: 'Boulder', build: () => ({ obj: vegObject(buildBoulderGeo()) }) },
+    { name: 'Fern', build: () => ({ obj: vegObject(buildFernGeo()) }) },
+    { name: 'Tall grass', build: () => ({ obj: vegObject(buildTallGrassGeo()) }) },
+    { name: 'Briar', build: () => ({ obj: vegObject(buildBriarGeo()) }) },
+    { name: 'Lily pads', build: () => ({ obj: vegObject(buildLilyGeo()) }) },
+    { name: 'Fence post', build: () => ({ obj: buildFence() }) },
   ] },
-  { name: 'Props', items: PROPS.map((k) => ({ name: k[0].toUpperCase() + k.slice(1), build: () => ({ obj: buildProp({ kind: k, x: 0, z: 0 }), footprint: k === 'tower' ? 6 : k === 'tent' || k === 'stall' ? 4 : 2 }) })) },
+  { name: 'Props', items: PROPS.map((k) => ({ name: k[0].toUpperCase() + k.slice(1), build: () => ({ obj: buildProp({ kind: k, x: 0, z: 0 }), footprint: k === 'tower' || k === 'windmill' ? 6 : k === 'statue' ? 3 : k === 'tent' || k === 'stall' ? 4 : k === 'deadtree' ? 2.5 : 2 }) })) },
   { name: 'Pickups & projectiles', items: [
     { name: 'Heart', build: () => ({ obj: buildHeart() }) }, { name: 'Rupee (green)', build: () => ({ obj: buildRupee(false) }) }, { name: 'Rupee (blue)', build: () => ({ obj: buildRupee(true) }) },
     { name: 'Arrow', build: () => ({ obj: buildArrow() }) }, { name: 'Javelin', build: () => ({ obj: buildJavelinProjectile() }) },
@@ -147,7 +158,13 @@ function applyFacing() {
 }
 
 function animate(dt: number) {
-  if (!current?.humanoid) { if (current) { const sp = current.obj.getObjectByName('spin'); if (sp) sp.rotation.y += dt * 1.5; } return; }
+  if (!current?.humanoid) {
+    if (current) {
+      const sp = current.obj.getObjectByName('spin'); if (sp) sp.rotation.y += dt * 1.5;
+      const ms = current.obj.getObjectByName('mill'); if (ms) ms.rotation.z += dt * 0.9; // windmill sails
+    }
+    return;
+  }
   const m = current.humanoid;
   if (!animCb.checked) { m.legL.rotation.x = m.legR.rotation.x = 0; m.body.position.y = 0; return; }
   animT += dt * 9;

@@ -3,11 +3,12 @@ import { getGradientMap as getGradientMapRef } from './models';
 import { MAP_W, MAP_H, TEX_PX, Tile, RNG, hash2, LEVEL_H, MAX_WALK_SLOPE, WATER_DEPTH, BRIDGE_H } from './constants';
 
 export type EnemyKind = 'sword' | 'spear' | 'javelin' | 'archer';
-export interface TreeSpec { x: number; z: number; scale: number; y?: number }
-export interface TileObj { tx: number; tz: number }
+export interface TreeSpec { x: number; z: number; scale: number; y?: number; kind?: 'oak' | 'pine' | 'autumn' | 'birch' | 'blossom' }
+export interface TileObj { tx: number; tz: number; v?: number }
 export interface HouseSpec { x: number; z: number; w: number; d: number; roof?: string; wall?: string; door?: 'S' | 'E' | 'W'; sign?: 'shop' | 'inn' | 'none' }
 export type PropKind = 'well' | 'sign' | 'stall' | 'bench' | 'weathercock' | 'lamp' | 'barrel' | 'crate' | 'flowerpot' | 'hedge'
-  | 'log' | 'menhir' | 'cart' | 'hay' | 'scarecrow' | 'campfire' | 'tent' | 'banner' | 'tower' | 'ruinwall' | 'pillar' | 'crown';
+  | 'log' | 'menhir' | 'cart' | 'hay' | 'scarecrow' | 'campfire' | 'tent' | 'banner' | 'tower' | 'ruinwall' | 'pillar' | 'crown'
+  | 'windmill' | 'anvil' | 'forge' | 'cauldron' | 'grave' | 'deadtree' | 'reeds' | 'rosebush' | 'beehive' | 'wheelbarrow' | 'statue' | 'mushroom' | 'amberrock';
 export interface PropSpec { kind: PropKind; x: number; z: number; rot?: number }
 export interface NpcSpec { id: string; x: number; z: number; facing?: 0 | 1 | 2 | 3; wander?: number }
 export interface SpawnSpec { x: number; z: number; kind: EnemyKind }
@@ -30,6 +31,26 @@ function polyDist(px: number, pz: number, pts: number[][]): number {
   return d;
 }
 
+/**
+ * Per-biome ground + path hues (DF-style: every region has its own soil and grass).
+ * IMPORTANT: brightness is deliberately kept constant across biomes (all grass ≈ L*150, all paths ≈ L*175)
+ * — only the hue changes, so no biome reads as a "darker" zone.
+ */
+export interface GroundPal {
+  grass: string;
+  path: string;
+}
+
+/** A fully resolved ground palette: base hues lerped per-tile between neighbouring biomes,
+ *  with shading variants derived at fixed contrast. */
+export interface MixedColors {
+  grass: string; grassL: string; grassD: string;
+  path: string; pathD: string; pathL: string; pathE: string;
+  daisies: boolean; pebbly: boolean;
+}
+
+export type Biome = 'meadow' | 'lake' | 'farm' | 'mesa' | 'highland' | 'moor' | 'marsh';
+
 export class World {
   readonly w = MAP_W;
   readonly h = MAP_H;
@@ -42,8 +63,16 @@ export class World {
   hmap = new Float32Array((MAP_W + 1) * (MAP_H + 1));
   trees: TreeSpec[] = [];
   bushes: TileObj[] = [];
-  rocks: TileObj[] = [];
+  rocks: TileObj[] = []; // v: 0 plain, 1 mossy, 2 crystal
   fences: TileObj[] = [];
+  /** undergrowth scatters (rendered as instanced vegetation) */
+  ferns: TileObj[] = [];
+  tallgrass: TileObj[] = [];
+  briars: TileObj[] = [];
+  boulders: TileObj[] = [];
+  lilies: TileObj[] = [];
+  /** tiles carrying undergrowth: ferns / tall grass / briars / boulders (keeps flowers & co. clear) */
+  vegCell = new Uint8Array(MAP_W * MAP_H);
   houses: HouseSpec[] = [
     { x: 4, z: 3, w: 5, d: 3, roof: '#b73c3c', wall: '#e8d6a8', sign: 'none' },       // elder's house
     { x: 12, z: 2, w: 5, d: 3, roof: '#3a5fd0', wall: '#e8d6a8', sign: 'none' },      // Marin & Tarin style cottage
@@ -305,6 +334,7 @@ export class World {
       { x0: 194, z0: 88, x1: 203, z1: 96 },   // the Crown hollow
       { x0: 186, z0: 4, x1: 194, z1: 11 },    // watchtower ruin
       { x0: 174, z0: 138, x1: 182, z1: 146 }, // the Drowned Field shrine
+      { x0: 88, z0: 122, x1: 93, z1: 126 },   // the windmill
     );
 
     // 5. terrain heights ------------------------------------------------------------------------------
@@ -387,19 +417,39 @@ export class World {
       [30, 1], [31, 1], [30, 2], [31, 2], [31, 27], [30, 27], [31, 28], [30, 28], [1, 27], [2, 27], [1, 28], [2, 28], [21, 17], [22, 17], [21, 18], [22, 18], [31, 12], [31, 13], [1, 12], [10, 18]];
     for (let x = 26; x <= 31; x += 2) for (let z = 19; z <= 21; z += 2) villageTrees.push([x, z]); // orchard behind the smithy
     for (const [x, z] of villageTrees) if (get(x, z) === Tile.Grass && !this.houseCell[this.idx(x, z)]) this.treeCell[this.idx(x, z)] = 1;
+    // how many trees in the 3x3 neighbourhood (drives forest-floor ground & species)
+    const treeDensity = new Uint8Array(w * h);
+    for (let z = 0; z < h; z++) for (let x = 0; x < w; x++) {
+      let c = 0;
+      for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+        const nx = x + dx, nz = z + dz;
+        if (nx >= 0 && nz >= 0 && nx < w && nz < h) c += this.treeCell[this.idx(nx, nz)];
+      }
+      treeDensity[this.idx(x, z)] = c;
+    }
+    // species: pines on the highland, an autumn drift through Willowmere, blossoms in the orchards,
+    // scattered birches in the open meadows
+    const treeKind = (x: number, z: number): 'oak' | 'pine' | 'autumn' | 'birch' | 'blossom' => {
+      if (x > 148 && z < 44) return 'pine';
+      if (x >= 62 && x <= 112 && z >= 2 && z <= 48 && hash2(x, z, 91) < 0.24) return 'autumn';
+      const orch = (x >= 6 && x <= 22 && z >= 108 && z <= 114) || (x >= 26 && x <= 31 && z >= 19 && z <= 21);
+      if (orch && hash2(x, z, 55) < 0.7) return 'blossom';
+      if (treeDensity[this.idx(x, z)] <= 2 && (x < 62 || (x >= 66 && x <= 105 && z >= 118 && z <= 150)) && hash2(x, z, 73) < 0.3) return 'birch';
+      return 'oak';
+    };
     // group into 2x2 big trees
     const claimed = new Uint8Array(w * h);
     for (let z = 0; z < h; z++) for (let x = 0; x < w; x++) {
       const i = this.idx(x, z);
       if (!this.treeCell[i] || claimed[i]) continue;
       const canBig = x + 1 < w && z + 1 < h && this.treeCell[this.idx(x + 1, z)] && this.treeCell[this.idx(x, z + 1)] && this.treeCell[this.idx(x + 1, z + 1)]
-        && !claimed[this.idx(x + 1, z)] && !claimed[this.idx(x, z + 1)] && !claimed[this.idx(x + 1, z + 1)];
+        && !claimed[this.idx(x + 1, z)] && !claimed[this.idx(x + 1, z + 1)] && !claimed[this.idx(x + 1, z + 1)];
       if (canBig) {
         claimed[i] = claimed[this.idx(x + 1, z)] = claimed[this.idx(x, z + 1)] = claimed[this.idx(x + 1, z + 1)] = 1;
-        this.trees.push({ x: x + 1, z: z + 1.55, scale: 1, y: this.heightAt(x + 1, z + 1) });
+        this.trees.push({ x: x + 1, z: z + 1.55, scale: 1, y: this.heightAt(x + 1, z + 1), kind: treeKind(x + 1, z + 1) });
       } else {
         claimed[i] = 1;
-        this.trees.push({ x: x + 0.5, z: z + 0.8, scale: 0.6, y: this.heightAt(x + 0.5, z + 0.5) });
+        this.trees.push({ x: x + 0.5, z: z + 0.8, scale: 0.6, y: this.heightAt(x + 0.5, z + 0.5), kind: treeKind(x, z) });
       }
     }
 
@@ -408,7 +458,16 @@ export class World {
     const occupied = new Uint8Array(w * h);
     const patterns = [[[0, 0], [1, 0], [2, 0]], [[0, 0], [0, 1], [0, 2]], [[0, 0], [1, 0], [0, 1], [1, 1]], [[0, 0], [1, 0], [2, 0], [0, 1]], [[0, 0], [2, 0], [1, 1]]];
     const bushAt = (x: number, z: number) => { if (objFree(x, z) && !inYard(x, z) && !inPad(x, z) && !occupied[this.idx(x, z)]) { this.bushes.push({ tx: x, tz: z }); occupied[this.idx(x, z)] = 1; } };
-    const rockAt = (x: number, z: number) => { if (objFree(x, z) && !inYard(x, z) && !inPad(x, z) && !occupied[this.idx(x, z)]) { this.rocks.push({ tx: x, tz: z }); occupied[this.idx(x, z)] = 1; } };
+    const rockAt = (x: number, z: number) => {
+      if (objFree(x, z) && !inYard(x, z) && !inPad(x, z) && !occupied[this.idx(x, z)]) {
+        const reg = this.groundRegion(x, z);
+        const v = reg === 'mesa' || reg === 'highland' ? (hash2(x, z, 83) < 0.3 ? 2 : 0)
+          : treeDensity[this.idx(x, z)] >= 4 || reg === 'lake' ? (hash2(x, z, 84) < 0.45 ? 1 : 0)
+            : 0; // mossy rocks in the woods
+        this.rocks.push({ tx: x, tz: z, v });
+        occupied[this.idx(x, z)] = 1;
+      }
+    };
     const cluster = (x: number, z: number, place: (x: number, z: number) => void) => { for (const [ox, oz] of rng.pick(patterns)) place(x + ox, z + oz); };
     // Granny's bushes around the village and the pond (the kid's rupee bush is by the pond)
     const homeBushes = [[6, 35], [7, 35], [13, 36], [14, 36], [15, 36], [4, 38], [5, 38], [16, 38], [17, 39], [11, 39], [12, 39], [6, 46], [7, 46], [20, 44], [21, 44], [13, 49], [17, 49], [18, 49], [37, 18], [38, 18], [40, 30], [41, 30], [36, 12], [37, 12], [22, 38], [23, 38]];
@@ -438,6 +497,41 @@ export class World {
     for (let i = 0; i < 90; i++) rockAt(rng.int(3, w - 4), rng.int(3, h - 4));
     for (const [x, z] of [[37, 19], [40, 21], [30, 45], [15, 52], [37, 8], [6, 33], [34, 28], [36, 4], [44, 29], [24, 46], [46, 5]]) cluster(x, z, bushAt);
 
+    // 8b. ground character per biome (DF-style): the same Grass tile gets a regional face -------------
+    // Soft biome weights make the ground type blend gradually across ~20 tiles at every biome border.
+    for (let z = 0; z < h; z++) for (let x = 0; x < w; x++) {
+      const i = this.idx(x, z);
+      if (this.tiles[i] !== Tile.Grass) continue; // never touch water/roads/beds/cliffs/houses
+      const bw = this.biomeWeights(x, z);
+      // forest floor under the woods — except on the highland core, where the pines keep their steppe floor
+      if (treeDensity[i] >= 4 && !inYard(x, z) && bw.highland < 0.6) { set(x, z, Tile.ForestFloor); continue; }
+      if (bw.meadow + bw.lake + bw.farm > 0.98) continue; // pure open meadow: stay grass
+      const h1 = hash2(x, z, 51), h2 = hash2(x, z, 52);
+      let heather = 0, mud = 0, gravel = 0, dry = 0;
+      if (bw.highland > 0.02) {
+        const g = h1 < 0.45;
+        gravel += bw.highland * (g ? 1 : 0.22);
+        dry += bw.highland * (g ? 0.22 : 1);
+      }
+      if (bw.mesa > 0.02) gravel += bw.mesa;
+      if (bw.moor > 0.02) {
+        heather += bw.moor * (h1 < 0.55 ? 1 : 0.18);
+        if (this.riverDist[i] < 3.5) mud += bw.moor * 0.8; // wet ground by the moor stream
+      }
+      if (bw.marsh > 0.02) {
+        if (this.riverDist[i] < 4.5) mud += bw.marsh * 1.2; // bog flats around the pools
+        else if (h2 < 0.55) mud += bw.marsh;
+        else if (h2 < 0.75) heather += bw.marsh;
+        else dry += bw.marsh;
+      }
+      // per-tile hash jitter (±0.15): breaks straight lines and dapples the blend band
+      heather += (h1 - 0.5) * 0.3; mud += (h2 - 0.5) * 0.3;
+      gravel += (hash2(x, z, 53) - 0.5) * 0.3; dry += (hash2(x, z, 54) - 0.5) * 0.3;
+      const grassW = bw.meadow + bw.lake + bw.farm + (h1 - 0.5) * 0.3;
+      const best = Math.max(grassW, heather, mud, gravel, dry);
+      if (best !== grassW) set(x, z, best === heather ? Tile.Heather : best === mud ? Tile.Mud : best === gravel ? Tile.Gravel : Tile.DryGrass);
+    }
+
     // 9. props: village + outposts -----------------------------------------------------------------------
     this.props.push(
       // woodcutter's clearing
@@ -463,6 +557,26 @@ export class World {
       { kind: 'banner', x: 150.5, z: 132.5 }, { kind: 'banner', x: 158.5, z: 138.5, rot: 0.5 }, { kind: 'log', x: 154.5, z: 136.5, rot: 1.1 },
       // road signs at the crossroads and bridges
       { kind: 'sign', x: 42.5, z: 48.5 }, { kind: 'sign', x: 118.5, z: 48.5 }, { kind: 'sign', x: 162.5, z: 82.5 }, { kind: 'sign', x: 42.5, z: 32.5 }, { kind: 'lamp', x: 128.5, z: 44.5 }, { kind: 'lamp', x: 119.5, z: 44.5 },
+      // Millbrook: the windmill by the mill
+      { kind: 'windmill', x: 90.5, z: 124.5 },
+      // woodcutter's clearing: another cut log and a mushroom cluster
+      { kind: 'log', x: 88.5, z: 33.5, rot: 0.3 }, { kind: 'mushroom', x: 94.5, z: 36.5 },
+      // hermit's orchard hill: the alchemical cauldron
+      { kind: 'cauldron', x: 12.5, z: 103.5 }, { kind: 'mushroom', x: 10.5, z: 98.5 },
+      // water's edge: cattail reeds by the ponds and Mirror Lake
+      { kind: 'reeds', x: 31.5, z: 133.5 }, { kind: 'reeds', x: 42.5, z: 117.5 }, { kind: 'reeds', x: 19.5, z: 65.5 }, { kind: 'reeds', x: 19.5, z: 41.5 }, { kind: 'reeds', x: 28.5, z: 67.5 },
+      // the Crown hollow: a fallen knight's statue
+      { kind: 'statue', x: 194.5, z: 89.5 },
+      // the Drowned Field: battlefield graves, dead trees, bog reeds
+      { kind: 'grave', x: 158.5, z: 142.5 }, { kind: 'grave', x: 175.5, z: 146.5 }, { kind: 'grave', x: 184.5, z: 131.5 }, { kind: 'grave', x: 156.5, z: 158.5 }, { kind: 'grave', x: 190.5, z: 163.5 },
+      { kind: 'deadtree', x: 148.5, z: 131.5 }, { kind: 'deadtree', x: 160.5, z: 138.5 }, { kind: 'deadtree', x: 188.5, z: 150.5 }, { kind: 'deadtree', x: 194.5, z: 138.5 },
+      { kind: 'reeds', x: 164.5, z: 153.5 }, { kind: 'reeds', x: 154.5, z: 164.5 },
+      // Millbrook's southern woods
+      { kind: 'mushroom', x: 104.5, z: 156.5 },
+      // the Amber Highland: glowing amber chunks in the rock
+      { kind: 'amberrock', x: 165.5, z: 10.5 }, { kind: 'amberrock', x: 192.5, z: 30.5 }, { kind: 'amberrock', x: 198.5, z: 16.5 },
+      { kind: 'amberrock', x: 186.5, z: 42.5 }, { kind: 'amberrock', x: 185.5, z: 3.5 }, { kind: 'amberrock', x: 202.5, z: 8.5 },
+      { kind: 'amberrock', x: 168.5, z: 24.5 }, { kind: 'amberrock', x: 195.5, z: 38.5 },
     );
     // scattered stakes along the Drowned Field (old battle lines)
     for (let i = 0; i < 18; i++) { const x = 144 + rng.int(0, 30), z = 122 + rng.int(0, 30); if (objFree(x, z) && !occupied[this.idx(x, z)] && get(x, z) === Tile.Grass) this.fences.push({ tx: x, tz: z }); }
@@ -486,16 +600,61 @@ export class World {
     for (const f of this.fences) occupied[this.idx(f.tx, f.tz)] = 1;
     for (const b of this.beds()) { const i = this.idx(b[0], b[1]); if (!occupied[i]) occupied[i] = 2; }
     for (const pr of this.props) {
-      if (pr.kind === 'lamp' || pr.kind === 'sign' || pr.kind === 'flowerpot' || pr.kind === 'campfire' || pr.kind === 'crown') continue;
+      if (pr.kind === 'lamp' || pr.kind === 'sign' || pr.kind === 'flowerpot' || pr.kind === 'campfire' || pr.kind === 'crown' || pr.kind === 'reeds' || pr.kind === 'mushroom') continue;
       const tx = Math.floor(pr.x), tz = Math.floor(pr.z);
       if (!this.houseCell[this.idx(tx, tz)]) occupied[this.idx(tx, tz)] = 1;
       if (pr.kind === 'stall') { occupied[this.idx(tx - 1, tz)] = 1; occupied[this.idx(tx + 1, tz)] = 1; }
-      if (pr.kind === 'tower') for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) occupied[this.idx(tx + dx, tz + dz)] = 1;
+      if (pr.kind === 'tower' || pr.kind === 'windmill') for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) occupied[this.idx(tx + dx, tz + dz)] = 1;
+    }
+
+    // 10b. undergrowth (CDDA-style): ferns in the woods, tall grass in the meadows, briars on the moor,
+    // boulders on the rock, lily pads in still water
+    const vegFree = (x: number, z: number, minRiver: number) => {
+      const t = this.tiles[this.idx(x, z)];
+      if (t !== Tile.Grass && t !== Tile.Flowers && t !== Tile.Heather && t !== Tile.Mud && t !== Tile.ForestFloor && t !== Tile.Gravel && t !== Tile.DryGrass) return false;
+      const i = this.idx(x, z);
+      return !this.treeCell[i] && !this.houseCell[i] && !this.vegCell[i] && !inYard(x, z) && !nearSpawn(x, z) && !nearRoad(x, z) && flat(x, z)
+        && this.riverDist[i] > minRiver && !occupied[i];
+    };
+    const placeVeg = (x: number, z: number, list: TileObj[], blocking: boolean) => {
+      const i = this.idx(x, z);
+      if (!vegFree(x, z, blocking ? 1.2 : 0.9)) return;
+      list.push({ tx: x, tz: z });
+      this.vegCell[i] = 1;
+      if (blocking) occupied[i] = 1;
+    };
+    for (let z = 2; z < h - 2; z++) for (let x = 2; x < w - 2; x++) {
+      const i = this.idx(x, z);
+      const reg = this.groundRegion(x, z);
+      const hd = hash2(x, z, 57);
+      if (this.tiles[i] === Tile.ForestFloor && hd < 0.09) placeVeg(x, z, this.ferns, false);
+      else if ((reg === 'meadow' || reg === 'lake' || reg === 'farm') && (this.tiles[i] === Tile.Grass || this.tiles[i] === Tile.Flowers) && hd < 0.045) placeVeg(x, z, this.tallgrass, false);
+      else if ((reg === 'moor' || reg === 'marsh' || this.tiles[i] === Tile.ForestFloor) && hd >= 0.6 && hd < 0.622) placeVeg(x, z, this.briars, true);
+    }
+    const boulderFields = [
+      [178, 30, 12, 7, 0.05], [196, 18, 8, 10, 0.04], [160, 12, 8, 8, 0.04], // highland
+      [87, 61, 7, 5, 0.14], // mesa top
+      [28, 158, 12, 6, 0.035], [96, 166, 9, 5, 0.035], // southern hills
+      [128, 100, 6, 8, 0.03], // river shingle
+    ];
+    for (const [bx, bz, rx, rz, p] of boulderFields) for (let tz = bz - rz; tz <= bz + rz; tz++) for (let tx = bx - rx; tx <= bx + rx; tx++) {
+      if (Math.hypot((tx - bx) / rx, (tz - bz) / rz) < 1 && rng.next() < p) placeVeg(tx, tz, this.boulders, true);
+    }
+    for (let z = 1; z < h - 1; z++) for (let x = 1; x < w - 1; x++) {
+      const i = this.idx(x, z);
+      if (this.tiles[i] !== Tile.Water || this.riverHalfW[i] > 0.01) continue; // still water only (no lilies on the river)
+      let land = false;
+      for (let dz = -2; dz <= 2 && !land; dz++) for (let dx = -2; dx <= 2; dx++) {
+        const nx = x + dx, nz = z + dz;
+        if (nx < 0 || nz < 0 || nx >= w || nz >= h) continue;
+        if (this.tiles[this.idx(nx, nz)] !== Tile.Water) { land = true; break; }
+      }
+      if (land && hash2(x, z, 61) < 0.12) this.lilies.push({ tx: x, tz: z });
     }
 
     // 11. flowers: meadows bloom, the moor and highland barely -------------------------------------------
     for (let z = 0; z < h; z++) for (let x = 0; x < w; x++) {
-      if (get(x, z) !== Tile.Grass || this.treeCell[this.idx(x, z)] || occupied[this.idx(x, z)]) continue;
+      if (get(x, z) !== Tile.Grass || this.treeCell[this.idx(x, z)] || occupied[this.idx(x, z)] || this.vegCell[this.idx(x, z)]) continue;
       const moor = x > 140 && z > 60, high = x > 150 && z < 40;
       const p = high ? 0.01 : moor ? 0.02 : (x < 60 && z < 50) ? 0.07 : 0.045;
       if (rng.next() < p) set(x, z, Tile.Flowers);
@@ -657,6 +816,8 @@ export class World {
 
   isWaterUnder(tx: number, tz: number): boolean { return this.riverDist[this.idx(tx, tz)] < 0; }
 
+
+
   /** Height of the walkable surface (terrain, or the bridge deck when standing on a bridge) */
   surfaceAt(x: number, z: number): number {
     const tx = Math.floor(x), tz = Math.floor(z);
@@ -728,6 +889,12 @@ export class World {
       { kind: 'stall', x: 15.5, z: 6.5, rot: Math.PI },
       { kind: 'barrel', x: 19.5, z: 6.5 }, { kind: 'barrel', x: 19.5, z: 10.5 }, { kind: 'crate', x: 13.5, z: 14.5 }, { kind: 'crate', x: 2.5, z: 5.5 },
       { kind: 'flowerpot', x: 3.5, z: 12.5 }, { kind: 'flowerpot', x: 18.5, z: 11.5 }, { kind: 'flowerpot', x: 12.5, z: 4.5 },
+      // smithy yard: anvil and forge
+      { kind: 'anvil', x: 26.5, z: 15.5 }, { kind: 'forge', x: 29.5, z: 16.5 },
+      // rose bushes by the inn and the south gate
+      { kind: 'rosebush', x: 22.5, z: 6.5 }, { kind: 'rosebush', x: 27.5, z: 6.5 }, { kind: 'rosebush', x: 13.5, z: 27.5 },
+      // farm yard: wheelbarrow and beehive by the home meadow
+      { kind: 'wheelbarrow', x: 10.5, z: 22.5 }, { kind: 'beehive', x: 22.5, z: 39.5 },
     ];
     this.npcs = [
       { id: 'elder', x: 6.5, z: 7.5, facing: 0, wander: 0 },
@@ -755,17 +922,135 @@ export class World {
     soil: '#7a5230', soilL: '#9a6e46', leaf: '#4cbf4c', leafL: '#8ce070',
   };
 
-  private paintGrass(g: CanvasRenderingContext2D, ox: number, oz: number, tx: number, tz: number, flowers: boolean) {
-    const C = World.C, T = TEX_PX;
-    g.fillStyle = C.grass; g.fillRect(ox, oz, T, T);
+  /** Per-biome ground + path hues (equal brightness, different character). */
+  private static PAL: Record<Biome, GroundPal> = {
+    meadow:   { grass: '#5fae4c', path: '#d9ab6c' },
+    lake:     { grass: '#62b14f', path: '#d7a96c' },
+    farm:     { grass: '#63ae4d', path: '#d9ab6c' },
+    mesa:     { grass: '#81a357', path: '#c2b190' },
+    highland: { grass: '#a89a4e', path: '#c2b190' },
+    moor:     { grass: '#7aa555', path: '#c8af76' },
+    marsh:    { grass: '#73a752', path: '#d4a97c' },
+  };
+
+  /** Core box of each biome (tile coords, inclusive); boundaries blend over ~20 tiles with a smooth wander. */
+  private static BIOME_BOX: Record<Biome, readonly [number, number, number, number]> = {
+    highland: [149, 0, 207, 43],
+    moor:     [141, 44, 207, 119],
+    marsh:    [141, 120, 207, 175],
+    mesa:     [76, 54, 96, 70],
+    farm:     [66, 118, 105, 150],
+    lake:     [0, 50, 61, 175],
+    meadow:   [0, 0, 139, 175],
+  };
+
+  /** Smooth low-frequency noise in 0..1 (bilinear hash, ~9-tile cells) — used to wander biome borders. */
+  private static snoise(x: number, z: number, seed: number): number {
+    const c = 9;
+    const x0 = Math.floor(x / c), z0 = Math.floor(z / c);
+    const fx = x / c - x0, fz = z / c - z0;
+    const sx = fx * fx * (3 - 2 * fx), sz = fz * fz * (3 - 2 * fz);
+    const v00 = hash2(x0, z0, seed), v10 = hash2(x0 + 1, z0, seed), v01 = hash2(x0, z0 + 1, seed), v11 = hash2(x0 + 1, z0 + 1, seed);
+    return v00 * (1 - sx) * (1 - sz) + v10 * sx * (1 - sz) + v01 * (1 - sx) * sz + v11 * sx * sz;
+  }
+
+  /**
+   * Soft biome weights per tile (sum to 1). Inside a biome's core its weight is exactly 1;
+   * across ~13 tiles the field blends into the neighbour over ~20 tiles, with a smooth wobble so no border is straight.
+   */
+  biomeWeights(x: number, z: number): Record<Biome, number> {
+    const seeds: [Biome, number][] = [['highland', 11], ['moor', 23], ['marsh', 37], ['mesa', 49], ['farm', 61], ['lake', 73]];
+    const w: Record<Biome, number> = { meadow: 0, lake: 0, farm: 0, mesa: 0, highland: 0, moor: 0, marsh: 0 };
+    let maxOther = 0;
+    for (const [b, seed] of seeds) {
+      const [x0, z0, x1, z1] = World.BIOME_BOX[b];
+      // wander each edge ±6 tiles with smooth noise (deep interiors stay pure)
+      const nx = (World.snoise(x, z, seed) - 0.5) * 12, nz = (World.snoise(x, z, seed + 5) - 0.5) * 12;
+      const dx = x < x0 - nx ? x0 - nx - x : x > x1 + nx ? x - x1 - nx : 0;
+      const dz = z < z0 - nz ? z0 - nz - z : z > z1 + nz ? z - z1 - nz : 0;
+      const t = Math.min(1, Math.hypot(dx, dz) / 20);
+      w[b] = 1 - t * t * (3 - 2 * t); // 1 in the core, 0 beyond 20 tiles, smooth in between
+      if (w[b] > maxOther) maxOther = w[b];
+    }
+    w.meadow = Math.max(0, 1 - maxOther); // meadow is the base biome: whatever no other biome claims
+    // dapple the blend band (zero in pure cores, up to ±0.25 where two biomes share the ground)
+    const mixiness = 1 - Math.max(maxOther, w.meadow);
+    if (mixiness > 0.02) {
+      for (const [b, seed] of seeds) w[b] = Math.max(0, w[b] + (hash2(x, z, seed + 99) - 0.5) * 0.5 * mixiness);
+      w.meadow = Math.max(0, w.meadow + (hash2(x, z, 88) - 0.5) * 0.5 * mixiness);
+    }
+    const sum = w.meadow + w.lake + w.farm + w.mesa + w.highland + w.moor + w.marsh;
+    for (const b of Object.keys(w) as Biome[]) w[b] /= sum;
+    return w;
+  }
+
+  /** Dominant biome (for discrete decisions like path style, wheat, rock variants). */
+  groundRegion(x: number, z: number): Biome {
+    const bw = this.biomeWeights(x, z);
+    let best: Biome = 'meadow', bwMax = -1;
+    for (const b of ['highland', 'moor', 'marsh', 'mesa', 'farm', 'lake', 'meadow'] as Biome[]) {
+      if (bw[b] > bwMax) { bwMax = bw[b]; best = b; }
+    }
+    return best;
+  }
+
+  private static hex(h: string): [number, number, number] {
+    return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+  }
+
+  /** Parse a colour that may be '#rrggbb' or 'rgb(r,g,b)'. */
+  private static parseColor(c: string): [number, number, number] {
+    if (c[0] === '#') return World.hex(c);
+    const m = c.match(/\d+/g)!;
+    return [+m[0], +m[1], +m[2]];
+  }
+
+  /** Mix the biome palettes at (x,z) into concrete colours; shading variants come off one base at fixed contrast. */
+  private mixColors(x: number, z: number, bw?: Record<Biome, number>): MixedColors {
+    const w = bw ?? this.biomeWeights(x, z);
+    const lerp3 = (pick: (p: GroundPal) => [number, number, number]) => {
+      let r = 0, g = 0, b = 0;
+      for (const bnm of Object.keys(World.PAL) as Biome[]) {
+        const wt = w[bnm];
+        if (!wt) continue;
+        const [pr, pg, pb] = pick(World.PAL[bnm]);
+        r += pr * wt; g += pg * wt; b += pb * wt;
+      }
+      return [Math.min(255, Math.round(r)), Math.min(255, Math.round(g)), Math.min(255, Math.round(b))] as [number, number, number];
+    };
+    const css = (c: [number, number, number], k: number) =>
+      `rgb(${Math.min(255, Math.round(c[0] * k))},${Math.min(255, Math.round(c[1] * k))},${Math.min(255, Math.round(c[2] * k))})`;
+    const gc = lerp3((p) => World.hex(p.grass));
+    const pc = lerp3((p) => World.hex(p.path));
+    return {
+      grass: css(gc, 1), grassL: css(gc, 1.17), grassD: css(gc, 0.8),
+      path: css(pc, 1), pathL: css(pc, 1.16), pathD: css(pc, 0.78), pathE: css(pc, 0.66),
+      daisies: w.meadow + w.lake + w.farm > 0.5,
+      pebbly: w.highland + w.mesa > 0.45,
+    };
+  }
+
+  private paintGrass(g: CanvasRenderingContext2D, ox: number, oz: number, tx: number, tz: number, flowers: boolean, pal: MixedColors) {
+    const T = TEX_PX;
+    g.fillStyle = pal.grass; g.fillRect(ox, oz, T, T);
     for (let i = 0; i < 6; i++) {
       const x = ox + Math.floor(hash2(tx, tz, i) * T), y = oz + Math.floor(hash2(tx, tz, i + 10) * T);
-      g.fillStyle = i % 2 ? C.grassL : C.grassD; g.fillRect(x, y, 1, 1);
+      g.fillStyle = i % 2 ? pal.grassL : pal.grassD; g.fillRect(x, y, 1, 1);
     }
     if (hash2(tx, tz, 99) < 0.25) {
       const x = ox + 3 + Math.floor(hash2(tx, tz, 98) * (T - 7)), y = oz + 3 + Math.floor(hash2(tx, tz, 97) * (T - 7));
-      g.fillStyle = C.grassD; g.fillRect(x, y, 1, 1); g.fillRect(x + 2, y, 1, 1); g.fillRect(x + 1, y + 1, 1, 1); g.fillRect(x + 1, y - 1, 1, 1);
-      g.fillStyle = C.grassL; g.fillRect(x + 3, y - 1, 1, 1);
+      g.fillStyle = pal.grassD; g.fillRect(x, y, 1, 1); g.fillRect(x + 2, y, 1, 1); g.fillRect(x + 1, y + 1, 1, 1); g.fillRect(x + 1, y - 1, 1, 1);
+      g.fillStyle = pal.grassL; g.fillRect(x + 3, y - 1, 1, 1);
+    }
+    if (pal.daisies && hash2(tx, tz, 71) < 0.14) {
+      // daisy
+      const x = ox + 3 + Math.floor(hash2(tx, tz, 68) * (T - 7)), y = oz + 3 + Math.floor(hash2(tx, tz, 69) * (T - 7));
+      g.fillStyle = '#f8f8f8'; g.fillRect(x - 1, y, 1, 1); g.fillRect(x + 1, y, 1, 1); g.fillRect(x, y - 1, 1, 1); g.fillRect(x, y + 1, 1, 1);
+      g.fillStyle = '#f8d848'; g.fillRect(x, y, 1, 1);
+    } else if (pal.daisies && hash2(tx, tz, 72) < 0.1) {
+      // dandelion
+      const x = ox + 3 + Math.floor(hash2(tx, tz, 73) * (T - 7)), y = oz + 3 + Math.floor(hash2(tx, tz, 74) * (T - 7));
+      g.fillStyle = '#f8d848'; g.fillRect(x - 1, y, 3, 1); g.fillRect(x, y - 1, 1, 3);
     }
     if (flowers) {
       const petals = ['#f8f8f8', '#f8d848', '#f07070', '#8aa0f8'];
@@ -774,7 +1059,7 @@ export class World {
         const pc = petals[Math.floor(hash2(tx, tz, 70 + k) * petals.length)];
         g.fillStyle = pc; g.fillRect(x - 1, y, 1, 1); g.fillRect(x + 1, y, 1, 1); g.fillRect(x, y - 1, 1, 1); g.fillRect(x, y + 1, 1, 1);
         g.fillStyle = pc === '#f8d848' ? '#e05030' : '#f8d848'; g.fillRect(x, y, 1, 1);
-        g.fillStyle = C.grassD; g.fillRect(x - 1, y + 2, 1, 1); g.fillRect(x + 2, y + 1, 1, 1);
+        g.fillStyle = pal.grassD; g.fillRect(x - 1, y + 2, 1, 1); g.fillRect(x + 2, y + 1, 1, 1);
       }
     }
   }
@@ -784,48 +1069,149 @@ export class World {
     const cv = document.createElement('canvas');
     cv.width = this.w * T; cv.height = this.h * T;
     const g = cv.getContext('2d')!;
-    const grassy = (t: Tile) => t === Tile.Grass || t === Tile.Flowers;
+    const natural = (t: Tile) => t === Tile.Grass || t === Tile.Flowers || t === Tile.Heather || t === Tile.Mud || t === Tile.ForestFloor || t === Tile.Gravel || t === Tile.DryGrass;
     const land = (t: Tile) => t !== Tile.Water && t !== Tile.Bridge;
+    // base colours of each natural ground type (used for edge feathering)
+    const BASE: Record<number, string> = {
+      [Tile.Heather]: '#779257', [Tile.Mud]: '#54452e', [Tile.ForestFloor]: '#6b7d43', [Tile.Gravel]: '#9a948a', [Tile.DryGrass]: '#b89a4a',
+    };
+    const grassBaseCache = new Map<number, string>();
+    const natBase = (t: Tile, x: number, z: number): string | null => {
+      if (t === Tile.Grass || t === Tile.Flowers) {
+        const k = x * 1000 + z;
+        let v = grassBaseCache.get(k);
+        if (!v) { v = this.mixColors(x, z).grass; grassBaseCache.set(k, v); }
+        return v;
+      }
+      return BASE[t] ?? null;
+    };
+    const blendCss = (a: string, b: string, k: number) => {
+      const ca = World.parseColor(a), cb = World.parseColor(b);
+      return `rgb(${Math.round(ca[0] + (cb[0] - ca[0]) * k)},${Math.round(ca[1] + (cb[1] - ca[1]) * k)},${Math.round(ca[2] + (cb[2] - ca[2]) * k)})`;
+    };
     for (let tz = 0; tz < this.h; tz++) for (let tx = 0; tx < this.w; tx++) {
       const t = this.tile(tx, tz);
       const ox = tx * T, oz = tz * T;
       const N = this.tile(tx, tz - 1), S = this.tile(tx, tz + 1), E = this.tile(tx + 1, tz), W = this.tile(tx - 1, tz);
-      if ((t === Tile.Grass || t === Tile.Flowers) && this.riverDist[tz * this.w + tx] < 0.9) {
-        // sandy river bank strip
-        g.fillStyle = '#d9c48c'; g.fillRect(ox, oz, T, T);
-        for (let i = 0; i < 6; i++) { g.fillStyle = i % 2 ? '#e8d6a2' : '#bfa66c'; g.fillRect(ox + Math.floor(hash2(tx, tz, i) * T), oz + Math.floor(hash2(tx, tz, i + 20) * T), 1, 1); }
-        if (hash2(tx, tz, 44) < 0.3) { g.fillStyle = '#9aa0a8'; const x = ox + Math.floor(hash2(tx, tz, 45) * (T - 3)), y = oz + Math.floor(hash2(tx, tz, 46) * (T - 2)); g.fillRect(x, y, 3, 2); g.fillStyle = '#c9ced4'; g.fillRect(x, y, 1, 1); }
+      const bw = this.biomeWeights(tx, tz);
+      if (natural(t) && this.riverDist[tz * this.w + tx] < 0.9) {
+        // water's edge strip: sand by the meadows, mud by the marsh, gravel on the highland — blended by biome weight
+        const sandW0 = bw.meadow + bw.lake + bw.farm, mudW0 = bw.marsh + bw.moor * 0.3, gravW0 = bw.highland + bw.mesa;
+        const bsum = sandW0 + mudW0 + gravW0 || 1;
+        const sandW = sandW0 / bsum, mudW = mudW0 / bsum, gravW = gravW0 / bsum;
+        const s = [217, 196, 140], mu = [74, 58, 40], gr = [160, 154, 138];
+        g.fillStyle = `rgb(${Math.round(sandW * s[0] + mudW * mu[0] + gravW * gr[0])},${Math.round(sandW * s[1] + mudW * mu[1] + gravW * gr[1])},${Math.round(sandW * s[2] + mudW * mu[2] + gravW * gr[2])})`;
+        g.fillRect(ox, oz, T, T);
+        const dotC = mudW > sandW && mudW > gravW ? ['#5c4a34', '#3a2e20'] : gravW >= sandW && gravW >= mudW ? ['#b8b2a2', '#847e70'] : ['#e8d6a2', '#bfa66c'];
+        for (let i = 0; i < 6; i++) { g.fillStyle = i % 2 ? dotC[0] : dotC[1]; g.fillRect(ox + Math.floor(hash2(tx, tz, i) * (T - 2)), oz + Math.floor(hash2(tx, tz, i + 20) * T), 2, 1); }
+        if (sandW >= mudW && sandW >= gravW && hash2(tx, tz, 44) < 0.3) { g.fillStyle = '#9aa0a8'; const x = ox + Math.floor(hash2(tx, tz, 45) * (T - 3)), y = oz + Math.floor(hash2(tx, tz, 46) * (T - 2)); g.fillRect(x, y, 3, 2); g.fillStyle = '#c9ced4'; g.fillRect(x, y, 1, 1); }
       } else if (t === Tile.Grass || t === Tile.Flowers) {
-        this.paintGrass(g, ox, oz, tx, tz, t === Tile.Flowers);
+        this.paintGrass(g, ox, oz, tx, tz, t === Tile.Flowers, this.mixColors(tx, tz, bw));
+      } else if (t === Tile.Heather) {
+        // heather moor: muted green with purple flower clumps and brown tussocks
+        g.fillStyle = BASE[t]; g.fillRect(ox, oz, T, T);
+        for (let i = 0; i < 7; i++) { const x = ox + Math.floor(hash2(tx, tz, i) * T), y = oz + Math.floor(hash2(tx, tz, i + 10) * T); g.fillStyle = i % 2 ? '#8aa468' : '#627c46'; g.fillRect(x, y, 1, 1); }
+        for (let k = 0; k < (hash2(tx, tz, 66) < 0.6 ? 2 : 1); k++) {
+          const x = ox + 3 + Math.floor(hash2(tx, tz, 40 + k) * (T - 7)), y = oz + 3 + Math.floor(hash2(tx, tz, 41 + k) * (T - 7));
+          for (let b = 0; b < 4; b++) { g.fillStyle = b % 2 ? '#8a6ab0' : '#7a5aa0'; g.fillRect(x + (b % 2), y + Math.floor(b / 2), 1, 1); }
+          g.fillStyle = '#a88ac8'; g.fillRect(x, y, 1, 1);
+        }
+        if (hash2(tx, tz, 67) < 0.3) {
+          const x = ox + 3 + Math.floor(hash2(tx, tz, 64) * (T - 7)), y = oz + 3 + Math.floor(hash2(tx, tz, 65) * (T - 7));
+          g.fillStyle = '#7a5c3a'; g.fillRect(x, y, 2, 1); g.fillRect(x + 1, y - 1, 1, 1); g.fillRect(x + 1, y + 1, 1, 1);
+        }
+      } else if (t === Tile.Mud) {
+        // marsh mud: dark, wet-glinted, mossy
+        g.fillStyle = BASE[t]; g.fillRect(ox, oz, T, T);
+        for (let i = 0; i < 7; i++) { const x = ox + Math.floor(hash2(tx, tz, i) * T), y = oz + Math.floor(hash2(tx, tz, i + 10) * T); g.fillStyle = i % 2 ? '#63523a' : '#443726'; g.fillRect(x, y, 2, 1); }
+        if (hash2(tx, tz, 62) < 0.45) {
+          const x = ox + 3 + Math.floor(hash2(tx, tz, 60) * (T - 7)), y = oz + 3 + Math.floor(hash2(tx, tz, 63) * (T - 7));
+          g.fillStyle = '#7a8a94'; g.fillRect(x, y, 3, 1); g.fillStyle = '#94a4ae'; g.fillRect(x + 1, y, 1, 1);
+        }
+        if (hash2(tx, tz, 64) < 0.3) {
+          const x = ox + 3 + Math.floor(hash2(tx, tz, 65) * (T - 8)), y = oz + 3 + Math.floor(hash2(tx, tz, 66) * (T - 8));
+          g.fillStyle = '#4a7a3a'; g.fillRect(x, y, 2, 2); g.fillStyle = '#588a44'; g.fillRect(x + 1, y, 1, 1);
+        }
+        if (hash2(tx, tz, 68) < 0.2) { g.fillStyle = '#8a8478'; g.fillRect(ox + Math.floor(hash2(tx, tz, 69) * (T - 3)), oz + Math.floor(hash2(tx, tz, 70) * T), 2, 1); }
+      } else if (t === Tile.ForestFloor) {
+        // mossy forest earth with fallen leaves
+        g.fillStyle = BASE[t]; g.fillRect(ox, oz, T, T);
+        for (let i = 0; i < 7; i++) { const x = ox + Math.floor(hash2(tx, tz, i) * T), y = oz + Math.floor(hash2(tx, tz, i + 10) * T); g.fillStyle = i % 2 ? '#7a8c50' : '#5a6c38'; g.fillRect(x, y, 1, 1); }
+        if (hash2(tx, tz, 62) < 0.3) {
+          const x = ox + 3 + Math.floor(hash2(tx, tz, 63) * (T - 8)), y = oz + 3 + Math.floor(hash2(tx, tz, 64) * (T - 8));
+          g.fillStyle = '#587a3a'; g.fillRect(x, y, 3, 2); g.fillStyle = '#688a46'; g.fillRect(x + 1, y + 1, 1, 1);
+        }
+        for (let k = 0; k < (hash2(tx, tz, 65) < 0.5 ? 2 : 1); k++) {
+          const x = ox + 2 + Math.floor(hash2(tx, tz, 50 + k) * (T - 5)), y = oz + 2 + Math.floor(hash2(tx, tz, 51 + k) * (T - 5));
+          g.fillStyle = k % 2 ? '#c8862a' : '#8a5a2b'; g.fillRect(x, y, 2, 1); g.fillRect(x + 1, y + 1, 1, 1);
+        }
+        if (hash2(tx, tz, 66) < 0.12) { g.fillStyle = '#9a9488'; g.fillRect(ox + Math.floor(hash2(tx, tz, 67) * (T - 3)), oz + Math.floor(hash2(tx, tz, 68) * T), 2, 2); }
+      } else if (t === Tile.Gravel) {
+        // rocky gravel with sparse dry grass
+        g.fillStyle = BASE[t]; g.fillRect(ox, oz, T, T);
+        for (let i = 0; i < 8; i++) {
+          const x = ox + Math.floor(hash2(tx, tz, i) * (T - 3)), y = oz + Math.floor(hash2(tx, tz, i + 20) * T);
+          g.fillStyle = i % 3 === 0 ? '#b0aaa0' : i % 3 === 1 ? '#7d7870' : '#8a8478'; g.fillRect(x, y, 2, hash2(tx, tz, i + 40) < 0.4 ? 2 : 1);
+        }
+        if (hash2(tx, tz, 62) < 0.35) {
+          const x = ox + 3 + Math.floor(hash2(tx, tz, 63) * (T - 7)), y = oz + 3 + Math.floor(hash2(tx, tz, 64) * (T - 7));
+          g.fillStyle = '#a89a4e'; g.fillRect(x, y, 1, 1); g.fillRect(x + 2, y, 1, 1); g.fillRect(x + 1, y - 1, 1, 1);
+        }
+      } else if (t === Tile.DryGrass) {
+        // dry ochre steppe grass
+        g.fillStyle = BASE[t]; g.fillRect(ox, oz, T, T);
+        for (let i = 0; i < 7; i++) { const x = ox + Math.floor(hash2(tx, tz, i) * T), y = oz + Math.floor(hash2(tx, tz, i + 10) * T); g.fillStyle = i % 2 ? '#c8ac5a' : '#9a803c'; g.fillRect(x, y, 1, 1); }
+        if (hash2(tx, tz, 99) < 0.3) {
+          const x = ox + 3 + Math.floor(hash2(tx, tz, 98) * (T - 7)), y = oz + 3 + Math.floor(hash2(tx, tz, 97) * (T - 7));
+          g.fillStyle = '#9a803c'; g.fillRect(x, y, 1, 1); g.fillRect(x + 2, y, 1, 1); g.fillRect(x + 1, y + 1, 1, 1); g.fillRect(x + 1, y - 1, 1, 1);
+        }
+        if (hash2(tx, tz, 62) < 0.06) {
+          // tumbleweed
+          const x = ox + 4 + Math.floor(hash2(tx, tz, 63) * (T - 10)), y = oz + 4 + Math.floor(hash2(tx, tz, 64) * (T - 10));
+          g.fillStyle = '#a8885a'; g.fillRect(x - 1, y, 3, 1); g.fillRect(x, y - 1, 1, 3); g.fillRect(x - 1, y - 1, 1, 1); g.fillRect(x + 1, y + 1, 1, 1);
+          g.fillStyle = '#8a6c44'; g.fillRect(x, y, 1, 1);
+        }
+        if (hash2(tx, tz, 65) < 0.15) { g.fillStyle = '#8a5a2b'; g.fillRect(ox + Math.floor(hash2(tx, tz, 66) * (T - 4)), oz + Math.floor(hash2(tx, tz, 67) * T), 3, 1); }
       } else if (t === Tile.Path) {
-        g.fillStyle = C.path; g.fillRect(ox, oz, T, T);
+        const pal = this.mixColors(tx, tz, bw);
+        g.fillStyle = pal.path; g.fillRect(ox, oz, T, T);
         for (let i = 0; i < 7; i++) {
           const x = ox + Math.floor(hash2(tx, tz, i) * (T - 1)), y = oz + Math.floor(hash2(tx, tz, i + 20) * T);
-          g.fillStyle = i % 3 === 0 ? C.pathL : C.pathD; g.fillRect(x, y, hash2(tx, tz, i + 40) < 0.4 ? 2 : 1, 1);
+          g.fillStyle = i % 3 === 0 ? pal.pathL : pal.pathD; g.fillRect(x, y, hash2(tx, tz, i + 40) < 0.4 ? 2 : 1, 1);
         }
+        if (pal.pebbly) for (let i = 0; i < 4; i++) { g.fillStyle = i % 2 ? pal.pathL : pal.pathD; g.fillRect(ox + Math.floor(hash2(tx, tz, i + 30) * (T - 3)), oz + Math.floor(hash2(tx, tz, i + 34) * T), 2, 1); }
         const depth = (k: number, s: number) => 1 + (hash2(k, s, 5) < 0.45 ? 1 : 0) + (hash2(k, s, 6) < 0.15 ? 1 : 0);
-        if (grassy(N)) for (let x = 0; x < T; x++) { const d = depth(tx * T + x, tz * 7 + 1); g.fillStyle = C.grass; g.fillRect(ox + x, oz, 1, d); g.fillStyle = C.pathE; g.fillRect(ox + x, oz + d, 1, 1); }
-        if (grassy(S)) for (let x = 0; x < T; x++) { const d = depth(tx * T + x, tz * 7 + 2); g.fillStyle = C.grass; g.fillRect(ox + x, oz + T - d, 1, d); g.fillStyle = C.pathE; g.fillRect(ox + x, oz + T - d - 1, 1, 1); }
-        if (grassy(W)) for (let y = 0; y < T; y++) { const d = depth(tz * T + y, tx * 7 + 3); g.fillStyle = C.grass; g.fillRect(ox, oz + y, d, 1); g.fillStyle = C.pathE; g.fillRect(ox + d, oz + y, 1, 1); }
-        if (grassy(E)) for (let y = 0; y < T; y++) { const d = depth(tz * T + y, tx * 7 + 4); g.fillStyle = C.grass; g.fillRect(ox + T - d, oz + y, d, 1); g.fillStyle = C.pathE; g.fillRect(ox + T - d - 1, oz + y, 1, 1); }
-        g.fillStyle = C.grass;
-        if (!grassy(N) && !grassy(W) && grassy(this.tile(tx - 1, tz - 1))) g.fillRect(ox, oz, 2, 2);
-        if (!grassy(N) && !grassy(E) && grassy(this.tile(tx + 1, tz - 1))) g.fillRect(ox + T - 2, oz, 2, 2);
-        if (!grassy(S) && !grassy(W) && grassy(this.tile(tx - 1, tz + 1))) g.fillRect(ox, oz + T - 2, 2, 2);
-        if (!grassy(S) && !grassy(E) && grassy(this.tile(tx + 1, tz + 1))) g.fillRect(ox + T - 2, oz + T - 2, 2, 2);
+        // the ground creeping onto the trail takes the neighbour's actual colour (heather, mud, gravel…)
+        const cN = natBase(N, tx, tz - 1) ?? pal.grass, cS = natBase(S, tx, tz + 1) ?? pal.grass;
+        const cW = natBase(W, tx - 1, tz) ?? pal.grass, cE = natBase(E, tx + 1, tz) ?? pal.grass;
+        if (natural(N)) for (let x = 0; x < T; x++) { const d = depth(tx * T + x, tz * 7 + 1); g.fillStyle = cN; g.fillRect(ox + x, oz, 1, d); g.fillStyle = pal.pathE; g.fillRect(ox + x, oz + d, 1, 1); }
+        if (natural(S)) for (let x = 0; x < T; x++) { const d = depth(tx * T + x, tz * 7 + 2); g.fillStyle = cS; g.fillRect(ox + x, oz + T - d, 1, d); g.fillStyle = pal.pathE; g.fillRect(ox + x, oz + T - d - 1, 1, 1); }
+        if (natural(W)) for (let y = 0; y < T; y++) { const d = depth(tz * T + y, tx * 7 + 3); g.fillStyle = cW; g.fillRect(ox, oz + y, d, 1); g.fillStyle = pal.pathE; g.fillRect(ox + d, oz + y, 1, 1); }
+        if (natural(E)) for (let y = 0; y < T; y++) { const d = depth(tz * T + y, tx * 7 + 4); g.fillStyle = cE; g.fillRect(ox + T - d, oz + y, d, 1); g.fillStyle = pal.pathE; g.fillRect(ox + T - d - 1, oz + y, 1, 1); }
+        g.fillStyle = pal.grass;
+        if (!natural(N) && !natural(W) && natural(this.tile(tx - 1, tz - 1))) g.fillRect(ox, oz, 2, 2);
+        if (!natural(N) && !natural(E) && natural(this.tile(tx + 1, tz - 1))) g.fillRect(ox + T - 2, oz, 2, 2);
+        if (!natural(S) && !natural(W) && natural(this.tile(tx - 1, tz + 1))) g.fillRect(ox, oz + T - 2, 2, 2);
+        if (!natural(S) && !natural(E) && natural(this.tile(tx + 1, tz + 1))) g.fillRect(ox + T - 2, oz + T - 2, 2, 2);
       } else if (t === Tile.Water) {
-        g.fillStyle = C.water; g.fillRect(ox, oz, T, T);
+        // the Drowned Field's water fades into murky green-brown as the marsh biome takes over
+        const murk = bw.marsh;
+        const ww = murk > 0.02 ? blendCss(C.water, '#4a6a52', murk) : C.water;
+        const wl = murk > 0.02 ? blendCss(C.waterL, '#7a9a78', murk) : C.waterL;
+        const wd = murk > 0.02 ? blendCss(C.waterD, '#3a5442', murk) : C.waterD;
+        const ws = murk > 0.02 ? blendCss(C.shore, '#2a3a2c', murk) : C.shore;
+        g.fillStyle = ww; g.fillRect(ox, oz, T, T);
         for (let i = 0; i < 3; i++) {
           const x = ox + Math.floor(hash2(tx, tz, i) * (T - 6)), y = oz + 2 + Math.floor(hash2(tx, tz, i + 30) * (T - 4));
           const len = 3 + Math.floor(hash2(tx, tz, i + 60) * 3);
-          g.fillStyle = i === 0 ? C.waterL : C.waterD; g.fillRect(x, y, len, 1);
+          g.fillStyle = i === 0 ? wl : wd; g.fillRect(x, y, len, 1);
           if (i === 0) g.fillRect(x + 1, y + 1, 1, 1);
         }
-        if (land(N)) { g.fillStyle = C.shore; g.fillRect(ox, oz, T, 1); g.fillStyle = C.waterL; g.fillRect(ox, oz + 1, T, 1); }
-        if (land(S)) { g.fillStyle = C.shore; g.fillRect(ox, oz + T - 1, T, 1); g.fillStyle = C.waterL; g.fillRect(ox, oz + T - 2, T, 1); }
-        if (land(W)) { g.fillStyle = C.shore; g.fillRect(ox, oz, 1, T); g.fillStyle = C.waterL; g.fillRect(ox + 1, oz, 1, T); }
-        if (land(E)) { g.fillStyle = C.shore; g.fillRect(ox + T - 1, oz, 1, T); g.fillStyle = C.waterL; g.fillRect(ox + T - 2, oz, 1, T); }
-        g.fillStyle = C.shore;
+        if (land(N)) { g.fillStyle = ws; g.fillRect(ox, oz, T, 1); g.fillStyle = wl; g.fillRect(ox, oz + 1, T, 1); }
+        if (land(S)) { g.fillStyle = ws; g.fillRect(ox, oz + T - 1, T, 1); g.fillStyle = wl; g.fillRect(ox, oz + T - 2, T, 1); }
+        if (land(W)) { g.fillStyle = ws; g.fillRect(ox, oz, 1, T); g.fillStyle = wl; g.fillRect(ox + 1, oz, 1, T); }
+        if (land(E)) { g.fillStyle = ws; g.fillRect(ox + T - 1, oz, 1, T); g.fillStyle = wl; g.fillRect(ox + T - 2, oz, 1, T); }
+        g.fillStyle = ws;
         if (!land(N) && !land(W) && land(this.tile(tx - 1, tz - 1))) g.fillRect(ox, oz, 2, 2);
         if (!land(N) && !land(E) && land(this.tile(tx + 1, tz - 1))) g.fillRect(ox + T - 2, oz, 2, 2);
         if (!land(S) && !land(W) && land(this.tile(tx - 1, tz + 1))) g.fillRect(ox, oz + T - 2, 2, 2);
@@ -858,16 +1244,57 @@ export class World {
         });
         if (hash2(tx, tz, 77) < 0.3) { g.fillStyle = C.grassD; g.fillRect(ox + Math.floor(hash2(tx, tz, 78) * (T - 2)), oz + Math.floor(hash2(tx, tz, 79) * (T - 2)), 1, 2); }
       } else if (t === Tile.Bed) {
-        // tilled soil rows with little plants
-        g.fillStyle = C.soil; g.fillRect(ox, oz, T, T);
-        for (let y = 2; y < T; y += 5) { g.fillStyle = C.soilL; g.fillRect(ox, oz + y, T, 1); g.fillStyle = '#5a3a1e'; g.fillRect(ox, oz + y + 3, T, 1); }
+        // tilled soil rows with little plants (Millbrook grows golden wheat)
+        const wheat = bw.farm > 0.5;
+        g.fillStyle = wheat ? '#7a5230' : C.soil; g.fillRect(ox, oz, T, T);
+        for (let y = 2; y < T; y += 5) { g.fillStyle = wheat ? '#9a6e46' : C.soilL; g.fillRect(ox, oz + y, T, 1); g.fillStyle = '#5a3a1e'; g.fillRect(ox, oz + y + 3, T, 1); }
         for (let i = 0; i < 4; i++) {
           const x = ox + 2 + (i * 5) % (T - 3), y = oz + 3 + Math.floor(hash2(tx, tz, i) * 3) * 5;
-          const c = hash2(tx, tz, i + 8) < 0.5 ? C.leaf : C.leafL;
+          const c = hash2(tx, tz, i + 8) < 0.5 ? (wheat ? '#d8b84a' : C.leaf) : (wheat ? '#c8a23f' : C.leafL);
           g.fillStyle = c; g.fillRect(x - 1, y, 3, 1); g.fillRect(x, y - 1, 1, 3);
-          if (hash2(tx, tz, i + 16) < 0.3) { g.fillStyle = '#ff6a3d'; g.fillRect(x, y, 1, 1); }
+          if (wheat) { g.fillStyle = '#e8d070'; g.fillRect(x, y - 1, 1, 1); } // grain head
+          else if (hash2(tx, tz, i + 16) < 0.3) { g.fillStyle = '#ff6a3d'; g.fillRect(x, y, 1, 1); }
         }
         g.fillStyle = '#5a3a1e'; g.fillRect(ox, oz, T, 1); g.fillRect(ox, oz, 1, T);
+      }
+      // feather this tile's edges into differently-typed natural neighbours (2-3px soft step, no hard seam)
+      if (natural(t)) {
+        const own = natBase(t, tx, tz);
+        if (own) {
+          const nN = natBase(N, tx, tz - 1), nS = natBase(S, tx, tz + 1), nE = natBase(E, tx + 1, tz), nW = natBase(W, tx - 1, tz);
+          if (nN && nN !== own) {
+            const hN = blendCss(own, nN, 0.5);
+            for (let i = 0; i < T; i++) {
+              g.fillStyle = nN; g.fillRect(ox + i, oz, 1, 1);
+              g.fillStyle = hN; g.fillRect(ox + i, oz + 1, 1, 1);
+              if (hash2(tx * T + i, tz * 7 + 8) < 0.4) { g.fillStyle = nN; g.fillRect(ox + i, oz + 2, 1, 1); }
+            }
+          }
+          if (nS && nS !== own) {
+            const hS = blendCss(own, nS, 0.5);
+            for (let i = 0; i < T; i++) {
+              g.fillStyle = nS; g.fillRect(ox + i, oz + T - 1, 1, 1);
+              g.fillStyle = hS; g.fillRect(ox + i, oz + T - 2, 1, 1);
+              if (hash2(tx * T + i, tz * 7 + 9) < 0.4) { g.fillStyle = nS; g.fillRect(ox + i, oz + T - 3, 1, 1); }
+            }
+          }
+          if (nW && nW !== own) {
+            const hW = blendCss(own, nW, 0.5);
+            for (let i = 0; i < T; i++) {
+              g.fillStyle = nW; g.fillRect(ox, oz + i, 1, 1);
+              g.fillStyle = hW; g.fillRect(ox + 1, oz + i, 1, 1);
+              if (hash2(tz * T + i, tx * 7 + 8) < 0.4) { g.fillStyle = nW; g.fillRect(ox + 2, oz + i, 1, 1); }
+            }
+          }
+          if (nE && nE !== own) {
+            const hE = blendCss(own, nE, 0.5);
+            for (let i = 0; i < T; i++) {
+              g.fillStyle = nE; g.fillRect(ox + T - 1, oz + i, 1, 1);
+              g.fillStyle = hE; g.fillRect(ox + T - 2, oz + i, 1, 1);
+              if (hash2(tz * T + i, tx * 7 + 9) < 0.4) { g.fillStyle = nE; g.fillRect(ox + T - 3, oz + i, 1, 1); }
+            }
+          }
+        }
       }
     }
     const tex = new THREE.CanvasTexture(cv);
@@ -979,7 +1406,7 @@ export class World {
   createGrassTileTexture(): THREE.CanvasTexture {
     const cv = document.createElement('canvas'); cv.width = TEX_PX; cv.height = TEX_PX;
     const g = cv.getContext('2d')!;
-    this.paintGrass(g, 0, 0, 7, 7, false);
+    this.paintGrass(g, 0, 0, 7, 7, false, this.mixColors(60, 20)); // deep meadow: pure palette
     const tex = new THREE.CanvasTexture(cv);
     tex.magFilter = THREE.NearestFilter; tex.minFilter = THREE.NearestFilter; tex.generateMipmaps = false; tex.colorSpace = THREE.SRGBColorSpace;
     return tex;
