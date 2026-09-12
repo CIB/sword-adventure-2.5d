@@ -52,8 +52,9 @@ export const foliageUniforms = {
   uWindTex: { value: windTex },
   uWindScale: { value: 13 },
   uWindDir: { value: new THREE.Vector2(1, 0.35).normalize() },
-  uGust: { value: 0.34 },
-  uSway: { value: 0.055 },
+  // toned down – previous 0.34/0.055 felt like storm for bushes
+  uGust: { value: 0.22 },
+  uSway: { value: 0.032 },
   uAmbient: { value: 0.62 },
   uSun: { value: 0.44 },
 };
@@ -230,13 +231,11 @@ varying float vWind;
 void main() {
   vec2 uv = vUv;
   float d = length(uv - 0.5);
-  // circular puff, soft edge: discard outside 0.5, fade edge slightly
   if (d > 0.5) discard;
-  // slight darkening toward edge for volume
-  float edge = smoothstep(0.32, 0.5, d);
-  vec3 col = vColor * (vShade + vWind * 0.08);
-  // subtle AO toward edge
-  col = mix(col, col * 0.82, edge * 0.55);
+  // softer, less distinct edge – previous 0.82 darkening made each puff pop like separate palm leaf
+  float edge = smoothstep(0.35, 0.5, d);
+  vec3 col = vColor * (vShade + vWind * 0.05);
+  col = mix(col, col * 0.92, edge * 0.28);
   gl_FragColor = vec4(col, 1.0);
 }
 `;
@@ -248,17 +247,12 @@ varying vec2 vUv;
 varying float vWind;
 void main() {
   vec2 uv = vUv;
-  // needle shape: taper to point at top, slight pointed bottom
-  // keep full width at middle, narrow at ends
-  float taper = 1.0 - smoothstep(0.0, 0.35, abs(uv.y - 0.5) * 1.6);
-  // actually keep most of quad, just cut corners for pine needle look
   float dx = abs(uv.x - 0.5) * 2.0;
   float dy = abs(uv.y - 0.5) * 2.0;
-  // diamond-ish cut
-  if (dx + dy * 0.5 > 1.05) discard;
-  vec3 col = vColor * (vShade + vWind * 0.05);
-  // slightly darker at base
-  col *= 0.9 + 0.1 * uv.y;
+  // soft diamond cut for dense spruce – keep more of quad for solidity
+  if (dx + dy * 0.55 > 1.08) discard;
+  vec3 col = vColor * (vShade + vWind * 0.04);
+  col *= 0.92 + 0.08 * uv.y;
   gl_FragColor = vec4(col, 1.0);
 }
 `;
@@ -282,17 +276,16 @@ varying float vWind;
 void main() {
   vUv = uv;
   vColor = color;
-  // world pos from modelMatrix
   vec4 worldPos4 = modelMatrix * vec4(position, 1.0);
   vec3 worldPos = worldPos4.xyz;
 
   vec2 wuv = worldPos.xz / uWindScale + uWindDir * (uTime * 0.13);
   float gust = texture2D(uWindTex, wuv).r;
-  // bushes catch more wind than trees
-  vec2 windOff = uWindDir * ((gust - 0.42) * uGust * 1.45);
-  windOff += vec2(sin(uTime * 1.9 + aPhase), cos(uTime * 1.4 + aPhase * 1.2)) * uSway * 1.7 * aWindFactor;
+  // European bushes: much gentler wind – was 1.45/1.7 stormy
+  vec2 windOff = uWindDir * ((gust - 0.42) * uGust * 0.55);
+  windOff += vec2(sin(uTime * 0.9 + aPhase), cos(uTime * 0.7 + aPhase * 1.2)) * uSway * 0.55 * aWindFactor;
   worldPos.xz += windOff * aWindFactor;
-  worldPos.y -= length(windOff) * aWindFactor * 0.18;
+  worldPos.y -= length(windOff) * aWindFactor * 0.10;
 
   vec3 worldNormal = normalize(mat3(modelMatrix) * normal);
   vec3 sunDir = normalize(vec3(-0.15, 1.0, 0.42));
@@ -444,57 +437,80 @@ function generateBroadleafInstances(trees: TreeSpec[], kind: TreeKind): FoliageI
   for (let ti = 0; ti < trees.length; ti++) {
     const t = trees[ti];
     const scale = t.scale;
-    // European broadleaf: denser, smaller puffs, rounded dome – not sparse palm
     const isBirch = kind === 'birch';
     const isSmall = scale < 0.8;
-    const outerCount = isSmall ? 18 : 26 + Math.floor(hash2(ti, 0, 7) * 8); // 26-34 for big
-    const innerCount = isSmall ? 8 : 14;
-    const canopyY = (isBirch ? 1.25 : 1.35) * scale;
-    const radius = (isBirch ? 0.85 : 1.05) * scale;
+    // More solid European canopy: fewer but larger overlapping puffs + dense inner core
+    const outerCount = isSmall ? 14 : 20 + Math.floor(hash2(ti, 0, 7) * 6); // 20-26
+    const midCount = isSmall ? 8 : 12;
+    const innerCount = isSmall ? 6 : 10;
+    const canopyY = (isBirch ? 1.22 : 1.32) * scale;
+    const radius = (isBirch ? 0.82 : 1.02) * scale;
     const yBase = (t.y ?? 0) + canopyY;
 
-    // outer shell – slightly flattened ellipsoid, more coverage on top
+    // central core – large puff that fills gaps (makes tree solid)
+    {
+      const h = hash2(ti, 0, 99);
+      const center = new THREE.Vector3(t.x + (h - 0.5) * 0.12 * scale, yBase + 0.08 * scale, t.z + (hash2(ti, 1, 99) - 0.5) * 0.12 * scale);
+      const pScale = (isBirch ? 0.85 : 0.95) * scale;
+      const col = varyColor(baseHex, h, 0.5, kind);
+      col.multiplyScalar(0.92);
+      out.push({ center, scale: pScale, rotY: h * Math.PI * 2, color: col, phase: h * 8, wind: 0.18 });
+    }
+
+    // outer shell – large overlapping puffs, flattened dome
     for (let pi = 0; pi < outerCount; pi++) {
       const h1 = hash2(ti, pi, 11), h2 = hash2(ti, pi, 13), h3 = hash2(ti, pi, 17), h4 = hash2(ti, pi, 19);
       const theta = h1 * Math.PI * 2;
-      // bias to upper hemisphere, but keep some lower to close bottom
-      const phi = Math.acos(THREE.MathUtils.lerp(-0.2, 0.95, h2));
-      const r = radius * (0.68 + Math.pow(h3, 0.65) * 0.42);
+      const phi = Math.acos(THREE.MathUtils.lerp(-0.15, 0.88, h2));
+      const r = radius * (0.58 + Math.pow(h3, 0.6) * 0.52);
       const ox = r * Math.sin(phi) * Math.cos(theta);
-      const oy = r * Math.cos(phi) * 0.55 + (h4 - 0.5) * 0.12;
+      const oy = r * Math.cos(phi) * 0.52 + (h4 - 0.5) * 0.10;
       const oz = r * Math.sin(phi) * Math.sin(theta);
       const center = new THREE.Vector3(t.x + ox, yBase + oy, t.z + oz);
       const distNorm = r / radius;
-      // smaller European leaves: 0.28-0.48 * scale
-      const pScale = (0.28 + distNorm * 0.18 + h1 * 0.12) * scale * (kind === 'blossom' ? 0.9 : 1);
-      const rotY = h2 * Math.PI * 2 + h3 * 0.6;
+      // larger European leaves: 0.58-0.88 * scale – heavy overlap, not disjointed
+      const pScale = (0.58 + distNorm * 0.22 + h1 * 0.14) * scale * (kind === 'blossom' ? 0.92 : 1);
+      const rotY = h2 * Math.PI * 2 + h3 * 0.4;
       const col = varyColor(baseHex, h3, h4, kind);
-      if (kind === 'blossom' && h1 < 0.15) {
+      if (kind === 'blossom' && h1 < 0.12) {
         const g = varyColor('#4a9a3a', h2, h3, 'oak');
-        col.lerp(g, 0.55);
+        col.lerp(g, 0.5);
       }
-      const phase = h1 * Math.PI * 18 + ti * 0.7;
-      const wind = 0.32 + distNorm * 0.6 + h3 * 0.12;
+      const phase = h1 * Math.PI * 14 + ti * 0.6;
+      const wind = 0.28 + distNorm * 0.45 + h3 * 0.10;
       out.push({ center, scale: pScale, rotY, color: col, phase, wind });
     }
-    // inner darker filler for depth – makes oak look solid, not palm
+    // mid layer – medium puffs to bridge outer and inner
+    for (let pi = 0; pi < midCount; pi++) {
+      const h1 = hash2(ti, pi + 50, 11), h2 = hash2(ti, pi + 50, 13), h3 = hash2(ti, pi + 50, 17), h4 = hash2(ti, pi + 50, 19);
+      const theta = h1 * Math.PI * 2;
+      const phi = Math.acos(THREE.MathUtils.lerp(0.05, 0.78, h2));
+      const r = radius * 0.62 * (0.5 + h3 * 0.5);
+      const ox = r * Math.sin(phi) * Math.cos(theta);
+      const oy = r * Math.cos(phi) * 0.42 + (h4 - 0.5) * 0.07;
+      const oz = r * Math.sin(phi) * Math.sin(theta);
+      const center = new THREE.Vector3(t.x + ox, yBase + oy * 0.85, t.z + oz);
+      const pScale = (0.48 + h1 * 0.14) * scale;
+      const rotY = h2 * Math.PI * 2;
+      const col = varyColor(baseHex, h3, h4, kind);
+      col.multiplyScalar(0.90);
+      out.push({ center, scale: pScale, rotY, color: col, phase: h1 * 10 + ti * 0.4, wind: 0.20 + h3 * 0.10 });
+    }
+    // inner dark filler
     for (let pi = 0; pi < innerCount; pi++) {
       const h1 = hash2(ti, pi + 100, 11), h2 = hash2(ti, pi + 100, 13), h3 = hash2(ti, pi + 100, 17), h4 = hash2(ti, pi + 100, 19);
       const theta = h1 * Math.PI * 2;
-      const phi = Math.acos(THREE.MathUtils.lerp(0.1, 0.85, h2));
-      const r = radius * 0.45 * (0.4 + h3 * 0.6);
+      const phi = Math.acos(THREE.MathUtils.lerp(0.15, 0.75, h2));
+      const r = radius * 0.38 * (0.4 + h3 * 0.5);
       const ox = r * Math.sin(phi) * Math.cos(theta);
-      const oy = r * Math.cos(phi) * 0.45 + (h4 - 0.5) * 0.08;
+      const oy = r * Math.cos(phi) * 0.38 + (h4 - 0.5) * 0.06;
       const oz = r * Math.sin(phi) * Math.sin(theta);
-      const center = new THREE.Vector3(t.x + ox, yBase + oy * 0.8, t.z + oz);
-      const pScale = (0.22 + h1 * 0.12) * scale;
+      const center = new THREE.Vector3(t.x + ox, yBase + oy * 0.7, t.z + oz);
+      const pScale = (0.38 + h1 * 0.12) * scale;
       const rotY = h2 * Math.PI * 2;
       const col = varyColor(baseHex, h3, h4, kind);
-      // darken inner
-      col.multiplyScalar(0.82);
-      const phase = h1 * Math.PI * 12 + ti * 0.5;
-      const wind = 0.18 + h3 * 0.12;
-      out.push({ center, scale: pScale, rotY, color: col, phase, wind });
+      col.multiplyScalar(0.78);
+      out.push({ center, scale: pScale, rotY, color: col, phase: h1 * 9 + ti * 0.3, wind: 0.14 + h3 * 0.08 });
     }
   }
   return out;
@@ -955,9 +971,9 @@ void main() {
 
   vec2 wuv = worldPos.xz / uWindScale + uWindDir * (uTime * 0.13);
   float gust = texture2D(uWindTex, wuv).r;
-  vec2 windOff = uWindDir * ((gust - 0.42) * uGust * 0.85);
+  vec2 windOff = uWindDir * ((gust - 0.42) * uGust * 0.55);
   float phase = float(gl_InstanceID) * 0.73;
-  windOff += vec2(sin(uTime * 1.15 + phase), cos(uTime * 0.85 + phase * 1.2)) * uSway * 0.9;
+  windOff += vec2(sin(uTime * 0.9 + phase), cos(uTime * 0.7 + phase * 1.2)) * uSway * 0.6;
 
   // bend factor: higher vertices sway more (y is local height)
   float bend = clamp(position.y * 1.2, 0.0, 1.0);
