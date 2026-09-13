@@ -24,21 +24,19 @@ const FONT: Record<string, string[]> = {
 const HEART = ['0110110', '1111111', '1111111', '0111110', '0011100', '0001000'];
 
 /**
- * Frametime graph — a transparent strip across the top of the HUD. It fills the empty middle of the top row:
- * the kill counter ends at x=176 and the life hearts start at `w-88`, so the plot runs from `FT_X0` to
- * `w - FT_RIGHT_GAP`. Nothing is drawn behind the bars (no panel), so the game shows straight through.
+ * Frametime graph — a transparent strip in its own row just below the HUD's top row (charge meter, item
+ * boxes, counters, life). It deliberately does NOT share the top row: that row's free middle vanishes on
+ * narrow HUDs (the integer viewport scale collapses the HUD to ~278px wide on 4:3-ish desktop windows, where
+ * the kill counter and the life hearts nearly touch), so a graph squeezed into it would disappear exactly
+ * when the layout gets tight. Own row = always room. Nothing is drawn behind the bars (no panel), so the
+ * game shows straight through.
  */
-const FT_X0 = 182;         // left edge: clear of the 000 kill counter
-const FT_RIGHT_GAP = 92;   // right edge = w - FT_RIGHT_GAP: 4px clear of the life hearts
-const FT_TEXT_Y = 8;       // ms readout row
-const FT_PLOT_Y = 15;      // first plot row
-const FT_PLOT_H = 23;      // plot rows — keeps the strip inside the top HUD row (y 7..46)
-/** Below this width the top row is too crowded to plot anything (a ~320px window) — the graph is skipped. */
-const FT_MIN_W = 8;
-/** The readout is 6 glyphs (e.g. `16.7MS`) at 4px each; narrower strips get the bars alone. */
-const FT_TEXT_W = 24;
-/** Frames of history kept — more than the widest layout plots (an ultrawide HUD plots ~230 columns). */
-const FT_HISTORY = 256;
+const FT_X0 = 8;           // left edge, in line with the charge meter above
+/** Plot columns = seconds of history at a fixed 1px per frame; also the cap on the ring buffer's use. */
+const FT_COLS = 256;
+const FT_TEXT_Y = 48;      // ms readout row (the top row ends at y 46)
+const FT_PLOT_Y = 54;      // first plot row
+const FT_PLOT_H = 19;      // plot rows; the bottom row (72) + baseline stay clear of the toast (y ≥ 74)
 /** Full-scale frametime in ms: a 50ms (20fps) frame pegs the top of the plot, longer ones clamp to it. */
 const FT_MAX_MS = 50;
 /** Dotted reference lines: 60fps and 30fps. */
@@ -83,9 +81,9 @@ export class Hud {
   private w = VIEW_W;
   private h = VIEW_H;
   /** frametime history in ms (ring buffer), fed by pushFrameTime() */
-  private ftBuf = new Float32Array(FT_HISTORY);
+  private ftBuf = new Float32Array(FT_COLS);
   private ftHead = 0;  // slot the next sample goes into
-  private ftCount = 0; // samples recorded, saturating at FT_HISTORY
+  private ftCount = 0; // samples recorded, saturating at FT_COLS
   constructor(canvas: HTMLCanvasElement) {
     canvas.width = VIEW_W;
     canvas.height = VIEW_H;
@@ -112,8 +110,8 @@ export class Hud {
   pushFrameTime(ms: number) {
     if (!Number.isFinite(ms) || ms <= 0 || ms > FT_SKIP_MS) return;
     this.ftBuf[this.ftHead] = ms;
-    this.ftHead = (this.ftHead + 1) % FT_HISTORY;
-    if (this.ftCount < FT_HISTORY) this.ftCount++;
+    this.ftHead = (this.ftHead + 1) % FT_COLS;
+    if (this.ftCount < FT_COLS) this.ftCount++;
   }
 
   /** Mean frametime in ms over the last `n` recorded frames (0 before the first frame). */
@@ -121,7 +119,7 @@ export class Hud {
     const c = Math.min(n, this.ftCount);
     if (!c) return 0;
     let sum = 0;
-    for (let i = 0; i < c; i++) sum += this.ftBuf[(this.ftHead - 1 - i + FT_HISTORY) % FT_HISTORY];
+    for (let i = 0; i < c; i++) sum += this.ftBuf[(this.ftHead - 1 - i + FT_COLS) % FT_COLS];
     return sum / c;
   }
 
@@ -208,17 +206,16 @@ export class Hud {
    */
   private drawFrameGraph() {
     const g = this.g;
-    const x0 = FT_X0;
-    const plotW = this.w - FT_RIGHT_GAP - x0; // the empty middle of the top row
-    if (plotW < FT_MIN_W) return;             // tiny window: no room left for the graph
     if (!this.ftCount) return;                // first frame: nothing recorded yet
+    const x0 = FT_X0;
+    const plotW = Math.min(FT_COLS, this.w - FT_X0 - 8); // never run off the right edge
     const yBot = FT_PLOT_Y + FT_PLOT_H - 1;   // bottom plot row — bars grow up from here
     const rowOf = (ms: number) => yBot - Math.round(Math.min(ms, FT_MAX_MS) / FT_MAX_MS * (FT_PLOT_H - 1));
 
     const n = Math.min(plotW, this.ftCount);
-    const start = x0 + plotW - n;
+    const start = x0 + plotW - n;             // right-aligned: the newest frame is the rightmost column
     for (let i = 0; i < n; i++) {
-      const ms = this.ftBuf[(this.ftHead - n + i + FT_HISTORY) % FT_HISTORY];
+      const ms = this.ftBuf[(this.ftHead - n + i + FT_COLS) % FT_COLS];
       const [body, tip] = ms > FT_WARN_MAX ? FT_BAD : ms > FT_GOOD_MAX ? FT_WARN : FT_GOOD;
       const top = rowOf(ms);
       g.fillStyle = body;
@@ -236,10 +233,8 @@ export class Hud {
     g.fillStyle = 'rgba(0,0,0,0.4)';
     g.fillRect(x0 - 1, yBot + 1, plotW + 2, 1); // baseline shadow, so the bars read on bright ground
 
-    if (plotW >= FT_TEXT_W) {
-      const avg = this.avgFrameTime(FT_AVG);
-      this.text(`${Math.min(avg, 99.9).toFixed(1)}MS`, x0, FT_TEXT_Y, avg > FT_WARN_MAX ? FT_BAD[1] : avg > FT_GOOD_MAX ? FT_WARN[1] : '#f8f8f8');
-    }
+    const avg = this.avgFrameTime(FT_AVG);
+    this.text(`${Math.min(avg, 99.9).toFixed(1)}MS`, x0, FT_TEXT_Y, avg > FT_WARN_MAX ? FT_BAD[1] : avg > FT_GOOD_MAX ? FT_WARN[1] : '#f8f8f8');
   }
 
   draw(s: HudState) {
@@ -267,7 +262,7 @@ export class Hud {
     this.text(String(s.rupees).padStart(3, '0'), 104, 12, '#f8f8f8', 2);
     this.helmetIcon(140, 12);
     this.text(String(s.kills).padStart(3, '0'), 152, 12, '#f8f8f8', 2);
-    // frametime graph — the transparent strip between the counters and the life readout
+    // frametime graph — transparent strip in its own row below the top HUD row
     this.drawFrameGraph();
     // life — right-anchored so it keeps the same margin from the edge at any viewport width
     const lx = W - 82;
