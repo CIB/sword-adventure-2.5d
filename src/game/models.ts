@@ -280,6 +280,12 @@ export function buildSoldier(kind: EnemyKind): Humanoid {
 // ---------------------------------------------------------------- props
 export type TreeKind = 'oak' | 'pine' | 'autumn' | 'birch' | 'blossom';
 
+// Bushes, hedges and rosebushes keep the particle-foliage look from this branch
+// (see foliage.ts). Trees are the classic solid toon canopies as on main, with a
+// gentle shader-driven canopy sway (applyTreeWind below) so they move slightly
+// in the wind without changing how they look.
+import { buildBush as buildBushFoliage, buildBerryBush as buildBerryBushFoliage, buildHedge as buildHedgeFoliage, buildRosebush as buildRosebushFoliage, foliageUniforms } from './foliage';
+
 /** Trees are rendered as one instanced trio (trunk/canopy/shadow) per kind so the map can mix species. */
 export function buildTrees(trees: TreeSpec[]): THREE.Object3D[] {
   const out: THREE.Object3D[] = [];
@@ -288,6 +294,49 @@ export function buildTrees(trees: TreeSpec[]): THREE.Object3D[] {
     if (list.length) out.push(...buildTreeVariant(list, kind));
   }
   return out;
+}
+
+/** Gentle wind sway for the instanced tree canopies — look untouched, motion only.
+ *  The canopy leans into the same travelling gusts as the grass and bushes (shared
+ *  uTime / wind texture / wind direction uniforms), applied in world space after the
+ *  instance transform so every tree bows with the same wind. Vertices bend more the
+ *  higher they sit: the crown rustles while the part hugging the trunk stays put. */
+function applyTreeWind(mat: THREE.MeshToonMaterial) {
+  mat.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, foliageUniforms);
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+        uniform float uTime;
+        uniform sampler2D uWindTex;
+        uniform float uWindScale;
+        uniform vec2 uWindDir;
+        uniform float uGust;
+        uniform float uSway;`,
+      )
+      .replace(
+        '#include <project_vertex>',
+        `vec4 mvPosition = vec4( transformed, 1.0 );
+        #ifdef USE_INSTANCING
+          mvPosition = instanceMatrix * mvPosition;
+          // canopy wind, in world space (these meshes sit untransformed in the scene)
+          float treeScale = length( instanceMatrix[0].xyz );
+          float bend = clamp( ( position.y - 0.8 ) * 0.45, 0.0, 1.0 );
+          bend = bend * bend * 0.65 + bend * 0.35;
+          vec2 wuv = mvPosition.xz / uWindScale + uWindDir * ( uTime * 0.13 );
+          float gust = texture2D( uWindTex, wuv ).r;
+          float phase = instanceMatrix[3].x * 1.7 + instanceMatrix[3].z * 2.3;
+          vec2 windOff = uWindDir * ( ( gust - 0.42 ) * uGust );
+          windOff += vec2( sin( uTime * 1.1 + phase ), cos( uTime * 0.85 + phase * 1.31 ) ) * uSway;
+          windOff *= treeScale * bend * 1.8;
+          mvPosition.xz += windOff;
+          mvPosition.y -= ( abs( windOff.x ) + abs( windOff.y ) ) * 0.3;
+        #endif
+        mvPosition = modelViewMatrix * mvPosition;
+        gl_Position = projectionMatrix * mvPosition;`,
+      );
+  };
 }
 
 function buildTreeVariant(trees: TreeSpec[], kind: TreeKind): THREE.Object3D[] {
@@ -316,6 +365,7 @@ function buildTreeVariant(trees: TreeSpec[], kind: TreeKind): THREE.Object3D[] {
     ])!;
   }
   const canopyMat = toon(kind === 'pine' ? '#2e7a4a' : kind === 'autumn' ? '#d18a2e' : kind === 'birch' ? '#9ac04a' : kind === 'blossom' ? '#e89ac0' : '#3f9a3d');
+  applyTreeWind(canopyMat);
   const trunkMat = toon(kind === 'birch' ? '#e8e0d0' : '#6b4226');
   const trunkGeo = new THREE.CylinderGeometry(0.2, 0.28, 0.95, 8).translate(0, 0.47, 0);
   const shadowGeo = new THREE.CircleGeometry(0.9, 12).rotateX(-Math.PI / 2).scale(1, 1, 0.7).translate(0, 0.015, 0.1);
@@ -342,29 +392,19 @@ function buildTreeVariant(trees: TreeSpec[], kind: TreeKind): THREE.Object3D[] {
 }
 
 export function buildBush(): THREE.Group {
-  const g = new THREE.Group();
-  const m = toon('#3f9a3d'), mL = toon('#5fc04a'), mD = toon('#2a6e2a');
-  g.add(part(UNIT_SPHERE, m, [0, 0.33, 0], [0.76, 0.56, 0.62]));
-  g.add(part(UNIT_SPHERE, mL, [-0.16, 0.48, 0.02], [0.34, 0.28, 0.3]));
-  g.add(part(UNIT_SPHERE, mL, [0.14, 0.5, -0.06], [0.3, 0.26, 0.26]));
-  g.add(part(UNIT_SPHERE, m, [0.06, 0.42, 0.2], [0.34, 0.28, 0.3]));
-  g.add(part(UNIT_CYL, mD, [0, 0.03, 0], [0.82, 0.06, 0.68]));
-  return g;
+  return buildBushFoliage();
 }
 
-/** Bush studded with red berries — a colour break in the green undergrowth. */
 export function buildBerryBush(): THREE.Group {
-  const g = new THREE.Group();
-  const m = toon('#3f8f3d'), mL = toon('#5cb04a'), mD = toon('#2a6e2a');
-  const berry = toon('#e04a3a'); berry.emissive.set('#a02010'); berry.emissiveIntensity = 0.4;
-  g.add(part(UNIT_SPHERE, m, [0, 0.33, 0], [0.76, 0.56, 0.62]));
-  g.add(part(UNIT_SPHERE, mL, [-0.16, 0.48, 0.02], [0.34, 0.28, 0.3]));
-  g.add(part(UNIT_SPHERE, mL, [0.14, 0.5, -0.06], [0.3, 0.26, 0.26]));
-  g.add(part(UNIT_SPHERE, m, [0.06, 0.42, 0.2], [0.34, 0.28, 0.3]));
-  g.add(part(UNIT_CYL, mD, [0, 0.03, 0], [0.82, 0.06, 0.68]));
-  for (const [x, y, z] of [[-0.2, 0.45, 0.2], [0.18, 0.55, 0.05], [0.0, 0.36, 0.3], [0.26, 0.38, -0.16], [-0.28, 0.34, -0.1]] as [number, number, number][])
-    g.add(part(UNIT_SPHERE, berry, [x, y, z], [0.09, 0.09, 0.08]));
-  return g;
+  return buildBerryBushFoliage();
+}
+
+export function buildHedge(): THREE.Group {
+  return buildHedgeFoliage();
+}
+
+export function buildRosebush(): THREE.Group {
+  return buildRosebushFoliage();
 }
 
 // ---------------------------------------------------------------- undergrowth (vertex-coloured, instanced)
@@ -752,8 +792,9 @@ export function buildProp(p: PropSpec): THREE.Group {
       break;
     }
     case 'hedge': {
-      g.add(part(UNIT_BOX, toon('#3f9a3d'), [0, 0.3, 0], [0.95, 0.6, 0.6]));
-      g.add(part(UNIT_BOX, toon('#5fc04a'), [0, 0.6, 0], [0.9, 0.06, 0.55]));
+      // BotW-style hedge: dense particle foliage, 3 merged bush clusters side by side
+      // Uses the same puff shader as bushes, so wind animates the whole hedge
+      g.add(buildHedgeFoliage());
       break;
     }
     case 'log': {
@@ -980,10 +1021,7 @@ export function buildProp(p: PropSpec): THREE.Group {
       break;
     }
     case 'rosebush': {
-      g.add(part(UNIT_SPHERE, toon('#3f9a3d'), [0, 0.3, 0], [0.6, 0.5, 0.5]));
-      g.add(part(UNIT_SPHERE, toon('#2a6e2a'), [0, 0.12, 0], [0.62, 0.24, 0.52]));
-      for (const [x, y, z, c] of [[-0.18, 0.4, 0.22, '#e83a3a'], [0.2, 0.5, 0.12, '#f05a6a'], [0.05, 0.24, 0.28, '#e83a3a'], [-0.05, 0.6, -0.05, '#f05a6a']] as [number, number, number, string][])
-        g.add(part(UNIT_SPHERE, toon(c), [x, y, z], [0.13, 0.13, 0.1]));
+      g.add(buildRosebushFoliage());
       break;
     }
     case 'beehive': {
