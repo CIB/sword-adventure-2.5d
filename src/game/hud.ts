@@ -23,6 +23,24 @@ const FONT: Record<string, string[]> = {
 
 const HEART = ['0110110', '1111111', '1111111', '0111110', '0011100', '0001000'];
 
+function drawGlyph(g: CanvasRenderingContext2D, ch: string, x: number, y: number, c: string, s: number) {
+  const rows = FONT[ch];
+  if (!rows) return;
+  g.fillStyle = c;
+  for (let r = 0; r < 5; r++) for (let k = 0; k < 3; k++) if (rows[r][k] === '1') g.fillRect(x + k * s, y + r * s, s, s);
+}
+
+/** Pixel-font text, shared by the HUD and the world map screen. */
+export function drawText(g: CanvasRenderingContext2D, str: string, x: number, y: number, c: string, s = 1, outline = true) {
+  str = str.toUpperCase();
+  if (outline) for (const [ox, oy] of [[-1, 0], [1, 0], [0, -1], [0, 1], [1, 1], [-1, -1], [1, -1], [-1, 1]]) {
+    let cx = x;
+    for (const ch of str) { drawGlyph(g, ch, cx + ox, y + oy, '#000', s); cx += 4 * s; }
+  }
+  let cx = x;
+  for (const ch of str) { drawGlyph(g, ch, cx, y, c, s); cx += 4 * s; }
+}
+
 /**
  * Frametime graph — a transparent strip in its own row just below the HUD's top row (charge meter, item
  * boxes, counters, life). It deliberately does NOT share the top row: that row's free middle vanishes on
@@ -125,20 +143,8 @@ export class Hud {
 
   private px(x: number, y: number, c: string, s = 1) { this.g.fillStyle = c; this.g.fillRect(x, y, s, s); }
 
-  private glyph(ch: string, x: number, y: number, c: string, s: number) {
-    const rows = FONT[ch];
-    if (!rows) return;
-    for (let r = 0; r < 5; r++) for (let k = 0; k < 3; k++) if (rows[r][k] === '1') this.px(x + k * s, y + r * s, c, s);
-  }
-
   text(str: string, x: number, y: number, c: string, s = 1, outline = true) {
-    str = str.toUpperCase();
-    if (outline) for (const [ox, oy] of [[-1, 0], [1, 0], [0, -1], [0, 1], [1, 1], [-1, -1], [1, -1], [-1, 1]]) {
-      let cx = x;
-      for (const ch of str) { this.glyph(ch, cx + ox, y + oy, '#000', s); cx += 4 * s; }
-    }
-    let cx = x;
-    for (const ch of str) { this.glyph(ch, cx, y, c, s); cx += 4 * s; }
+    drawText(this.g, str, x, y, c, s, outline);
   }
 
   private heart(x: number, y: number, fill: 'full' | 'half' | 'empty') {

@@ -6,7 +6,7 @@ import {
 } from './constants';
 import { World, type EnemyKind, type Vec2, type TileObj } from './world';
 import { AudioEngine } from './audio';
-import { Input, PAUSE_KEYS, MUTE_KEYS, ATTACK_KEYS, TALK_KEYS, ROTATE_CCW_KEYS, ROTATE_CW_KEYS, FULLSCREEN_KEYS, HELP_KEYS, rotateView } from './input';
+import { Input, PAUSE_KEYS, MUTE_KEYS, ATTACK_KEYS, TALK_KEYS, ROTATE_CCW_KEYS, ROTATE_CW_KEYS, FULLSCREEN_KEYS, HELP_KEYS, MAP_KEYS, rotateView } from './input';
 import { Player, Enemy, Npc, Projectile, Pickup, Effect, fxSpark, fxPuff, fxLeaves, type GameCtx } from './entities';
 import { NPC_TALK, newQuestState, type Conversation, type QuestState, type TalkCtx } from './dialogue';
 import {
@@ -16,6 +16,8 @@ import {
 import { GrassSystem } from './grass';
 import { updateFoliage, makeVegInstancesWind } from './foliage';
 import { Hud } from './hud';
+import { WorldState } from './worldstate';
+import { WorldMap } from './map';
 
 export type Phase = 'title' | 'playing' | 'paused' | 'gameover';
 
@@ -68,6 +70,12 @@ export class Game implements GameCtx {
   viewW = VIEW_W;
   viewH = VIEW_H;
   world = new World();
+  /** persistent low-resolution world state (chunks + soldier records) — the world sim's data model */
+  worldState: WorldState;
+  /** chunk-resolution debug map (Tab / N) drawn from the world state */
+  private worldMap: WorldMap;
+  /** world map screen open (gameplay keeps running underneath; it's an overlay, not a pause) */
+  mapOpen = false;
   audio: AudioEngine;
   input: Input;
   hud: Hud;
@@ -115,6 +123,8 @@ export class Game implements GameCtx {
     this.audio = audio;
     this.input = input;
     this.hud = new Hud(hudCanvas);
+    this.worldState = new WorldState(this.world);
+    this.worldMap = new WorldMap(hudCanvas, this.worldState);
 
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(1);
@@ -486,6 +496,10 @@ export class Game implements GameCtx {
     if (input.justPressed(MUTE_KEYS)) { this.audio.init(); this.audio.setMuted(!this.audio.muted); this.onMute(this.audio.muted); }
     if (input.justPressed(FULLSCREEN_KEYS)) this.onFullscreen();
     if (input.justPressed(HELP_KEYS)) this.onHelp();
+    if ((this.phase === 'playing' || this.phase === 'paused') && input.justPressed(MAP_KEYS)) {
+      this.mapOpen = !this.mapOpen;
+      this.audio.blip();
+    }
     if (this.phase === 'playing' && !this.talking) {
       if (input.justPressed(ROTATE_CW_KEYS)) this.rotateView(1);
       else if (input.justPressed(ROTATE_CCW_KEYS)) this.rotateView(-1);
@@ -740,5 +754,10 @@ export class Game implements GameCtx {
       canTalk: !this.talking && this.phase === 'playing' && this.npcs.some((n) => n.canTalk()),
       gamepad: this.input.gamepadActive,
     });
+    if (this.mapOpen && (this.phase === 'playing' || this.phase === 'paused')) {
+      // mirror the live enemies into the world state right before drawing, so the map is always current
+      this.worldState.syncActive(this.enemies.filter((e) => e.alive).map((e) => ({ home: e.spawn, x: e.pos.x, z: e.pos.z })));
+      this.worldMap.draw({ px: p.pos.x, pz: p.pos.z, time: this.time, gamepad: this.input.gamepadActive });
+    }
   }
 }

@@ -1,7 +1,7 @@
 const GAME_KEYS = new Set([
   'KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
   'KeyJ', 'KeyK', 'KeyZ', 'KeyX', 'KeyE', 'KeyC', 'Space', 'ShiftLeft', 'ShiftRight', 'Enter', 'KeyM', 'KeyP', 'Escape',
-  'KeyF', 'KeyH',
+  'KeyF', 'KeyH', 'Tab', 'KeyN',
 ]);
 
 export const ATTACK_KEYS = ['KeyJ', 'KeyZ', 'Space'];
@@ -12,6 +12,8 @@ export const MUTE_KEYS = ['KeyM'];
 export const FULLSCREEN_KEYS = ['KeyF'];
 /** Show / hide the on-screen control help (gamepad: Select). */
 export const HELP_KEYS = ['KeyH'];
+/** Open / close the world map (debug chunk view of the world state; gamepad: R3). */
+export const MAP_KEYS = ['Tab', 'KeyN'];
 export const ROTATE_CCW_KEYS = ['KeyQ', 'Comma'];
 export const ROTATE_CW_KEYS = ['KeyR', 'Period'];
 /** Talk / advance dialogue. The attack keys also work so a Zelda-style "A to talk" feels natural. */
@@ -33,6 +35,7 @@ const PAD_BUTTONS: Record<number, string> = {
   8: 'KeyH',       // Select/Back – show/hide control help
   9: 'Enter',      // Start – pause / confirm
   10: 'KeyM',      // L3 (left stick click) – mute
+  11: 'Tab',       // R3 (right stick click) – world map
   12: 'ArrowUp', 13: 'ArrowDown', 14: 'ArrowLeft', 15: 'ArrowRight', // d-pad
 };
 const STICK_DEADZONE = 0.35;
