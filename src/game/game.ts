@@ -470,8 +470,10 @@ export class Game implements GameCtx {
 
   private loop = (now: number) => {
     this.raf = requestAnimationFrame(this.loop);
-    const dt = Math.min(0.05, Math.max(0.001, (now - this.lastNow) / 1000));
+    const frameMs = now - this.lastNow;
+    const dt = Math.min(0.05, Math.max(0.001, frameMs / 1000));
     this.lastNow = now;
+    this.hud.pushFrameTime(frameMs); // the HUD's frametime graph wants the raw frame interval, not the clamped step
     this.input.pollGamepads();
     this.update(dt);
     this.input.endFrame();
