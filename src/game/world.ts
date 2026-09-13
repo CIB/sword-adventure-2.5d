@@ -11,7 +11,6 @@ export type PropKind = 'well' | 'sign' | 'stall' | 'bench' | 'weathercock' | 'la
   | 'windmill' | 'anvil' | 'forge' | 'cauldron' | 'grave' | 'deadtree' | 'reeds' | 'rosebush' | 'beehive' | 'wheelbarrow' | 'statue' | 'mushroom' | 'amberrock';
 export interface PropSpec { kind: PropKind; x: number; z: number; rot?: number }
 export interface NpcSpec { id: string; x: number; z: number; facing?: 0 | 1 | 2 | 3; wander?: number }
-export interface SpawnSpec { x: number; z: number; kind: EnemyKind }
 export interface BridgeSpec { x0: number; z0: number; x1: number; z1: number; y: number; deadEnd?: boolean } // tile-inclusive rect + deck height; deadEnd = jetty (far end over water)
 export interface Vec2 { x: number; z: number }
 
@@ -87,7 +86,6 @@ export class World {
   ];
   props: PropSpec[] = [];
   npcs: NpcSpec[] = [];
-  spawns: SpawnSpec[] = [];
   playerStart: Vec2 = { x: 9.5, z: 9.5 };
   /** Village bounds (tiles, inclusive) - enemies stay out */
   village = { x0: 1, z0: 1, x1: 32, z1: 29 };
@@ -249,15 +247,21 @@ export class World {
     // ---------------------------------------------------------------------------------------------------
 
     // 1. water ------------------------------------------------------------------------------------------
-    const river = [[118, -6], [116, 22], [124, 44], [122, 68], [130, 92], [128, 118], [136, 142], [134, 160], [140, 182]];
-    const brook = [[50, 124], [70, 118], [92, 112], [110, 100], [124, 96]];
-    const stream = [[206, 40], [186, 48], [170, 58], [150, 66], [128, 72]];
+    // NOTE: watercourse centrelines are chunk-aligned: straights sit mid-chunk (tile ≡ 4 mod CHUNK_T = 8)
+    // and bends cross chunk borders steeply (~4 tiles of sideways drift per 3 of run). The river is ~7
+    // tiles wide, so a centreline drifting slowly across a border would flood both sides of it for the
+    // whole drift — the world-state chunk grid would see two half-water chunk columns instead of one
+    // river chunk column. Crossing borders is fine; moving along them is not (test/worldstate.test.ts
+    // fails on any long narrow water strip riding a border).
+    const river = [[116, -6], [116, 30], [124, 34], [124, 76], [132, 80], [132, 116], [124, 120], [124, 166], [132, 170], [132, 182]];
+    const brook = [[50, 124], [56, 116], [74, 116], [80, 108], [96, 108], [102, 100], [118, 100], [124, 92], [132, 92]];
+    const stream = [[206, 36], [194, 36], [188, 44], [172, 44], [166, 52], [152, 52], [146, 60], [136, 60], [128, 68], [126, 76]];
     const waters: { pts: number[][]; w: number }[] = [{ pts: river, w: 3.4 }, { pts: brook, w: 1.9 }, { pts: stream, w: 1.6 }];
     const lakes = [
       { x: 40, z: 126, rx: 13, rz: 8 },   // Mirror Lake
       { x: 14.5, z: 44, rx: 4.3, rz: 3.1 }, // home pond (the kid's rupee bush is nearby)
       { x: 24, z: 62, rx: 6, rz: 4 },     // heron pond
-      { x: 168, z: 150, rx: 5, rz: 3 }, { x: 182, z: 160, rx: 4, rz: 2.5 }, { x: 156, z: 162, rx: 3.5, rz: 2.2 }, // bog pools
+      { x: 166, z: 150, rx: 5, rz: 3 }, { x: 182, z: 157, rx: 4, rz: 2.5 }, { x: 156, z: 162, rx: 3.5, rz: 2.2 }, // bog pools
     ];
     for (let z = 0; z < h; z++) for (let x = 0; x < w; x++) {
       const cx = x + 0.5, cz = z + 0.5;
@@ -276,21 +280,25 @@ export class World {
     }
 
     // 2. roads ------------------------------------------------------------------------------------------
+    // NOTE: long axis-aligned segments keep their constant coordinate *mid-chunk* (tile index mod 8 in 1..6,
+    // ideally 2..5): the 3-tile road corridor must never straddle a world-state chunk border (multiples of
+    // CHUNK_T = 8) for its whole length. Crossing borders is fine — running along them is not, because both
+    // chunk columns/rows would then carry the road and the chunk road graph gets parallel ghost routes.
     const roads = [
       // south gate -> meadow crossroads -> great bridge (bends around the pond and the heron woods)
-      [[9.5, 29], [9.5, 34.5], [26.5, 34.5], [26.5, 40.5], [40.5, 40.5], [40.5, 46.5], [58.5, 46.5], [58.5, 52.5], [82.5, 52.5], [98.5, 46.5], [121.5, 46.5]],
+      [[9.5, 29], [9.5, 34.5], [26.5, 34.5], [26.5, 38.5], [38.5, 38.5], [38.5, 46.5], [58.5, 46.5], [58.5, 52.5], [82.5, 52.5], [98.5, 46.5], [121.5, 46.5]],
       // east gate -> forest trail through Willowmere -> north bridge
-      [[33, 8.5], [44.5, 8.5], [44.5, 14.5], [60.5, 14.5], [60.5, 20.5], [78.5, 20.5], [84.5, 26.5], [98.5, 26.5], [104.5, 20.5], [114.5, 20.5]],
+      [[33, 8.5], [38.5, 12.5], [60.5, 12.5], [60.5, 20.5], [78.5, 20.5], [84.5, 26.5], [98.5, 26.5], [104.5, 20.5], [114.5, 20.5]],
       // beyond the great bridge: east road, highland climb, moor road to the Crown hollow
-      [[125.5, 46.5], [160.5, 46.5], [160.5, 80.5], [190.5, 80.5], [198.5, 90.5]],
-      [[160.5, 46.5], [160.5, 30.5], [176.5, 22.5], [188.5, 12.5]],
-      // north bridge -> highland foot (joins the climb road)
-      [[122.5, 20.5], [140.5, 20.5], [146.5, 30.5], [160.5, 30.5]],
+      [[125.5, 46.5], [162.5, 46.5], [162.5, 82.5], [190.5, 82.5], [198.5, 90.5]],
+      [[162.5, 46.5], [162.5, 30.5], [176.5, 22.5], [188.5, 12.5], [190.5, 5.5]],
+      // north bridge -> highland foot (joins the climb road); starts on the deck's east abutment
+      [[119.5, 20.5], [140.5, 20.5], [146.5, 30.5], [162.5, 30.5]],
       // south road: crossroads -> heron pond -> Mirror Lake -> brook bridge -> Millbrook -> south bridge
-      [[40.5, 46.5], [40.5, 74.5], [34.5, 84.5], [34.5, 100.5], [48.5, 108.5], [62.5, 108.5], [62.5, 134.5], [78.5, 134.5], [100.5, 134.5], [100.5, 128.5], [132.5, 128.5]],
-      // east bank south -> the Drowned Field; camp track
-      [[140.5, 128.5], [162.5, 128.5], [170.5, 140.5]],
-      [[160.5, 80.5], [160.5, 104.5], [146.5, 110.5]],
+      [[38.5, 46.5], [38.5, 74.5], [34.5, 84.5], [34.5, 100.5], [48.5, 106.5], [62.5, 106.5], [62.5, 134.5], [78.5, 134.5], [100.5, 134.5], [100.5, 130.5], [132.5, 130.5]],
+      // east bank south -> the Drowned Field shrine; camp track
+      [[134.5, 130.5], [162.5, 130.5], [170.5, 140.5], [176.5, 140.5]],
+      [[162.5, 82.5], [162.5, 104.5], [146.5, 110.5]],
       // orchard lane (hermit hill)
       [[34.5, 84.5], [20.5, 84.5], [14.5, 96.5]],
     ];
@@ -312,9 +320,9 @@ export class World {
     };
     bridgeAt(122, 46, 'x');  // great bridge (east road)
     bridgeAt(116, 20, 'x');  // north bridge
-    bridgeAt(134, 128, 'x'); // south bridge
+    bridgeAt(134, 130, 'x'); // south bridge
     bridgeAt(62, 120, 'z');  // brook bridge (south road)
-    bridgeAt(160, 62, 'z');  // eastern stream bridge
+    bridgeAt(162, 62, 'z');  // eastern stream bridge
     // the fisher's jetty on Mirror Lake: a 1-wide dead-end deck running south into the water
     { const j: BridgeSpec = { x0: 45, z0: 117, x1: 45, z1: 121, y: 0.12, deadEnd: true }; this.bridges.push(j); for (let z = j.z0; z <= j.z1; z++) set(j.x0, z, Tile.Bridge); }
 
@@ -329,10 +337,10 @@ export class World {
     );
     for (const hs of this.houses) if (hs.x > v.x1) this.pads.push({ x0: hs.x - 1, z0: hs.z - 1, x1: hs.x + hs.w, z1: hs.z + hs.d + 1 });
     this.pads.push(
-      { x0: 84, z0: 58, x1: 90, z1: 64 },     // standing stones (mesa top)
-      { x0: 150, z0: 100, x1: 160, z1: 112 }, // knights' camp
+      { x0: 83, z0: 58, x1: 89, z1: 64 },     // standing stones (mesa top)
+      { x0: 151, z0: 102, x1: 161, z1: 114 }, // knights' camp
       { x0: 194, z0: 88, x1: 203, z1: 96 },   // the Crown hollow
-      { x0: 186, z0: 4, x1: 194, z1: 11 },    // watchtower ruin
+      { x0: 186, z0: 2, x1: 194, z1: 9 },     // watchtower ruin
       { x0: 174, z0: 138, x1: 182, z1: 146 }, // the Drowned Field shrine
       { x0: 88, z0: 122, x1: 93, z1: 126 },   // the windmill
     );
@@ -352,11 +360,12 @@ export class World {
     for (let z = 130; z <= 131; z++) for (let x = 84; x <= 89; x++) set(x, z, Tile.Cobble);
     for (let z = 104; z <= 105; z++) for (let x = 12; x <= 17; x++) set(x, z, Tile.Bed);
     // the knights' camp is trampled earth, the shrines and the tower are cobbled
-    for (let z = 102; z <= 110; z++) for (let x = 151; x <= 159; x++) if (Math.hypot(x - 155, z - 106) < 4.6) set(x, z, Tile.Path);
+    // (each disc/pad sits mid-chunk so no 'road' surface straddles a world-state chunk border)
+    for (let z = 104; z <= 112; z++) for (let x = 152; x <= 160; x++) if (Math.hypot(x - 156, z - 108) < 4.3) set(x, z, Tile.Path);
     for (let z = 90; z <= 94; z++) for (let x = 196; x <= 201; x++) set(x, z, Tile.Cobble);
-    for (let z = 5; z <= 10; z++) for (let x = 187; x <= 193; x++) set(x, z, Tile.Cobble);
+    for (let z = 3; z <= 7; z++) for (let x = 187; x <= 193; x++) set(x, z, Tile.Cobble);
     for (let z = 140; z <= 144; z++) for (let x = 176; x <= 180; x++) set(x, z, Tile.Cobble);
-    for (let z = 59; z <= 63; z++) for (let x = 85; x <= 89; x++) if (Math.hypot(x - 87, z - 61) < 2.6) set(x, z, Tile.Cobble);
+    for (let z = 59; z <= 63; z++) for (let x = 83; x <= 87; x++) if (Math.hypot(x - 85, z - 61) < 2.6) set(x, z, Tile.Cobble);
 
     // 7. trees -----------------------------------------------------------------------------------------
     const inYard = (x: number, z: number) => x >= v.x0 && x <= v.x1 && z >= v.z0 && z <= v.z1;
@@ -546,17 +555,17 @@ export class World {
       // hermit's orchard hill
       { kind: 'bench', x: 16.5, z: 102.5, rot: Math.PI }, { kind: 'flowerpot', x: 11.5, z: 103.5 }, { kind: 'menhir', x: 8.5, z: 96.5, rot: 0.4 },
       // knights' camp
-      { kind: 'campfire', x: 155.5, z: 106.5 }, { kind: 'tent', x: 152.5, z: 103.5, rot: 0.7 }, { kind: 'tent', x: 158.5, z: 103.5, rot: -0.7 }, { kind: 'tent', x: 158.5, z: 109.5, rot: -2.4 },
-      { kind: 'banner', x: 152.5, z: 109.5 }, { kind: 'crate', x: 154.5, z: 110.5 }, { kind: 'barrel', x: 156.5, z: 102.5 }, { kind: 'log', x: 155.5, z: 108.5, rot: Math.PI / 2 },
+      { kind: 'campfire', x: 156.5, z: 108.5 }, { kind: 'tent', x: 153.5, z: 105.5, rot: 0.7 }, { kind: 'tent', x: 159.5, z: 105.5, rot: -0.7 }, { kind: 'tent', x: 159.5, z: 111.5, rot: -2.4 },
+      { kind: 'banner', x: 153.5, z: 111.5 }, { kind: 'crate', x: 155.5, z: 112.5 }, { kind: 'barrel', x: 157.5, z: 104.5 }, { kind: 'log', x: 156.5, z: 110.5, rot: Math.PI / 2 },
       // watchtower ruin on the highland
-      { kind: 'tower', x: 190.5, z: 7.5 }, { kind: 'ruinwall', x: 187.5, z: 10.5 }, { kind: 'ruinwall', x: 193.5, z: 9.5, rot: Math.PI / 2 }, { kind: 'banner', x: 188.5, z: 5.5 }, { kind: 'campfire', x: 192.5, z: 10.5 },
+      { kind: 'tower', x: 190.5, z: 5.5 }, { kind: 'ruinwall', x: 187.5, z: 8.5 }, { kind: 'ruinwall', x: 193.5, z: 7.5, rot: Math.PI / 2 }, { kind: 'banner', x: 188.5, z: 3.5 }, { kind: 'campfire', x: 192.5, z: 8.5 },
       // the Crown hollow at the east edge
       { kind: 'pillar', x: 196.5, z: 90.5 }, { kind: 'pillar', x: 196.5, z: 94.5 }, { kind: 'pillar', x: 199.5, z: 89.5 }, { kind: 'pillar', x: 199.5, z: 95.5 }, { kind: 'crown', x: 201.5, z: 92.5 }, { kind: 'ruinwall', x: 201.5, z: 89.5 }, { kind: 'ruinwall', x: 201.5, z: 95.5 },
       // Drowned Field shrine + grave stakes
       { kind: 'pillar', x: 176.5, z: 140.5 }, { kind: 'pillar', x: 180.5, z: 140.5 }, { kind: 'menhir', x: 178.5, z: 141.5 }, { kind: 'ruinwall', x: 178.5, z: 144.5 },
       { kind: 'banner', x: 150.5, z: 132.5 }, { kind: 'banner', x: 158.5, z: 138.5, rot: 0.5 }, { kind: 'log', x: 154.5, z: 136.5, rot: 1.1 },
       // road signs at the crossroads and bridges
-      { kind: 'sign', x: 42.5, z: 48.5 }, { kind: 'sign', x: 118.5, z: 48.5 }, { kind: 'sign', x: 162.5, z: 82.5 }, { kind: 'sign', x: 42.5, z: 32.5 }, { kind: 'lamp', x: 128.5, z: 44.5 }, { kind: 'lamp', x: 119.5, z: 44.5 },
+      { kind: 'sign', x: 42.5, z: 48.5 }, { kind: 'sign', x: 118.5, z: 48.5 }, { kind: 'sign', x: 165.5, z: 84.5 }, { kind: 'sign', x: 42.5, z: 32.5 }, { kind: 'lamp', x: 128.5, z: 44.5 }, { kind: 'lamp', x: 119.5, z: 44.5 },
       // Millbrook: the windmill by the mill
       { kind: 'windmill', x: 90.5, z: 124.5 },
       // woodcutter's clearing: another cut log and a mushroom cluster
@@ -671,27 +680,9 @@ export class World {
 
     for (const np of this.npcs) if (this.isSolidTile(Math.floor(np.x), Math.floor(np.z))) { const p = this.nearestFree(np.x, np.z); np.x = p.x; np.z = p.z; }
 
-    // 12. enemy spawns: hand-placed per region, harder further from Thistledown ---------------------------
-    const S = (x: number, z: number, kind: EnemyKind) => { const p = this.nearestFree(x + 0.5, z + 0.5); if (!inYard(Math.floor(p.x), Math.floor(p.z))) this.spawns.push({ x: p.x, z: p.z, kind }); };
-    const sw: EnemyKind = 'sword', sp: EnemyKind = 'spear', jv: EnemyKind = 'javelin', ar: EnemyKind = 'archer';
-    // home meadow (as in the original layout)
-    for (const [x, z, k] of [[36, 16, sw], [36, 28, sw], [14, 37, sw], [28, 44, sw], [44, 19, sw], [40, 22, sw], [37, 11, sp], [45, 26, sp], [32, 47, sp], [34, 22, sp], [20, 39, jv], [42, 30, jv], [6, 37, jv], [43, 12, ar], [38, 36, ar], [26, 50, ar], [47, 33, ar], [50, 44, sw], [54, 26, sw]] as [number, number, EnemyKind][]) S(x, z, k);
-    // Willowmere Woods trail
-    for (const [x, z, k] of [[66, 12, sw], [74, 22, sp], [82, 28, sw], [92, 22, ar], [98, 28, sw], [104, 14, sp], [108, 24, jv], [70, 44, sw], [100, 44, sp], [84, 48, jv], [110, 40, sw]] as [number, number, EnemyKind][]) S(x, z, k);
-    // east road + the river banks
-    for (const [x, z, k] of [[60, 50, sw], [74, 54, sp], [92, 52, ar], [106, 48, sw], [112, 42, jv], [128, 50, sp], [134, 42, sw], [144, 48, ar], [152, 44, sw], [156, 50, sp]] as [number, number, EnemyKind][]) S(x, z, k);
-    // Amber Highland (archers hold the terraces)
-    for (const [x, z, k] of [[158, 36, sp], [166, 30, ar], [172, 20, ar], [180, 16, sp], [186, 14, ar], [192, 12, sw], [194, 6, ar], [162, 12, jv], [170, 6, ar], [200, 26, jv]] as [number, number, EnemyKind][]) S(x, z, k);
-    // Grey Moor and the knights' camp
-    for (const [x, z, k] of [[150, 70, sw], [166, 66, sp], [176, 74, jv], [184, 84, sw], [192, 84, ar], [196, 100, ar], [170, 92, sp], [160, 98, sw], [152, 100, sp], [158, 112, jv], [148, 112, ar], [164, 104, sw], [190, 112, sp], [200, 86, sp]] as [number, number, EnemyKind][]) S(x, z, k);
-    // riverside (west bank, mesa, brook)
-    for (const [x, z, k] of [[86, 66, sp], [98, 70, sw], [110, 78, jv], [104, 90, sw], [118, 98, ar], [112, 106, sp], [96, 104, sw], [80, 60, ar], [72, 68, sw]] as [number, number, EnemyKind][]) S(x, z, k);
-    // south road, heron pond, Mirror Lake
-    for (const [x, z, k] of [[36, 56, sw], [46, 66, sp], [34, 78, sw], [28, 92, jv], [40, 104, sw], [56, 110, sp], [30, 128, ar], [52, 136, sw], [60, 126, sp], [20, 120, sw], [8, 84, sw], [22, 76, ar]] as [number, number, EnemyKind][]) S(x, z, k);
-    // Millbrook outskirts + the south bridge
-    for (const [x, z, k] of [[66, 148, sw], [80, 154, sp], [96, 150, jv], [106, 132, sw], [116, 128, ar], [104, 144, sw], [70, 160, ar], [112, 152, sp]] as [number, number, EnemyKind][]) S(x, z, k);
-    // the Drowned Field (the hardest ground)
-    for (const [x, z, k] of [[144, 126, sp], [152, 134, ar], [160, 130, sw], [168, 136, jv], [176, 136, ar], [182, 148, sp], [190, 140, sw], [196, 156, ar], [162, 150, sw], [150, 150, jv], [178, 156, sp], [170, 162, ar], [188, 168, sw]] as [number, number, EnemyKind][]) S(x, z, k);
+    // 12. soldiers: NO spawn tables any more. Soldiers are persistent world-state records — squads
+    // seeded on the chunk road graph in worldstate.ts, marched by worldsim.ts, materialised as Enemy
+    // entities only near the player, and never respawned.
   }
 
   private generateHeights() {
@@ -712,7 +703,7 @@ export class World {
         lvl[cz * W + cx] = Math.max(lvl[cz * W + cx], levels * (1 - smoothstep(0.45, 1.05, d)));
       }
     };
-    // NE Amber Highland: broad terraces with cliff faces; the road climbs it at x~160 (ramp carved below)
+    // NE Amber Highland: broad terraces with cliff faces; the road climbs it at x~162 (ramp carved below)
     plateau(150, 0, 208, 40, 2, 1.4);
     plateau(168, 0, 208, 24, 3.5, 1.4);
     plateau(186, 0, 208, 12, 5, 1.4);
@@ -759,8 +750,8 @@ export class World {
         lvl[i] = lvl[i] * (1 - t) + mean * t;
       }
     }
-    // ramp for the NE highland where the road climbs (x 158..163, z 40..48)
-    for (let cz = 40; cz <= 48; cz++) for (let cx = 157; cx <= 164; cx++) lvl[cz * W + cx] = 2 * smoothstep(48.5, 40, cz);
+    // ramp for the NE highland where the road climbs (x 160..165, z 40..48)
+    for (let cz = 40; cz <= 48; cz++) for (let cx = 159; cx <= 166; cx++) lvl[cz * W + cx] = 2 * smoothstep(48.5, 40, cz);
     // roads: keep them gentle (relax steep local bumps) by blending toward the neighbourhood average
     // (a cheap smoothing pass on corners adjacent to path tiles)
     for (let pass = 0; pass < 2; pass++) for (let cz = 1; cz < H - 1; cz++) for (let cx = 1; cx < W - 1; cx++) {

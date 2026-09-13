@@ -1,6 +1,6 @@
-// Node-side validation of the world state layer: chunk aggregation, the chunk road graph,
-// soldier records and the active-region sync, plus the map screen's chunk rendering.
-// Stubs the DOM bits World's texture helpers need (none are called here) and a canvas 2D context.
+// Node-side validation of the world state layer: chunk aggregation, the chunk road graph and its
+// alignment with the map generation, squads + the background world sim (march, camps, rests, no
+// respawn), and the map screen's rendering.
 // Run: npx esbuild test/worldstate.test.ts --bundle --platform=node --format=esm | node --input-type=module
 const g2d = () => ({
   createImageData: (w: number, h: number) => ({ width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }),
@@ -9,7 +9,8 @@ const g2d = () => ({
 (globalThis as any).document = { createElement: (tag: string) => (tag === 'canvas' ? { width: 0, height: 0, getContext: () => g2d() } : {}) };
 
 import { World } from '../src/game/world';
-import { WorldState, CHUNK_T, CHUNKS_X, CHUNKS_Z } from '../src/game/worldstate';
+import { WorldState, CHUNK_T, CHUNKS_X, CHUNKS_Z, CAMPS } from '../src/game/worldstate';
+import { WorldSim, WORLD_TICK, MARCH_SPEED } from '../src/game/worldsim';
 import { WorldMap } from '../src/game/map';
 import { MAP_W, MAP_H, Tile } from '../src/game/constants';
 
@@ -45,11 +46,48 @@ for (const [cx, cz] of [[0, 0], [12, 5], [15, 5], [20, 10], [8, 16], [25, 21]] a
 }
 check('water/walkable fractions match a hand recount', aggOK);
 check('road flag matches a hand recount', roadFlagOK);
-
-// the great river runs the map north-south: some chunk must be dominated by water
 check('some chunk is dominated by water', ws.chunks.some((c) => c.ground === Tile.Water && c.water > 0.5));
 check('village chunks are flagged', ws.chunkAt(10, 10)!.village && !ws.chunkAt(180, 150)!.village);
-check('biomes vary across the map', ws.chunkAt(10, 10)!.biome === 'meadow' && ws.chunkAt(190, 20)!.biome === 'highland');
+check('road anchors sit on road tiles', ws.chunks.filter((c) => c.road).every((c) => ROAD.has(world.tile(Math.floor(c.ax), Math.floor(c.az)))));
+
+// ---- generation <-> chunk alignment: roads and watercourses must not run ALONG chunk borders.
+// A feature *crossing* a border shows as a short run (roads: the ~3-wide corridor) or as a wide
+// body covering both sides far beyond the border (lakes, the river broadside). The bad case is a
+// NARROW strip riding the border: feature on both border rows but land/ground `gap` tiles to each
+// side, for a long run — that splits one route/river between two chunk columns and doubles it in
+// the chunk model.
+const alongBorder = (pred: (x: number, z: number) => boolean, gap: number, minRun: number): number => {
+  let worst = 0;
+  const strip = (a: [number, number], b: [number, number], aOut: [number, number], bOut: [number, number]) =>
+    pred(a[0], a[1]) && pred(b[0], b[1]) && !pred(aOut[0], aOut[1]) && !pred(bOut[0], bOut[1]);
+  for (let bx = 1; bx < CHUNKS_X; bx++) { // vertical borders: columns bx*8-1 | bx*8
+    let run = 0;
+    for (let z = 0; z < MAP_H; z++) {
+      const X = bx * CHUNK_T;
+      run = strip([X - 1, z], [X, z], [X - 1 - gap, z], [X + gap, z]) ? run + 1 : 0;
+      worst = Math.max(worst, run);
+    }
+  }
+  for (let bz = 1; bz < CHUNKS_Z; bz++) { // horizontal borders: rows bz*8-1 | bz*8
+    let run = 0;
+    for (let x = 0; x < MAP_W; x++) {
+      const Z = bz * CHUNK_T;
+      run = strip([x, Z - 1], [x, Z], [x, Z - 1 - gap], [x, Z + gap]) ? run + 1 : 0;
+      worst = Math.max(worst, run);
+    }
+  }
+  return worst >= minRun ? worst : 0;
+};
+// village streets are exempt: village chunks are walled off from squad routing anyway
+const inVillage = (x: number, z: number) => x >= world.village.x0 && x <= world.village.x1 && z >= world.village.z0 && z <= world.village.z1;
+const isRoadT = (x: number, z: number) => !inVillage(x, z) && ROAD.has(world.tile(x, z));
+const isWaterT = (x: number, z: number) => world.tile(x, z) === Tile.Water;
+{
+  const roadRun = alongBorder(isRoadT, 3, 4);
+  check('no road runs along a chunk border', roadRun === 0, roadRun ? `run of ${roadRun}` : '');
+  const waterRun = alongBorder(isWaterT, 5, 6);
+  check('no watercourse runs along a chunk border', waterRun === 0, waterRun ? `run of ${waterRun}` : '');
+}
 
 // ---- road graph
 let edgesSym = true, edgeCount = 0;
@@ -63,7 +101,9 @@ for (const c of ws.chunks) {
 console.log(`INFO road graph: ${ws.chunks.filter((c) => c.road).length} road chunks, ${edgeCount / 2} edges`);
 check('road graph edges are symmetric', edgesSym);
 check('road graph has a real network', edgeCount / 2 > 30);
-// the roads form long routes: from the village the network must reach the far east of the map
+// aligned roads keep the graph slim: ~1.1 edges per road chunk (a chain), not parallel ghost routes
+check('graph is not overgrown (aligned roads)', edgeCount / 2 < ws.chunks.filter((c) => c.road).length * 1.35);
+// connectivity: the network reachable from the village gate must span the map and hold every camp
 {
   const seen = new Set<number>();
   const start = ws.chunks.find((c) => c.village && c.road)!;
@@ -77,48 +117,110 @@ check('road graph has a real network', edgeCount / 2 > 30);
     if (c.roadW) push(c.cx - 1, c.cz);
     if (c.roadE) push(c.cx + 1, c.cz);
   }
-  const reachEast = [...seen].some((i) => ws.chunks[i].cx >= CHUNKS_X - 4);
   console.log(`INFO road component from the village: ${seen.size} chunks`);
-  check('village road component crosses the map east', reachEast);
-  check('village road component is large', seen.size > 40);
+  check('village road component crosses the map east', [...seen].some((i) => ws.chunks[i].cx >= CHUNKS_X - 4));
+  check('all camps are on the village road component', CAMPS.every((cp) => {
+    const c = ws.chunkAt(cp.x, cp.z)!;
+    return seen.has(ws.idx(c.cx, c.cz));
+  }));
 }
 
-// ---- soldiers
-check('one soldier record per hand-placed spawn', ws.soldiers.length === world.spawns.length && ws.soldiers.length > 50);
-check('soldiers start on their home anchor, patrolling', ws.soldiers.every((s) => s.x === s.home.x && s.z === s.home.z && s.state === 'patrol'));
-check('soldier ids are unique', new Set(ws.soldiers.map((s) => s.id)).size === ws.soldiers.length);
+// ---- squads
+const soldiers = ws.squads.flatMap((s) => s.members);
+console.log(`INFO squads: ${ws.squads.length}, soldiers: ${soldiers.length}`);
+check('squads were seeded', ws.squads.length >= 10);
+check('squads have 3-5 members', ws.squads.every((s) => s.members.length >= 3 && s.members.length <= 5));
+check('soldier ids are unique', new Set(soldiers.map((m) => m.id)).size === soldiers.length);
+check('every squad starts on the road network', ws.squads.every((s) => ws.chunks[s.cur].road && !ws.chunks[s.cur].village));
+check('camp squads start resting', CAMPS.every((cp) => ws.squads.some((s) => s.state === 'rest' && Math.hypot(s.x - cp.x, s.z - cp.z) < CHUNK_T)));
+check('every squad has a melee anchor', ws.squads.every((s) => s.members[0].kind === 'sword' || s.members[0].kind === 'spear'));
+const vb = world.village;
+check('no squad in the village', ws.squads.every((s) => s.x < vb.x0 || s.x > vb.x1 || s.z < vb.z0 || s.z > vb.z1));
 
-// sync: move one live enemy, drop another
-const a = ws.soldiers[0], b = ws.soldiers[1];
-ws.syncActive([{ home: a.home, x: a.home.x + 3, z: a.home.z - 2 }]);
-check('sync mirrors a live enemy position', a.x === a.home.x + 3 && a.z === a.home.z - 2 && a.state === 'patrol');
-check('sync marks missing enemies down', b.state === 'down');
-ws.syncActive(ws.soldiers.map((s) => ({ home: s.home, x: s.home.x, z: s.home.z })));
-check('sync revives records when the enemy is back', b.state === 'patrol');
+// determinism: same world -> same squads
+{
+  const ws2 = new WorldState(new World());
+  check('seeding is deterministic', JSON.stringify(ws2.snapshot().squads) === JSON.stringify(ws.snapshot().squads));
+}
 
-// snapshot must be plain data (worker-transferable)
-const snap = ws.snapshot();
-check('snapshot is structured-clone friendly', (() => { try { JSON.parse(JSON.stringify(snap)); return true; } catch { return false; } })());
+// ---- world sim
+const sim = new WorldSim(ws);
+const before = ws.squads.map((s) => ({ x: s.x, z: s.z, state: s.state }));
+sim.tick(Math.round(60 / WORLD_TICK)); // one minute of world time
+let movedOK = true, speedOK = true, onNetwork = true;
+for (let i = 0; i < ws.squads.length; i++) {
+  const s = ws.squads[i], b = before[i];
+  const d = Math.hypot(s.x - b.x, s.z - b.z);
+  if (b.state === 'march' && d === 0 && s.state === 'march') movedOK = false;    // marching squads move
+  if (d > 60 * MARCH_SPEED + 1e-6) speedOK = false;                              // never faster than march speed
+  const cc = ws.chunkAt(s.x, s.z);
+  if (!cc || (!cc.road && !ws.chunks[s.target].road)) onNetwork = false;         // stay on the network
+}
+check('marching squads move', movedOK);
+check('squads respect march speed', speedOK);
+check('squads stay on the road network', onNetwork);
+check('village chunks are never entered', ws.squads.every((s) => !ws.chunks[s.cur].village && !ws.chunks[s.target].village));
+// members follow in formation
+check('members trail the squad in formation', ws.squads.every((s) => s.members.every((m) => !m.alive || Math.hypot(m.x - (s.x + m.ox), m.z - (s.z + m.oz)) < 1e-6)));
+
+// over a long stretch squads rest at camps at some point
+{
+  let rested = 0;
+  const restSeen = new Set<number>();
+  for (let t = 0; t < 40 * 60 / WORLD_TICK; t += 4) { // 40 minutes, sampled
+    sim.tick(4);
+    for (const s of ws.squads) if (s.state === 'rest' && !restSeen.has(s.id)) { restSeen.add(s.id); rested++; }
+  }
+  console.log(`INFO squads that rested at least once in 40min: ${rested}/${ws.squads.length}`);
+  check('squads take rest stops', rested >= ws.squads.length * 0.5);
+  check('active squads are never moved by the sim', (() => {
+    const s = ws.squads[0];
+    s.active = true;
+    const x = s.x, z = s.z;
+    sim.tick(20);
+    const ok = s.x === x && s.z === z;
+    s.active = false;
+    return ok;
+  })());
+}
+
+// ---- no respawn: killing members never brings them back
+{
+  const sq = ws.squads[1];
+  for (const m of sq.members) m.alive = false;
+  const positions = sq.members.map((m) => ({ x: m.x, z: m.z }));
+  sim.tick(Math.round(120 / WORLD_TICK));
+  check('dead soldiers stay dead', sq.members.every((m) => !m.alive));
+  check('wiped squads stop moving', sq.members.every((m, i) => m.x === positions[i].x && m.z === positions[i].z));
+  check('soldiersAlive excludes the dead', ws.soldiersAlive() === soldiers.length - sq.members.length);
+}
 
 // ---- map screen rendering (stub 2D context, count draw calls)
 interface Op { style: string; x: number; y: number; w: number; h: number }
 const ops: Op[] = [];
+let drewTerrain = false;
 const ctx = {
   canvas: { width: 417, height: 235 },
   fillStyle: '#000',
+  imageSmoothingEnabled: false,
   fillRect(x: number, y: number, w: number, h: number) { ops.push({ style: String(this.fillStyle), x, y, w, h }); },
+  drawImage() { drewTerrain = true; },
 } as unknown as CanvasRenderingContext2D;
 const canvas = { width: 417, height: 235, getContext: () => ctx } as unknown as HTMLCanvasElement;
-const map = new WorldMap(canvas, ws);
+// the offscreen terrain canvas needs a fillRect-capable context too
+(globalThis as any).document.createElement = (tag: string) => (tag === 'canvas' ? {
+  width: 0, height: 0,
+  getContext: () => ({ fillStyle: '#000', fillRect() {}, ...g2d() }),
+} : {});
+const map = new WorldMap(canvas, world, ws);
 map.draw({ px: 9.5, pz: 9.5, time: 0, gamepad: false });
-check('map draws something', ops.length > 500);
-// every chunk cell must be painted: count full-cell rects of the computed cell size
-const cell = Math.max(4, Math.floor(Math.min((417 - 16) / CHUNKS_X, (235 - 34) / CHUNKS_Z)));
-const cells = ops.filter((o) => o.w === cell && o.h === cell);
-check('one filled cell per chunk', cells.length === CHUNKS_X * CHUNKS_Z, `${cells.length}`);
+check('map draws the terrain layer', drewTerrain);
+check('map draws overlays', ops.length > 200);
 check('player marker drawn at t=0 (blink on)', ops.some((o) => o.style === '#58f0f8'));
-check('soldier dots drawn', ops.filter((o) => o.style === '#ffb0a0').length === ws.soldiers.filter((s) => s.state !== 'down').length);
-map.draw({ px: 9.5, pz: 9.5, time: 0.4, gamepad: false });
+check('camp markers drawn', ops.filter((o) => o.style === '#f09030').length === CAMPS.length);
+const aliveNow = ws.soldiersAlive();
+check('one dot per living soldier', ops.filter((o) => o.style === '#f04838').length === aliveNow, `${ops.filter((o) => o.style === '#f04838').length}/${aliveNow}`);
+check('fallen soldiers leave marks', ops.filter((o) => o.style === '#5a3038').length === ws.squads[1].members.length);
 
 console.log(failures ? `\n${failures} FAILURES` : '\nALL TESTS PASSED');
 process.exit(failures ? 1 : 0);

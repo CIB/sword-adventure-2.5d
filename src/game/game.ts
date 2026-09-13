@@ -4,7 +4,7 @@ import {
   VIEW_W, VIEW_H, VIEW_TILES_X, VIEW_TILES_Y, CAM_HEIGHT, SHEAR, WATER_DEPTH, MAP_W, MAP_H, PX_PER_TILE, MAX_HP,
   RNG, inArc, FACING_VEC, clamp,
 } from './constants';
-import { World, type EnemyKind, type Vec2, type TileObj } from './world';
+import { World, type Vec2, type TileObj } from './world';
 import { AudioEngine } from './audio';
 import { Input, PAUSE_KEYS, MUTE_KEYS, ATTACK_KEYS, TALK_KEYS, ROTATE_CCW_KEYS, ROTATE_CW_KEYS, FULLSCREEN_KEYS, HELP_KEYS, MAP_KEYS, rotateView } from './input';
 import { Player, Enemy, Npc, Projectile, Pickup, Effect, fxSpark, fxPuff, fxLeaves, type GameCtx } from './entities';
@@ -16,7 +16,8 @@ import {
 import { GrassSystem } from './grass';
 import { updateFoliage, makeVegInstancesWind } from './foliage';
 import { Hud } from './hud';
-import { WorldState } from './worldstate';
+import { WorldState, type Squad } from './worldstate';
+import { WorldSim, WORLD_TICK } from './worldsim';
 import { WorldMap } from './map';
 
 export type Phase = 'title' | 'playing' | 'paused' | 'gameover';
@@ -70,9 +71,15 @@ export class Game implements GameCtx {
   viewW = VIEW_W;
   viewH = VIEW_H;
   world = new World();
-  /** persistent low-resolution world state (chunks + soldier records) — the world sim's data model */
+  /** persistent low-resolution world state (chunks + squads) — the world sim's data model */
   worldState: WorldState;
-  /** chunk-resolution debug map (Tab / N) drawn from the world state */
+  /** background world simulation: marches squads along the chunk road graph at a low tick rate */
+  worldSim: WorldSim;
+  /** accumulates frame time into whole WORLD_TICK steps for the world sim */
+  private worldSimAcc = 0;
+  /** live Enemy -> its squad member record (set while the squad is materialised) */
+  private enemyLink = new Map<Enemy, { squad: Squad; member: number }>();
+  /** world map screen (Tab / N): tile terrain + world state debug overlay */
   private worldMap: WorldMap;
   /** world map screen open (gameplay keeps running underneath; it's an overlay, not a pause) */
   mapOpen = false;
@@ -85,7 +92,6 @@ export class Game implements GameCtx {
   pickups: Pickup[] = [];
   effects: Effect[] = [];
   bushes: BushObj[] = [];
-  respawns: { kind: EnemyKind; spawn: Vec2; t: number }[] = [];
   npcs: Npc[] = [];
   quests: QuestState = newQuestState();
   talking = false;
@@ -124,7 +130,8 @@ export class Game implements GameCtx {
     this.input = input;
     this.hud = new Hud(hudCanvas);
     this.worldState = new WorldState(this.world);
-    this.worldMap = new WorldMap(hudCanvas, this.worldState);
+    this.worldSim = new WorldSim(this.worldState);
+    this.worldMap = new WorldMap(hudCanvas, this.world, this.worldState);
 
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(1);
@@ -169,7 +176,7 @@ export class Game implements GameCtx {
     this.player = new Player(this, ps.x, ps.z);
     this.player.facing = 4; // north
     for (const n of this.world.npcs) this.npcs.push(new Npc(this, n));
-    this.spawnAllEnemies();
+    this.updateWorldSim(0); // materialise whatever squads start near the player
     this.cam = { x: ps.x, z: ps.z - 1 };
     this.placeCamera(0);
   }
@@ -279,8 +286,74 @@ export class Game implements GameCtx {
     this.scene.add(this.grass.root);
   }
 
-  private spawnAllEnemies() {
-    for (const s of this.world.spawns) this.enemies.push(new Enemy(this, s.kind, s.x, s.z, { x: s.x, z: s.z }));
+  // ------------------------------------------------------------------ world simulation
+  /** materialisation radius: squads within this range of the player become live entities */
+  private static ACTIVE_R = 26;
+  /** squads farther than this are folded back into world-state records (hysteresis vs. ACTIVE_R) */
+  private static DEACTIVE_R = 34;
+
+  /**
+   * Drive the background world layer:
+   * 1. advance the low-tick sim (marches non-active squads along the road graph),
+   * 2. mirror live enemies back into their squad records,
+   * 3. materialise squads that came within range / dematerialise squads that left it.
+   * When the worker lands, (1) moves off-thread and this reduces to sync + (de)materialise.
+   */
+  private updateWorldSim(dt: number) {
+    this.worldSimAcc += dt;
+    const steps = Math.floor(this.worldSimAcc / WORLD_TICK);
+    if (steps > 0) { this.worldSimAcc -= steps * WORLD_TICK; this.worldSim.tick(steps); }
+
+    // mirror live enemies into their squad member records (the entity sim owns active squads)
+    for (const [e, link] of this.enemyLink) {
+      const m = link.squad.members[link.member];
+      if (e.alive) { m.x = e.pos.x; m.z = e.pos.z; }
+    }
+    for (const sq of this.worldState.squads) {
+      if (!sq.active) continue;
+      // squad position follows the first living member so dematerialisation resumes from the right place
+      const lead = sq.members.find((mm) => mm.alive);
+      if (lead) { sq.x = lead.x; sq.z = lead.z; }
+    }
+
+    const p = this.player.pos;
+    for (const sq of this.worldState.squads) {
+      const d = Math.hypot(sq.x - p.x, sq.z - p.z);
+      if (!sq.active && d < Game.ACTIVE_R && sq.members.some((m) => m.alive)) this.materialise(sq);
+      else if (sq.active && d > Game.DEACTIVE_R) this.dematerialise(sq);
+    }
+  }
+
+  /** world-state squad -> live Enemy entities (world sim hands the squad to the entity sim) */
+  private materialise(sq: Squad) {
+    sq.active = true;
+    for (let i = 0; i < sq.members.length; i++) {
+      const m = sq.members[i];
+      if (!m.alive) continue;
+      const at = this.world.nearestFree(sq.x + m.ox, sq.z + m.oz);
+      m.x = at.x; m.z = at.z;
+      const e = new Enemy(this, m.kind, at.x, at.z, { x: at.x, z: at.z });
+      this.enemies.push(e);
+      this.enemyLink.set(e, { squad: sq, member: i });
+    }
+  }
+
+  /** live Enemy entities -> world-state records (the squad leaves the active region) */
+  private dematerialise(sq: Squad) {
+    sq.active = false;
+    for (const [e, link] of this.enemyLink) {
+      if (link.squad !== sq) continue;
+      if (e.alive) {
+        const m = sq.members[link.member];
+        m.x = e.pos.x; m.z = e.pos.z;
+        e.dispose();
+      }
+      this.enemyLink.delete(e);
+    }
+    // resume the march from wherever the squad actually is: retarget the nearest road chunk
+    const back = this.worldState.nearestRoadChunk(sq.x, sq.z);
+    sq.cur = sq.target = this.worldState.idx(back.cx, back.cz);
+    sq.prev = -1;
   }
 
   // ------------------------------------------------------------------ GameCtx
@@ -444,7 +517,15 @@ export class Game implements GameCtx {
     this.pickups = [];
     for (const e of this.effects) this.scene.remove(e.group);
     this.effects = [];
-    this.respawns = [];
+    // world state persists across a game over: dead soldiers stay dead, squads march on. Only the
+    // materialisation links reset (the entities were disposed above); nearby squads re-materialise below.
+    this.enemyLink.clear();
+    for (const sq of this.worldState.squads) if (sq.active) {
+      sq.active = false;
+      const back = this.worldState.nearestRoadChunk(sq.x, sq.z);
+      sq.cur = sq.target = this.worldState.idx(back.cx, back.cz);
+      sq.prev = -1;
+    }
     for (const b of this.bushes) {
       if (b.alive) continue;
       b.alive = true;
@@ -456,7 +537,7 @@ export class Game implements GameCtx {
     this.grass.resetCuts();
     const ps = this.world.playerStart;
     this.player.reset(ps.x, ps.z);
-    this.spawnAllEnemies();
+    this.updateWorldSim(0);
     this.cam = { x: ps.x, z: ps.z - 1 };
     this.deathTimer = 0;
     this.talking = false; this.convo = null;
@@ -559,7 +640,7 @@ export class Game implements GameCtx {
       if (!alive) this.scene.remove(e.group);
       return alive;
     });
-    this.updateRespawns(dt);
+    this.updateWorldSim(dt);
 
     if (!this.player.dead && this.player.hp <= 2) {
       this.lowHpT -= dt;
@@ -623,7 +704,14 @@ export class Game implements GameCtx {
     this.audio.enemyDie();
     this.spawnEffect(fxPuff(e.pos.x, e.pos.z).at(e.pos.x, e.pos.z));
     this.dropLoot(e.pos.x, e.pos.z, 0.35, 0.4);
-    this.respawns.push({ kind: e.kind, spawn: e.spawn, t: 22 + this.rand() * 12 });
+    // soldiers are world-state records and do not respawn: the member dies for good
+    const link = this.enemyLink.get(e);
+    if (link) {
+      const m = link.squad.members[link.member];
+      m.alive = false;
+      m.x = e.pos.x; m.z = e.pos.z; // the map keeps a dark mark where he fell
+      this.enemyLink.delete(e);
+    }
   }
 
   private cutBush(b: BushObj) {
@@ -675,18 +763,6 @@ export class Game implements GameCtx {
       this.world.moveBox(a.pos, (-dx / d) * push, (-dz / d) * push, a.HW, a.HH);
       this.world.moveBox(b.pos, (dx / d) * push, (dz / d) * push, b.HW, b.HH);
     }
-  }
-
-  private updateRespawns(dt: number) {
-    const p = this.player.pos;
-    this.respawns = this.respawns.filter((r) => {
-      r.t -= dt;
-      if (r.t > 0) return true;
-      if (Math.hypot(r.spawn.x - p.x, r.spawn.z - p.z) < 9) { r.t = 3; return true; }
-      this.enemies.push(new Enemy(this, r.kind, r.spawn.x, r.spawn.z, r.spawn));
-      this.spawnEffect(fxPuff(r.spawn.x, r.spawn.z).at(r.spawn.x, r.spawn.z));
-      return false;
-    });
   }
 
   private camY = 0;
@@ -755,8 +831,7 @@ export class Game implements GameCtx {
       gamepad: this.input.gamepadActive,
     });
     if (this.mapOpen && (this.phase === 'playing' || this.phase === 'paused')) {
-      // mirror the live enemies into the world state right before drawing, so the map is always current
-      this.worldState.syncActive(this.enemies.filter((e) => e.alive).map((e) => ({ home: e.spawn, x: e.pos.x, z: e.pos.z })));
+      // squad records are already current: updateWorldSim mirrors live enemies back every frame
       this.worldMap.draw({ px: p.pos.x, pz: p.pos.z, time: this.time, gamepad: this.input.gamepadActive });
     }
   }
