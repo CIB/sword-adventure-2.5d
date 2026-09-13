@@ -46,11 +46,19 @@ function makeWindTexture(): THREE.CanvasTexture {
   return tex;
 }
 
-const windTex = makeWindTexture();
+/** Created on first use, not at module scope: importing this module must stay DOM-free (Node tests). */
+let windTexCache: THREE.CanvasTexture | null = null;
+function windTex(): THREE.CanvasTexture {
+  if (!windTexCache) {
+    windTexCache = makeWindTexture();
+    foliageUniforms.uWindTex.value = windTexCache;
+  }
+  return windTexCache;
+}
 
 export const foliageUniforms = {
   uTime: { value: 0 },
-  uWindTex: { value: windTex },
+  uWindTex: { value: null as THREE.CanvasTexture | null },
   uWindScale: { value: 13 },
   uWindDir: { value: new THREE.Vector2(1, 0.35).normalize() },
   // toned down – previous 0.34/0.055 felt like storm for bushes
@@ -61,6 +69,7 @@ export const foliageUniforms = {
 };
 
 export function updateFoliage(t: number) {
+  windTex(); // lazily create + bind the wind texture (kept out of module scope for DOM-free imports)
   foliageUniforms.uTime.value = t;
 }
 
@@ -647,7 +656,9 @@ export function makeVegInstancesWind(geo: THREE.BufferGeometry, spots: VegSpot[]
 
 // ------------------------------------------------------------------ dispose
 export function disposeFoliage() {
-  windTex.dispose();
+  windTexCache?.dispose();
+  windTexCache = null;
+  foliageUniforms.uWindTex.value = null;
   gradMap?.dispose();
   puffBase.dispose();
   sharedBushMat.dispose();
