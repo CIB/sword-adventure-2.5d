@@ -23,6 +23,43 @@ const FONT: Record<string, string[]> = {
 
 const HEART = ['0110110', '1111111', '1111111', '0111110', '0011100', '0001000'];
 
+/**
+ * Frametime graph — a transparent strip across the top of the HUD. It fills the empty middle of the top row:
+ * the kill counter ends at x=176 and the life hearts start at `w-88`, so the plot runs from `FT_X0` to
+ * `w - FT_RIGHT_GAP`. Nothing is drawn behind the bars (no panel), so the game shows straight through.
+ */
+const FT_X0 = 182;         // left edge: clear of the 000 kill counter
+const FT_RIGHT_GAP = 92;   // right edge = w - FT_RIGHT_GAP: 4px clear of the life hearts
+const FT_TEXT_Y = 8;       // ms readout row
+const FT_PLOT_Y = 15;      // first plot row
+const FT_PLOT_H = 23;      // plot rows — keeps the strip inside the top HUD row (y 7..46)
+/** Below this width the top row is too crowded to plot anything (a ~320px window) — the graph is skipped. */
+const FT_MIN_W = 8;
+/** The readout is 6 glyphs (e.g. `16.7MS`) at 4px each; narrower strips get the bars alone. */
+const FT_TEXT_W = 24;
+/** Frames of history kept — more than the widest layout plots (an ultrawide HUD plots ~230 columns). */
+const FT_HISTORY = 256;
+/** Full-scale frametime in ms: a 50ms (20fps) frame pegs the top of the plot, longer ones clamp to it. */
+const FT_MAX_MS = 50;
+/** Dotted reference lines: 60fps and 30fps. */
+const FT_60 = 1000 / 60;
+const FT_30 = 1000 / 30;
+/**
+ * Bar/readout band edges. A vsync-locked 60fps reports 16.6–16.8ms (and a locked 30fps 33.2–33.5), so the
+ * thresholds sit 10% above the reference lines: a bar only turns yellow when a frame genuinely missed its
+ * vsync window, and red when it missed two.
+ */
+const FT_GOOD_MAX = FT_60 * 1.1;
+const FT_WARN_MAX = FT_30 * 1.1;
+/** Frames averaged for the ms readout (~1s at 60fps). */
+const FT_AVG = 60;
+/** Gaps longer than this are rAF pauses (backgrounded tab), not frametimes — they are dropped. */
+const FT_SKIP_MS = 1000;
+/** Bar colours as [body, tip]. Cyan/yellow/red rather than the usual green: green bars vanish on the meadow. */
+const FT_GOOD: [string, string] = ['#38c8f0', '#d8f8ff'];
+const FT_WARN: [string, string] = ['#e8c020', '#fff8a8'];
+const FT_BAD: [string, string] = ['#f04838', '#ffb0a0'];
+
 export interface HudState {
   hp: number;
   rupees: number;
@@ -45,6 +82,10 @@ export class Hud {
   /** internal resolution in game pixels — updated by resize() so the layout follows the viewport */
   private w = VIEW_W;
   private h = VIEW_H;
+  /** frametime history in ms (ring buffer), fed by pushFrameTime() */
+  private ftBuf = new Float32Array(FT_HISTORY);
+  private ftHead = 0;  // slot the next sample goes into
+  private ftCount = 0; // samples recorded, saturating at FT_HISTORY
   constructor(canvas: HTMLCanvasElement) {
     canvas.width = VIEW_W;
     canvas.height = VIEW_H;
@@ -61,6 +102,27 @@ export class Hud {
     this.g.canvas.width = this.w;
     this.g.canvas.height = this.h;
     this.g.imageSmoothingEnabled = false; // resizing the canvas resets context state
+  }
+
+  /**
+   * Record one frame's duration for the frametime graph. The game loop passes the raw rAF delta (not the
+   * clamped simulation step), so a vsync-locked 60fps plots as a flat line on the 60fps reference and every
+   * hitch spikes above it.
+   */
+  pushFrameTime(ms: number) {
+    if (!Number.isFinite(ms) || ms <= 0 || ms > FT_SKIP_MS) return;
+    this.ftBuf[this.ftHead] = ms;
+    this.ftHead = (this.ftHead + 1) % FT_HISTORY;
+    if (this.ftCount < FT_HISTORY) this.ftCount++;
+  }
+
+  /** Mean frametime in ms over the last `n` recorded frames (0 before the first frame). */
+  private avgFrameTime(n: number) {
+    const c = Math.min(n, this.ftCount);
+    if (!c) return 0;
+    let sum = 0;
+    for (let i = 0; i < c; i++) sum += this.ftBuf[(this.ftHead - 1 - i + FT_HISTORY) % FT_HISTORY];
+    return sum / c;
   }
 
   private px(x: number, y: number, c: string, s = 1) { this.g.fillStyle = c; this.g.fillRect(x, y, s, s); }
@@ -139,6 +201,47 @@ export class Hud {
     this.g.fillRect(x - 1, y + 1, 1, 5); this.g.fillRect(x + 7, y + 1, 1, 5); this.g.fillRect(x + 1, y - 1, 5, 1); this.g.fillRect(x + 1, y + 7, 5, 1);
   }
 
+  /**
+   * Frametime graph: one 1px column per frame (newest at the right edge) over the dotted 60/30fps reference
+   * lines, plus a ~1s ms readout above it. Transparent — only the bars, the two faint reference lines and a
+   * soft baseline shadow are drawn, so the world shows straight through behind them.
+   */
+  private drawFrameGraph() {
+    const g = this.g;
+    const x0 = FT_X0;
+    const plotW = this.w - FT_RIGHT_GAP - x0; // the empty middle of the top row
+    if (plotW < FT_MIN_W) return;             // tiny window: no room left for the graph
+    if (!this.ftCount) return;                // first frame: nothing recorded yet
+    const yBot = FT_PLOT_Y + FT_PLOT_H - 1;   // bottom plot row — bars grow up from here
+    const rowOf = (ms: number) => yBot - Math.round(Math.min(ms, FT_MAX_MS) / FT_MAX_MS * (FT_PLOT_H - 1));
+
+    const n = Math.min(plotW, this.ftCount);
+    const start = x0 + plotW - n;
+    for (let i = 0; i < n; i++) {
+      const ms = this.ftBuf[(this.ftHead - n + i + FT_HISTORY) % FT_HISTORY];
+      const [body, tip] = ms > FT_WARN_MAX ? FT_BAD : ms > FT_GOOD_MAX ? FT_WARN : FT_GOOD;
+      const top = rowOf(ms);
+      g.fillStyle = body;
+      g.fillRect(start + i, top, 1, yBot - top + 1);
+      g.fillStyle = tip;
+      g.fillRect(start + i, top, 1, 1); // bright cap: makes 1px spikes easy to spot
+    }
+
+    // dotted 60/30fps reference lines, over the bars so the targets stay readable
+    g.fillStyle = 'rgba(248,248,248,0.34)';
+    for (const ms of [FT_60, FT_30]) {
+      const y = rowOf(ms);
+      for (let x = x0; x < x0 + plotW; x += 2) g.fillRect(x, y, 1, 1);
+    }
+    g.fillStyle = 'rgba(0,0,0,0.4)';
+    g.fillRect(x0 - 1, yBot + 1, plotW + 2, 1); // baseline shadow, so the bars read on bright ground
+
+    if (plotW >= FT_TEXT_W) {
+      const avg = this.avgFrameTime(FT_AVG);
+      this.text(`${Math.min(avg, 99.9).toFixed(1)}MS`, x0, FT_TEXT_Y, avg > FT_WARN_MAX ? FT_BAD[1] : avg > FT_GOOD_MAX ? FT_WARN[1] : '#f8f8f8');
+    }
+  }
+
   draw(s: HudState) {
     const g = this.g, W = this.w, H = this.h;
     const pad = !!s.gamepad; // gamepad: show button labels instead of key labels
@@ -164,6 +267,8 @@ export class Hud {
     this.text(String(s.rupees).padStart(3, '0'), 104, 12, '#f8f8f8', 2);
     this.helmetIcon(140, 12);
     this.text(String(s.kills).padStart(3, '0'), 152, 12, '#f8f8f8', 2);
+    // frametime graph — the transparent strip between the counters and the life readout
+    this.drawFrameGraph();
     // life — right-anchored so it keeps the same margin from the edge at any viewport width
     const lx = W - 82;
     this.text('-- LIFE --', lx, 8, '#f8f8f8');
