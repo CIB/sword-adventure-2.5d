@@ -4,6 +4,7 @@ import type { AudioEngine } from './audio';
 import type { Input } from './input';
 import { ATTACK_KEYS, SHIELD_KEYS } from './input';
 import type { EnemyKind, Vec2, World, NpcSpec } from './world';
+import type { Squad, WorldSoldier } from './worldstate';
 import {
   buildArrow, buildHeart, buildHeroine, buildJavelinProjectile, buildRupee, buildSoldier, part,
   UNIT_BOX, UNIT_OCTA, UNIT_SPHERE, type Humanoid, buildVillager, buildDog, VILLAGER_LOOKS,
@@ -367,7 +368,13 @@ export class Enemy {
   readonly HW = 0.3;
   readonly HH = 0.25;
 
-  constructor(private game: GameCtx, public kind: EnemyKind, x: number, z: number, public spawn: Vec2) {
+  /**
+   * A materialised soldier. Squad members (the only kind there is now) carry their world-state
+   * record and squad: while no player is in sight they march after their formation slot instead of
+   * wandering, and their death is written back to the world state permanently.
+   */
+  constructor(private game: GameCtx, public kind: EnemyKind, x: number, z: number,
+    public squad: Squad | null = null, public memberIndex = 0) {
     this.pos = { x, z };
     this.st = STATS[kind];
     this.hp = this.st.hp;
@@ -377,6 +384,11 @@ export class Enemy {
     game.scene.add(this.model.root);
     this.sync();
   }
+
+  /** the world-state record behind this entity (null only for non-squad enemies, e.g. tests) */
+  get soldier(): WorldSoldier | null { return this.squad ? this.squad.members[this.memberIndex] : null; }
+  /** current formation slot to march after (set by the Game every frame; null = free-roam patrol) */
+  follow: Vec2 | null = null;
 
   get melee() { return this.kind === 'sword' || this.kind === 'spear'; }
 
@@ -442,11 +454,24 @@ export class Enemy {
 
     switch (this.state) {
       case 'patrol': {
-        moving = this.walk(this.dir.x, this.dir.z, st.speed, dt);
-        this.stateT -= dt;
-        if (!moving || this.stateT <= 0) {
-          this.pickPatrolDir();
-          if (g.rand() < 0.3) { this.state = 'idle'; this.stateT = 0.5 + g.rand(); } else this.stateT = 1 + g.rand() * 2;
+        if (this.follow) {
+          // squad member on the march: walk to the formation slot (catching up at chase speed if
+          // the squad moved on while we were busy), then stand guard and glance around
+          const fx = this.follow.x - this.pos.x, fz = this.follow.z - this.pos.z;
+          const fd = Math.hypot(fx, fz);
+          if (fd > 0.4) {
+            moving = this.walk(fx, fz, Math.min(st.chase, 0.9 + fd), dt);
+          } else {
+            this.stateT -= dt;
+            if (this.stateT <= 0) { this.facing = randomFacing(g.rand()); this.stateT = 1.5 + g.rand() * 2.5; }
+          }
+        } else {
+          moving = this.walk(this.dir.x, this.dir.z, st.speed, dt);
+          this.stateT -= dt;
+          if (!moving || this.stateT <= 0) {
+            this.pickPatrolDir();
+            if (g.rand() < 0.3) { this.state = 'idle'; this.stateT = 0.5 + g.rand(); } else this.stateT = 1 + g.rand() * 2;
+          }
         }
         if (!p.dead && this.canSee(dist, dx, dz)) this.becomeAlert();
         break;

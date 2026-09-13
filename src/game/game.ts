@@ -4,7 +4,7 @@ import {
   VIEW_W, VIEW_H, VIEW_TILES_X, VIEW_TILES_Y, CAM_HEIGHT, SHEAR, WATER_DEPTH, MAP_W, MAP_H, PX_PER_TILE, MAX_HP,
   RNG, inArc, FACING_VEC, clamp,
 } from './constants';
-import { World, type EnemyKind, type Vec2, type TileObj } from './world';
+import { World, type Vec2, type TileObj } from './world';
 import { AudioEngine } from './audio';
 import { Input, PAUSE_KEYS, MUTE_KEYS, ATTACK_KEYS, TALK_KEYS, ROTATE_CCW_KEYS, ROTATE_CW_KEYS, FULLSCREEN_KEYS, HELP_KEYS, MAP_KEYS, rotateView } from './input';
 import { Player, Enemy, Npc, Projectile, Pickup, Effect, fxSpark, fxPuff, fxLeaves, type GameCtx } from './entities';
@@ -70,9 +70,9 @@ export class Game implements GameCtx {
   viewW = VIEW_W;
   viewH = VIEW_H;
   world = new World();
-  /** persistent low-resolution world state (chunks + soldier records) — the world sim's data model */
+  /** persistent world state (chunks + the squad world system) — the world sim's data model */
   worldState: WorldState;
-  /** chunk-resolution debug map (Tab / N) drawn from the world state */
+  /** tile-resolution world map (Tab / N) drawn from the world state + the terrain bitmap */
   private worldMap: WorldMap;
   /** world map screen open (gameplay keeps running underneath; it's an overlay, not a pause) */
   mapOpen = false;
@@ -85,7 +85,6 @@ export class Game implements GameCtx {
   pickups: Pickup[] = [];
   effects: Effect[] = [];
   bushes: BushObj[] = [];
-  respawns: { kind: EnemyKind; spawn: Vec2; t: number }[] = [];
   npcs: Npc[] = [];
   quests: QuestState = newQuestState();
   talking = false;
@@ -124,7 +123,7 @@ export class Game implements GameCtx {
     this.input = input;
     this.hud = new Hud(hudCanvas);
     this.worldState = new WorldState(this.world);
-    this.worldMap = new WorldMap(hudCanvas, this.worldState);
+    this.worldMap = new WorldMap(hudCanvas, this.worldState, this.world);
 
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(1);
@@ -169,7 +168,6 @@ export class Game implements GameCtx {
     this.player = new Player(this, ps.x, ps.z);
     this.player.facing = 4; // north
     for (const n of this.world.npcs) this.npcs.push(new Npc(this, n));
-    this.spawnAllEnemies();
     this.cam = { x: ps.x, z: ps.z - 1 };
     this.placeCamera(0);
   }
@@ -279,8 +277,50 @@ export class Game implements GameCtx {
     this.scene.add(this.grass.root);
   }
 
-  private spawnAllEnemies() {
-    for (const s of this.world.spawns) this.enemies.push(new Enemy(this, s.kind, s.x, s.z, { x: s.x, z: s.z }));
+  /**
+   * The world system step. Squads march their routes in world state (always, hot or not); the
+   * members of squads near the player are materialised as live entities, and the live entities
+   * follow their squad's formation slot unless they're fighting. Leaving the active region
+   * de-materialises a squad back into pure world state. Nobody ever respawns.
+   */
+  private updateWorld(dt: number) {
+    const ws = this.worldState;
+    ws.tick(dt);
+    const p = this.player.pos;
+    const R = Math.max(24, Math.hypot(this.viewW, this.viewH) / PX_PER_TILE / 2 + 8); // covers the view, plus margin
+    const RH = R + 8; // hysteresis so squads at the edge don't flicker in and out
+    for (const sq of ws.squads) {
+      const living = WorldState.living(sq);
+      if (!living.length) { if (sq.hot) { sq.hot = false; for (const e of this.enemies) if (e.squad === sq) e.dispose(); } continue; }
+      const hot = living.some((m) => Math.hypot(m.x - p.x, m.z - p.z) < (sq.hot ? RH : R));
+      if (hot && !sq.hot) {
+        sq.hot = true;
+        for (let i = 0; i < sq.members.length; i++) {
+          const m = sq.members[i];
+          if (m.state === 'down') continue;
+          const slot = sq.slots[i];
+          const spot = this.world.nearestFree(slot.x, slot.z);
+          this.enemies.push(new Enemy(this, m.kind, spot.x, spot.z, sq, i));
+          this.spawnEffect(fxPuff(spot.x, spot.z).at(spot.x, spot.z));
+        }
+      } else if (!hot && sq.hot) {
+        sq.hot = false;
+        for (const e of this.enemies) if (e.squad === sq) e.dispose();
+        for (let i = 0; i < sq.members.length; i++) {
+          const m = sq.members[i];
+          if (m.state === 'down') continue;
+          m.x = sq.slots[i].x; m.z = sq.slots[i].z;
+        }
+      }
+    }
+    // live entities: hand them their slot and mirror their position back into world state
+    for (const e of this.enemies) {
+      if (!e.alive || !e.squad) continue;
+      const slot = e.squad.slots[e.memberIndex];
+      e.follow = slot ? { x: slot.x, z: slot.z } : null;
+      const m = e.soldier;
+      if (m) { m.x = e.pos.x; m.z = e.pos.z; }
+    }
   }
 
   // ------------------------------------------------------------------ GameCtx
@@ -444,7 +484,6 @@ export class Game implements GameCtx {
     this.pickups = [];
     for (const e of this.effects) this.scene.remove(e.group);
     this.effects = [];
-    this.respawns = [];
     for (const b of this.bushes) {
       if (b.alive) continue;
       b.alive = true;
@@ -456,7 +495,7 @@ export class Game implements GameCtx {
     this.grass.resetCuts();
     const ps = this.world.playerStart;
     this.player.reset(ps.x, ps.z);
-    this.spawnAllEnemies();
+    this.worldState.reset(); // a fresh run is a fresh world: new squads, nothing carried over
     this.cam = { x: ps.x, z: ps.z - 1 };
     this.deathTimer = 0;
     this.talking = false; this.convo = null;
@@ -543,6 +582,7 @@ export class Game implements GameCtx {
     }
     void pp;
 
+    this.updateWorld(dt);
     this.player.update(dt, input);
     for (const e of this.enemies) e.update(dt);
     this.resolveSword();
@@ -559,8 +599,6 @@ export class Game implements GameCtx {
       if (!alive) this.scene.remove(e.group);
       return alive;
     });
-    this.updateRespawns(dt);
-
     if (!this.player.dead && this.player.hp <= 2) {
       this.lowHpT -= dt;
       if (this.lowHpT <= 0) { this.audio.lowHp(); this.lowHpT = 0.9; }
@@ -623,7 +661,9 @@ export class Game implements GameCtx {
     this.audio.enemyDie();
     this.spawnEffect(fxPuff(e.pos.x, e.pos.z).at(e.pos.x, e.pos.z));
     this.dropLoot(e.pos.x, e.pos.z, 0.35, 0.4);
-    this.respawns.push({ kind: e.kind, spawn: e.spawn, t: 22 + this.rand() * 12 });
+    // soldiers don't respawn: the world-state record stays down for good
+    const m = e.soldier;
+    if (m) m.state = 'down';
   }
 
   private cutBush(b: BushObj) {
@@ -675,18 +715,6 @@ export class Game implements GameCtx {
       this.world.moveBox(a.pos, (-dx / d) * push, (-dz / d) * push, a.HW, a.HH);
       this.world.moveBox(b.pos, (dx / d) * push, (dz / d) * push, b.HW, b.HH);
     }
-  }
-
-  private updateRespawns(dt: number) {
-    const p = this.player.pos;
-    this.respawns = this.respawns.filter((r) => {
-      r.t -= dt;
-      if (r.t > 0) return true;
-      if (Math.hypot(r.spawn.x - p.x, r.spawn.z - p.z) < 9) { r.t = 3; return true; }
-      this.enemies.push(new Enemy(this, r.kind, r.spawn.x, r.spawn.z, r.spawn));
-      this.spawnEffect(fxPuff(r.spawn.x, r.spawn.z).at(r.spawn.x, r.spawn.z));
-      return false;
-    });
   }
 
   private camY = 0;
@@ -755,8 +783,6 @@ export class Game implements GameCtx {
       gamepad: this.input.gamepadActive,
     });
     if (this.mapOpen && (this.phase === 'playing' || this.phase === 'paused')) {
-      // mirror the live enemies into the world state right before drawing, so the map is always current
-      this.worldState.syncActive(this.enemies.filter((e) => e.alive).map((e) => ({ home: e.spawn, x: e.pos.x, z: e.pos.z })));
       this.worldMap.draw({ px: p.pos.x, pz: p.pos.z, time: this.time, gamepad: this.input.gamepadActive });
     }
   }

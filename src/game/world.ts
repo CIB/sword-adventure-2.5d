@@ -11,7 +11,14 @@ export type PropKind = 'well' | 'sign' | 'stall' | 'bench' | 'weathercock' | 'la
   | 'windmill' | 'anvil' | 'forge' | 'cauldron' | 'grave' | 'deadtree' | 'reeds' | 'rosebush' | 'beehive' | 'wheelbarrow' | 'statue' | 'mushroom' | 'amberrock';
 export interface PropSpec { kind: PropKind; x: number; z: number; rot?: number }
 export interface NpcSpec { id: string; x: number; z: number; facing?: 0 | 1 | 2 | 3; wander?: number }
-export interface SpawnSpec { x: number; z: number; kind: EnemyKind }
+/** one stop on a squad's patrol route: a named road-network point + how long to rest there */
+export interface SquadStopSpec { at: string; rest: number }
+/**
+ * A squad of soldiers in the world system: it marches along the road network between its stops
+ * (out-and-back, or a loop), resting at each stop, and its members never respawn once fallen.
+ * WorldState resolves the stops and pathfinds the exact route over the road tiles.
+ */
+export interface SquadSpec { name: string; stops: SquadStopSpec[]; loop: boolean; kinds: EnemyKind[] }
 export interface BridgeSpec { x0: number; z0: number; x1: number; z1: number; y: number; deadEnd?: boolean } // tile-inclusive rect + deck height; deadEnd = jetty (far end over water)
 export interface Vec2 { x: number; z: number }
 
@@ -87,7 +94,10 @@ export class World {
   ];
   props: PropSpec[] = [];
   npcs: NpcSpec[] = [];
-  spawns: SpawnSpec[] = [];
+  /** named road-network stop points (tile coords) that squad routes are built from */
+  squadStops: Record<string, [number, number]> = {};
+  /** the world system's squads (see SquadSpec) */
+  squads: SquadSpec[] = [];
   playerStart: Vec2 = { x: 9.5, z: 9.5 };
   /** Village bounds (tiles, inclusive) - enemies stay out */
   village = { x0: 1, z0: 1, x1: 32, z1: 29 };
@@ -249,10 +259,15 @@ export class World {
     // ---------------------------------------------------------------------------------------------------
 
     // 1. water ------------------------------------------------------------------------------------------
-    const river = [[118, -6], [116, 22], [124, 44], [122, 68], [130, 92], [128, 118], [136, 142], [134, 160], [140, 182]];
-    const brook = [[50, 124], [70, 118], [92, 112], [110, 100], [124, 96]];
-    const stream = [[206, 40], [186, 48], [170, 58], [150, 66], [128, 72]];
-    const waters: { pts: number[][]; w: number }[] = [{ pts: river, w: 3.4 }, { pts: brook, w: 1.9 }, { pts: stream, w: 1.6 }];
+    // Chunk alignment: the world-state grid is 8x8-tile chunks, and linear water must CROSS chunk
+    // borders, never run along them. So every predominantly N-S stretch of the great river sits
+    // exactly on a chunk-column middle (x = 8k+4: 116, 124, 132, 140) with its banks clear of the
+    // border-adjacent tile columns, and the stretches are joined by 45-degree crossings. The brook
+    // and the stream cross diagonally or run along a chunk-row middle (z = 8k+4).
+    const river = [[116, -6], [116, 22], [124, 30], [124, 60], [132, 68], [132, 122], [140, 130], [140, 182]];
+    const brook = [[50, 124], [58, 116], [70, 108], [94, 108], [106, 100], [129, 100]];
+    const stream = [[206, 40], [186, 48], [170, 58], [156, 72], [148, 80], [140, 88], [132.5, 95.5]];
+    const waters: { pts: number[][]; w: number }[] = [{ pts: river, w: 3.0 }, { pts: brook, w: 1.9 }, { pts: stream, w: 1.6 }];
     const lakes = [
       { x: 40, z: 126, rx: 13, rz: 8 },   // Mirror Lake
       { x: 14.5, z: 44, rx: 4.3, rz: 3.1 }, // home pond (the kid's rupee bush is nearby)
@@ -276,23 +291,34 @@ export class World {
     }
 
     // 2. roads ------------------------------------------------------------------------------------------
+    // Same chunk-alignment discipline as the water: axis-parallel segments keep their ~3-tile-wide
+    // painted band fully inside one chunk row/column (centres at 8k+2.5..8k+5.5), so a road only
+    // ever touches a chunk border where it actually crosses it. The old east-road corridor ran 34
+    // tiles exactly along the x=160 border; it now runs along the chunk-20 middle at x=164.5.
     const roads = [
       // south gate -> meadow crossroads -> great bridge (bends around the pond and the heron woods)
-      [[9.5, 29], [9.5, 34.5], [26.5, 34.5], [26.5, 40.5], [40.5, 40.5], [40.5, 46.5], [58.5, 46.5], [58.5, 52.5], [82.5, 52.5], [98.5, 46.5], [121.5, 46.5]],
+      [[10.5, 29], [10.5, 34.5], [26.5, 34.5], [26.5, 42.5], [42.5, 42.5], [58.5, 52.5], [82.5, 52.5], [98.5, 44.5], [121.5, 44.5]],
       // east gate -> forest trail through Willowmere -> north bridge
-      [[33, 8.5], [44.5, 8.5], [44.5, 14.5], [60.5, 14.5], [60.5, 20.5], [78.5, 20.5], [84.5, 26.5], [98.5, 26.5], [104.5, 20.5], [114.5, 20.5]],
-      // beyond the great bridge: east road, highland climb, moor road to the Crown hollow
-      [[125.5, 46.5], [160.5, 46.5], [160.5, 80.5], [190.5, 80.5], [198.5, 90.5]],
-      [[160.5, 46.5], [160.5, 30.5], [176.5, 22.5], [188.5, 12.5]],
+      [[33, 10.5], [44.5, 10.5], [44.5, 13.5], [60.5, 13.5], [60.5, 20.5], [78.5, 20.5], [84.5, 26.5], [98.5, 26.5], [104.5, 20.5], [114.5, 20.5]],
+      // beyond the great bridge: east road and the moor road to the Crown hollow
+      [[125.5, 44.5], [164.5, 44.5], [164.5, 82.5], [190.5, 82.5], [198.5, 92.5]],
+      // the highland climb (off the corridor, up the terraces toward the watchtower)
+      [[164.5, 44.5], [164.5, 28.5], [176.5, 22.5], [188.5, 12.5]],
       // north bridge -> highland foot (joins the climb road)
-      [[122.5, 20.5], [140.5, 20.5], [146.5, 30.5], [160.5, 30.5]],
+      [[120.5, 20.5], [140.5, 20.5], [146.5, 28.5], [164.5, 28.5]],
       // south road: crossroads -> heron pond -> Mirror Lake -> brook bridge -> Millbrook -> south bridge
-      [[40.5, 46.5], [40.5, 74.5], [34.5, 84.5], [34.5, 100.5], [48.5, 108.5], [62.5, 108.5], [62.5, 134.5], [78.5, 134.5], [100.5, 134.5], [100.5, 128.5], [132.5, 128.5]],
-      // east bank south -> the Drowned Field; camp track
-      [[140.5, 128.5], [162.5, 128.5], [170.5, 140.5]],
-      [[160.5, 80.5], [160.5, 104.5], [146.5, 110.5]],
+      [[42.5, 42.5], [42.5, 74.5], [34.5, 84.5], [34.5, 100.5], [48.5, 108.5], [61.5, 108.5], [61.5, 133.5], [100.5, 133.5], [100.5, 125.5], [130.5, 125.5]],
+      // east bank south -> the Drowned Field shrine; camp track
+      [[138.5, 125.5], [162.5, 125.5], [176.5, 141.5]],
+      [[164.5, 82.5], [164.5, 104.5], [152.5, 110.5]],
       // orchard lane (hermit hill)
       [[34.5, 84.5], [20.5, 84.5], [14.5, 96.5]],
+      // mesa spur: the standing stones down to the meadow road
+      [[82.5, 52.5], [85.5, 59.5]],
+      // village bypass: the cart lane skirting the fields links the south road to the forest
+      // trail OUTSIDE the walls (squads never enter the village, so the network needs the ring)
+      [[26.5, 34.5], [42.5, 34.5]],
+      [[42.5, 42.5], [42.5, 13.5], [44.5, 13.5]],
     ];
     const onRoad = (x: number, z: number) => x >= v.x0 && x <= v.x1 && z >= v.z0 && z <= v.z1 - 1 ? false : roads.some((p) => polyDist(x + 0.5, z + 0.5, p) < 1.1);
     for (let z = 0; z < h; z++) for (let x = 0; x < w; x++) if (get(x, z) === Tile.Grass && onRoad(x, z)) set(x, z, Tile.Path);
@@ -310,11 +336,11 @@ export class World {
       this.bridges.push(spec);
       for (let bz = spec.z0; bz <= spec.z1; bz++) for (let bx = spec.x0; bx <= spec.x1; bx++) set(bx, bz, Tile.Bridge);
     };
-    bridgeAt(122, 46, 'x');  // great bridge (east road)
+    bridgeAt(122, 44, 'x');  // great bridge (east road)
     bridgeAt(116, 20, 'x');  // north bridge
-    bridgeAt(134, 128, 'x'); // south bridge
-    bridgeAt(62, 120, 'z');  // brook bridge (south road)
-    bridgeAt(160, 62, 'z');  // eastern stream bridge
+    bridgeAt(134, 125, 'x'); // south bridge
+    bridgeAt(61, 113, 'z');  // brook bridge (south road)
+    bridgeAt(164, 63, 'z');  // eastern stream bridge
     // the fisher's jetty on Mirror Lake: a 1-wide dead-end deck running south into the water
     { const j: BridgeSpec = { x0: 45, z0: 117, x1: 45, z1: 121, y: 0.12, deadEnd: true }; this.bridges.push(j); for (let z = j.z0; z <= j.z1; z++) set(j.x0, z, Tile.Bridge); }
 
@@ -352,7 +378,7 @@ export class World {
     for (let z = 130; z <= 131; z++) for (let x = 84; x <= 89; x++) set(x, z, Tile.Cobble);
     for (let z = 104; z <= 105; z++) for (let x = 12; x <= 17; x++) set(x, z, Tile.Bed);
     // the knights' camp is trampled earth, the shrines and the tower are cobbled
-    for (let z = 102; z <= 110; z++) for (let x = 151; x <= 159; x++) if (Math.hypot(x - 155, z - 106) < 4.6) set(x, z, Tile.Path);
+    for (let z = 102; z <= 110; z++) for (let x = 151; x <= 159; x++) if (Math.hypot(x - 155, z - 106) < 4.2) set(x, z, Tile.Path);
     for (let z = 90; z <= 94; z++) for (let x = 196; x <= 201; x++) set(x, z, Tile.Cobble);
     for (let z = 5; z <= 10; z++) for (let x = 187; x <= 193; x++) set(x, z, Tile.Cobble);
     for (let z = 140; z <= 144; z++) for (let x = 176; x <= 180; x++) set(x, z, Tile.Cobble);
@@ -404,7 +430,10 @@ export class World {
     }
     // orchard rows on the hermit's hill and a willow line along the brook
     for (let x = 6; x <= 22; x += 3) for (let z = 108; z <= 114; z += 3) plant(x, z);
-    for (let x = 72; x <= 110; x += 4) { const zb = 118 - (x - 70) * 0.28; plant(x, Math.round(zb) - 4); plant(x + 2, Math.round(zb) + 4); }
+    for (let x = 72; x <= 110; x += 4) {
+      const zb = x <= 94 ? 108 : x <= 106 ? 108 - (x - 94) * (8 / 12) : 100;
+      plant(x, Math.round(zb) - 4); plant(x + 2, Math.round(zb) + 4);
+    }
     // scattered lone trees, region-weighted (fewer on the moor, none on the highland top)
     for (let i = 0; i < 260; i++) {
       const x = rng.int(3, w - 4), z = rng.int(3, h - 4);
@@ -537,26 +566,26 @@ export class World {
       // woodcutter's clearing
       { kind: 'log', x: 86.5, z: 35.5 }, { kind: 'log', x: 93.5, z: 34.5, rot: 0.8 }, { kind: 'crate', x: 92.5, z: 30.5 }, { kind: 'barrel', x: 87.5, z: 30.5 }, { kind: 'sign', x: 90.5, z: 36.5 },
       // standing stones on the mesa
-      { kind: 'menhir', x: 87.5, z: 58.5 }, { kind: 'menhir', x: 89.8, z: 60.2, rot: 0.6 }, { kind: 'menhir', x: 89.6, z: 62.6, rot: 1.2 }, { kind: 'menhir', x: 87.4, z: 63.8, rot: 0.3 }, { kind: 'menhir', x: 85.2, z: 62.5, rot: 0.9 }, { kind: 'menhir', x: 85.0, z: 60.0, rot: 0.2 },
+      { kind: 'menhir', x: 87.5, z: 58.5 }, { kind: 'menhir', x: 89.8, z: 60.2, rot: 0.6 }, { kind: 'menhir', x: 89.6, z: 62.6, rot: 1.2 }, { kind: 'menhir', x: 87.4, z: 63.8, rot: 0.3 }, { kind: 'menhir', x: 85.2, z: 62.5, rot: 0.9 }, { kind: 'menhir', x: 84.4, z: 60.8, rot: 0.2 },
       // Millbrook
-      { kind: 'weathercock', x: 86.5, z: 125.5 }, { kind: 'cart', x: 82.5, z: 132.5, rot: 0.4 }, { kind: 'hay', x: 72.5, z: 134.5 }, { kind: 'hay', x: 71.5, z: 136.5 }, { kind: 'hay', x: 89.5, z: 141.5 },
-      { kind: 'scarecrow', x: 74.5, z: 129.5 }, { kind: 'barrel', x: 79.5, z: 141.5 }, { kind: 'sign', x: 64.5, z: 133.5 }, { kind: 'lamp', x: 80.5, z: 136.5 }, { kind: 'bench', x: 86.5, z: 143.5 },
+      { kind: 'weathercock', x: 86.5, z: 125.5 }, { kind: 'cart', x: 82.5, z: 130.5, rot: 0.4 }, { kind: 'hay', x: 72.5, z: 136.5 }, { kind: 'hay', x: 71.5, z: 138.5 }, { kind: 'hay', x: 89.5, z: 141.5 },
+      { kind: 'scarecrow', x: 74.5, z: 129.5 }, { kind: 'barrel', x: 79.5, z: 141.5 }, { kind: 'sign', x: 64.5, z: 131.5 }, { kind: 'lamp', x: 80.5, z: 136.5 }, { kind: 'bench', x: 86.5, z: 143.5 },
       // Mirror Lake: fisher's jetty
-      { kind: 'barrel', x: 50.5, z: 114.5 }, { kind: 'crate', x: 43.5, z: 112.5 }, { kind: 'sign', x: 48.5, z: 109.5 },
+      { kind: 'barrel', x: 50.5, z: 114.5 }, { kind: 'crate', x: 43.5, z: 112.5 }, { kind: 'sign', x: 50.5, z: 111.5 },
       // hermit's orchard hill
       { kind: 'bench', x: 16.5, z: 102.5, rot: Math.PI }, { kind: 'flowerpot', x: 11.5, z: 103.5 }, { kind: 'menhir', x: 8.5, z: 96.5, rot: 0.4 },
       // knights' camp
       { kind: 'campfire', x: 155.5, z: 106.5 }, { kind: 'tent', x: 152.5, z: 103.5, rot: 0.7 }, { kind: 'tent', x: 158.5, z: 103.5, rot: -0.7 }, { kind: 'tent', x: 158.5, z: 109.5, rot: -2.4 },
       { kind: 'banner', x: 152.5, z: 109.5 }, { kind: 'crate', x: 154.5, z: 110.5 }, { kind: 'barrel', x: 156.5, z: 102.5 }, { kind: 'log', x: 155.5, z: 108.5, rot: Math.PI / 2 },
       // watchtower ruin on the highland
-      { kind: 'tower', x: 190.5, z: 7.5 }, { kind: 'ruinwall', x: 187.5, z: 10.5 }, { kind: 'ruinwall', x: 193.5, z: 9.5, rot: Math.PI / 2 }, { kind: 'banner', x: 188.5, z: 5.5 }, { kind: 'campfire', x: 192.5, z: 10.5 },
+      { kind: 'tower', x: 190.5, z: 7.5 }, { kind: 'ruinwall', x: 187.5, z: 10.5 }, { kind: 'ruinwall', x: 193.5, z: 9.5, rot: Math.PI / 2 }, { kind: 'banner', x: 189.5, z: 4.5 }, { kind: 'campfire', x: 192.5, z: 10.5 },
       // the Crown hollow at the east edge
       { kind: 'pillar', x: 196.5, z: 90.5 }, { kind: 'pillar', x: 196.5, z: 94.5 }, { kind: 'pillar', x: 199.5, z: 89.5 }, { kind: 'pillar', x: 199.5, z: 95.5 }, { kind: 'crown', x: 201.5, z: 92.5 }, { kind: 'ruinwall', x: 201.5, z: 89.5 }, { kind: 'ruinwall', x: 201.5, z: 95.5 },
       // Drowned Field shrine + grave stakes
       { kind: 'pillar', x: 176.5, z: 140.5 }, { kind: 'pillar', x: 180.5, z: 140.5 }, { kind: 'menhir', x: 178.5, z: 141.5 }, { kind: 'ruinwall', x: 178.5, z: 144.5 },
       { kind: 'banner', x: 150.5, z: 132.5 }, { kind: 'banner', x: 158.5, z: 138.5, rot: 0.5 }, { kind: 'log', x: 154.5, z: 136.5, rot: 1.1 },
       // road signs at the crossroads and bridges
-      { kind: 'sign', x: 42.5, z: 48.5 }, { kind: 'sign', x: 118.5, z: 48.5 }, { kind: 'sign', x: 162.5, z: 82.5 }, { kind: 'sign', x: 42.5, z: 32.5 }, { kind: 'lamp', x: 128.5, z: 44.5 }, { kind: 'lamp', x: 119.5, z: 44.5 },
+      { kind: 'sign', x: 44.5, z: 48.5 }, { kind: 'sign', x: 118.5, z: 48.5 }, { kind: 'sign', x: 162.5, z: 82.5 }, { kind: 'sign', x: 42.5, z: 32.5 }, { kind: 'lamp', x: 128.5, z: 46.5 }, { kind: 'lamp', x: 119.5, z: 46.5 },
       // Millbrook: the windmill by the mill
       { kind: 'windmill', x: 90.5, z: 124.5 },
       // woodcutter's clearing: another cut log and a mushroom cluster
@@ -593,7 +622,7 @@ export class World {
     // 10. village fence ring with gates; solid props -----------------------------------------------------
     const fenceAt = (x: number, z: number) => { if (objFree(x, z) && !occupied[this.idx(x, z)]) { this.fences.push({ tx: x, tz: z }); occupied[this.idx(x, z)] = 1; } };
     for (let x = v.x0; x <= v.x1; x++) { if (x < 8 || x > 10) fenceAt(x, v.z1); }
-    for (let z = v.z0 + 1; z <= v.z1; z++) { if (z < 8 || z > 9) fenceAt(v.x1, z); }
+    for (let z = v.z0 + 1; z <= v.z1; z++) { if (z < 9 || z > 11) fenceAt(v.x1, z); }
     // Millbrook paddock fence
     for (let x = 80; x <= 91; x++) if (x !== 85 && x !== 86) fenceAt(x, 146);
     for (let z = 143; z <= 146; z++) { fenceAt(79, z); fenceAt(91, z); }
@@ -671,27 +700,57 @@ export class World {
 
     for (const np of this.npcs) if (this.isSolidTile(Math.floor(np.x), Math.floor(np.z))) { const p = this.nearestFree(np.x, np.z); np.x = p.x; np.z = p.z; }
 
-    // 12. enemy spawns: hand-placed per region, harder further from Thistledown ---------------------------
-    const S = (x: number, z: number, kind: EnemyKind) => { const p = this.nearestFree(x + 0.5, z + 0.5); if (!inYard(Math.floor(p.x), Math.floor(p.z))) this.spawns.push({ x: p.x, z: p.z, kind }); };
-    const sw: EnemyKind = 'sword', sp: EnemyKind = 'spear', jv: EnemyKind = 'javelin', ar: EnemyKind = 'archer';
-    // home meadow (as in the original layout)
-    for (const [x, z, k] of [[36, 16, sw], [36, 28, sw], [14, 37, sw], [28, 44, sw], [44, 19, sw], [40, 22, sw], [37, 11, sp], [45, 26, sp], [32, 47, sp], [34, 22, sp], [20, 39, jv], [42, 30, jv], [6, 37, jv], [43, 12, ar], [38, 36, ar], [26, 50, ar], [47, 33, ar], [50, 44, sw], [54, 26, sw]] as [number, number, EnemyKind][]) S(x, z, k);
-    // Willowmere Woods trail
-    for (const [x, z, k] of [[66, 12, sw], [74, 22, sp], [82, 28, sw], [92, 22, ar], [98, 28, sw], [104, 14, sp], [108, 24, jv], [70, 44, sw], [100, 44, sp], [84, 48, jv], [110, 40, sw]] as [number, number, EnemyKind][]) S(x, z, k);
-    // east road + the river banks
-    for (const [x, z, k] of [[60, 50, sw], [74, 54, sp], [92, 52, ar], [106, 48, sw], [112, 42, jv], [128, 50, sp], [134, 42, sw], [144, 48, ar], [152, 44, sw], [156, 50, sp]] as [number, number, EnemyKind][]) S(x, z, k);
-    // Amber Highland (archers hold the terraces)
-    for (const [x, z, k] of [[158, 36, sp], [166, 30, ar], [172, 20, ar], [180, 16, sp], [186, 14, ar], [192, 12, sw], [194, 6, ar], [162, 12, jv], [170, 6, ar], [200, 26, jv]] as [number, number, EnemyKind][]) S(x, z, k);
-    // Grey Moor and the knights' camp
-    for (const [x, z, k] of [[150, 70, sw], [166, 66, sp], [176, 74, jv], [184, 84, sw], [192, 84, ar], [196, 100, ar], [170, 92, sp], [160, 98, sw], [152, 100, sp], [158, 112, jv], [148, 112, ar], [164, 104, sw], [190, 112, sp], [200, 86, sp]] as [number, number, EnemyKind][]) S(x, z, k);
-    // riverside (west bank, mesa, brook)
-    for (const [x, z, k] of [[86, 66, sp], [98, 70, sw], [110, 78, jv], [104, 90, sw], [118, 98, ar], [112, 106, sp], [96, 104, sw], [80, 60, ar], [72, 68, sw]] as [number, number, EnemyKind][]) S(x, z, k);
-    // south road, heron pond, Mirror Lake
-    for (const [x, z, k] of [[36, 56, sw], [46, 66, sp], [34, 78, sw], [28, 92, jv], [40, 104, sw], [56, 110, sp], [30, 128, ar], [52, 136, sw], [60, 126, sp], [20, 120, sw], [8, 84, sw], [22, 76, ar]] as [number, number, EnemyKind][]) S(x, z, k);
-    // Millbrook outskirts + the south bridge
-    for (const [x, z, k] of [[66, 148, sw], [80, 154, sp], [96, 150, jv], [106, 132, sw], [116, 128, ar], [104, 144, sw], [70, 160, ar], [112, 152, sp]] as [number, number, EnemyKind][]) S(x, z, k);
-    // the Drowned Field (the hardest ground)
-    for (const [x, z, k] of [[144, 126, sp], [152, 134, ar], [160, 130, sw], [168, 136, jv], [176, 136, ar], [182, 148, sp], [190, 140, sw], [196, 156, ar], [162, 150, sw], [150, 150, jv], [178, 156, sp], [170, 162, ar], [188, 168, sw]] as [number, number, EnemyKind][]) S(x, z, k);
+    // 12. squads: the world system's soldiers --------------------------------------------------------------
+    // Soldiers are no longer hand-placed spawn points that the game materialises all at once (and
+    // re-spawns when killed). They belong to the WORLD SYSTEM: named squads that patrol the road
+    // network between camps, resting at each stop, and never respawn. WorldState builds each
+    // squad's exact route by pathfinding over the road tiles; see worldstate.ts.
+    // Stops are named points on the road network (tile coords; WorldState snaps them to the
+    // nearest usable road tile). `rest` is how long the squad lingers at that stop, in seconds.
+    this.squadStops = {
+      southGate: [10.5, 33.5],     // by the village's south gate (turnaround; far enough that a trailing formation slot never crowds the gate)
+      crossroads: [42.5, 44.5],    // the meadow crossroads
+      eastGate: [36.5, 10.5],      // by the village's east gate (turnaround, kept clear of the fence)
+      northBridge: [120.5, 20.5],  // the north bridge's east end
+      greatBridgeE: [129.5, 44.5], // the great bridge's east bank
+      watchtower: [188.5, 6.5],    // the watchtower ruin on the highland
+      crown: [198.5, 92.5],        // the Crown hollow
+      camp: [154.5, 106.5],        // the knights' camp
+      southBridgeE: [138.5, 125.5],// the south bridge's east end
+      shrine: [178.5, 142.5],      // the Drowned Field shrine
+      millbrook: [87.5, 130.5],    // the mill yard at Millbrook
+      mirrorLake: [34.5, 100.5],   // the fisher's bend on the south road
+      heronPond: [34.5, 84.5],     // the orchard lane junction
+      orchard: [14.5, 96.5],       // the hermit's orchard hill
+      mesa: [87.5, 61.5],          // the standing stones
+      // garrison circuits: four corners around each landmark's plaza
+      campA: [152.5, 104.5], campB: [156.5, 104.5], campC: [156.5, 108.5], campD: [152.5, 108.5],
+      towerA: [188.5, 5.5], towerB: [192.5, 5.5], towerC: [192.5, 9.5], towerD: [188.5, 9.5],
+      crownA: [197.5, 90.5], crownB: [200.5, 90.5], crownC: [200.5, 93.5], crownD: [197.5, 93.5],
+      shrineA: [177.5, 140.5], shrineB: [179.5, 140.5], shrineC: [179.5, 143.5], shrineD: [177.5, 143.5],
+    };
+    const sq = (name: string, stops: { at: string; rest?: number }[], loop: boolean, kinds: EnemyKind[]): SquadSpec =>
+      ({ name, stops: stops.map((t) => ({ at: t.at, rest: t.rest ?? 4 })), loop, kinds });
+    this.squads = [
+      // road patrols: out from the crossroads / bridges to a camp and back
+      sq('Meadow Watch', [{ at: 'crossroads' }, { at: 'southGate', rest: 10 }], false, ['sword', 'sword']),
+      sq('Green Lane Patrol', [{ at: 'crossroads' }, { at: 'eastGate', rest: 10 }], false, ['sword', 'sword', 'javelin']),
+      sq('Willowmere Patrol', [{ at: 'eastGate' }, { at: 'northBridge', rest: 14 }], false, ['sword', 'spear', 'archer']),
+      sq('Bridge Wardens', [{ at: 'crossroads' }, { at: 'greatBridgeE', rest: 10 }, { at: 'northBridge', rest: 14 }], false, ['sword', 'spear', 'spear', 'archer']),
+      sq('Highland Patrol', [{ at: 'greatBridgeE' }, { at: 'watchtower', rest: 30 }], false, ['spear', 'archer', 'archer']),
+      sq('Moor Patrol', [{ at: 'greatBridgeE' }, { at: 'crown', rest: 26 }], false, ['sword', 'javelin', 'archer']),
+      sq('South Road Patrol', [{ at: 'crossroads' }, { at: 'heronPond' }, { at: 'mirrorLake', rest: 24 }], false, ['sword', 'spear', 'sword', 'javelin']),
+      sq('Orchard Watch', [{ at: 'heronPond' }, { at: 'orchard', rest: 22 }], false, ['sword', 'archer']),
+      sq('Millbrook Watch', [{ at: 'mirrorLake' }, { at: 'millbrook', rest: 28 }], false, ['sword', 'spear']),
+      sq('Drowned Field Patrol', [{ at: 'southBridgeE' }, { at: 'shrine', rest: 26 }], false, ['spear', 'javelin', 'archer', 'sword']),
+      sq("Knights' Camp Patrol", [{ at: 'camp', rest: 12 }, { at: 'crown', rest: 24 }], false, ['spear', 'spear', 'javelin']),
+      sq('Mesa Watch', [{ at: 'mesa', rest: 30 }, { at: 'crossroads' }], false, ['sword', 'spear']),
+      // garrisons: a slow circuit around their landmark, resting at each corner in turn
+      sq('Camp Garrison', [{ at: 'campA', rest: 20 }, { at: 'campB' }, { at: 'campC', rest: 14 }, { at: 'campD' }], true, ['sword', 'spear', 'sword']),
+      sq('Tower Garrison', [{ at: 'towerA', rest: 18 }, { at: 'towerB' }, { at: 'towerC', rest: 12 }, { at: 'towerD' }], true, ['archer', 'spear']),
+      sq('Crown Garrison', [{ at: 'crownA', rest: 16 }, { at: 'crownB' }, { at: 'crownC', rest: 20 }, { at: 'crownD' }], true, ['archer', 'sword', 'archer']),
+      sq('Shrine Garrison', [{ at: 'shrineA', rest: 18 }, { at: 'shrineB' }, { at: 'shrineC', rest: 14 }, { at: 'shrineD' }], true, ['javelin', 'archer', 'javelin']),
+    ];
   }
 
   private generateHeights() {
@@ -759,8 +818,8 @@ export class World {
         lvl[i] = lvl[i] * (1 - t) + mean * t;
       }
     }
-    // ramp for the NE highland where the road climbs (x 158..163, z 40..48)
-    for (let cz = 40; cz <= 48; cz++) for (let cx = 157; cx <= 164; cx++) lvl[cz * W + cx] = 2 * smoothstep(48.5, 40, cz);
+    // ramp for the NE highland where the road climbs (the corridor at x=164.5, z 40..48)
+    for (let cz = 40; cz <= 48; cz++) for (let cx = 160; cx <= 167; cx++) lvl[cz * W + cx] = 2 * smoothstep(48.5, 40, cz);
     // roads: keep them gentle (relax steep local bumps) by blending toward the neighbourhood average
     // (a cheap smoothing pass on corners adjacent to path tiles)
     for (let pass = 0; pass < 2; pass++) for (let cz = 1; cz < H - 1; cz++) for (let cx = 1; cx < W - 1; cx++) {
@@ -815,6 +874,16 @@ export class World {
   }
 
   isWaterUnder(tx: number, tz: number): boolean { return this.riverDist[this.idx(tx, tz)] < 0; }
+
+  /**
+   * Is this tile water from a POLYLINE (river / brook / stream), as opposed to a lake or pond?
+   * Linear water must cross chunk borders cleanly (never run along them); lake blobs are exempt
+   * from that rule, so the alignment tests use this to tell them apart.
+   */
+  isRiverWater(tx: number, tz: number): boolean {
+    const i = this.idx(tx, tz);
+    return this.riverDist[i] < 0 && this.riverHalfW[i] > 0.01;
+  }
 
   /** May decorative grass blades grow here? (grass-like tile, walkable, not on the wet shore strip) */
   canGrowGrass(tx: number, tz: number): boolean {
@@ -1039,8 +1108,8 @@ export class World {
     return `rgb(${Math.round(sandW * s[0] + mudW * mu[0] + gravW * gr[0])},${Math.round(sandW * s[1] + mudW * mu[1] + gravW * gr[1])},${Math.round(sandW * s[2] + mudW * gr[2])})`;
   }
 
-  /** Mix the biome palettes at (x,z) into concrete colours; shading variants come off one base at fixed contrast. */
-  private mixColors(x: number, z: number, bw?: Record<Biome, number>): MixedColors {
+  /** Mix the biome palettes at (x,z) into concrete [r,g,b] grass + path colours (numeric, no CSS strings). */
+  private mixRGB(x: number, z: number, bw?: Record<Biome, number>): { grass: [number, number, number]; path: [number, number, number] } {
     const w = bw ?? this.biomeWeights(x, z);
     const lerp3 = (pick: (p: GroundPal) => [number, number, number]) => {
       let r = 0, g = 0, b = 0;
@@ -1052,16 +1121,77 @@ export class World {
       }
       return [Math.min(255, Math.round(r)), Math.min(255, Math.round(g)), Math.min(255, Math.round(b))] as [number, number, number];
     };
+    return { grass: lerp3((p) => World.hex(p.grass)), path: lerp3((p) => World.hex(p.path)) };
+  }
+
+  /** Mix the biome palettes at (x,z) into concrete colours; shading variants come off one base at fixed contrast. */
+  private mixColors(x: number, z: number, bw?: Record<Biome, number>): MixedColors {
+    const w = bw ?? this.biomeWeights(x, z);
+    const { grass: gc, path: pc } = this.mixRGB(x, z, w);
     const css = (c: [number, number, number], k: number) =>
       `rgb(${Math.min(255, Math.round(c[0] * k))},${Math.min(255, Math.round(c[1] * k))},${Math.min(255, Math.round(c[2] * k))})`;
-    const gc = lerp3((p) => World.hex(p.grass));
-    const pc = lerp3((p) => World.hex(p.path));
     return {
       grass: css(gc, 1), grassL: css(gc, 1.17), grassD: css(gc, 0.8),
       path: css(pc, 1), pathL: css(pc, 1.16), pathD: css(pc, 0.78), pathE: css(pc, 0.66),
       daisies: w.meadow + w.lake + w.farm > 0.5,
       pebbly: w.highland + w.mesa > 0.45,
     };
+  }
+
+  /**
+   * Paint the full-world minimap for the map screen: one pixel per tile, actual terrain colours
+   * (biome-mixed ground, real water/road/bridge tiles, trees, houses, shore strips) with a light
+   * height-based shading so the relief reads. Fills `img` (MAP_W x MAP_H, RGBA) — the map screen
+   * blits this at an integer scale and draws the live world-state overlay on top.
+   */
+  paintMinimap(img: ImageData) {
+    const d = img.data;
+    const put = (i: number, r: number, g: number, b: number) => { d[i] = r; d[i + 1] = g; d[i + 2] = b; d[i + 3] = 255; };
+    for (let z = 0; z < this.h; z++) for (let x = 0; x < this.w; x++) {
+      const i = this.idx(x, z);
+      const t = this.tiles[i];
+      let r: number, g: number, b: number;
+      if (t === Tile.Water) {
+        // the Drowned Field's water fades into murky green-brown as the marsh takes over
+        const m = this.biomeWeights(x, z).marsh;
+        r = 47 + m * 17; g = 96 - m * 4; b = 196 - m * 76;
+      } else if (t === Tile.Bridge) {
+        r = 185; g = 133; b = 82;
+      } else if (t === Tile.Cobble) {
+        r = 178; g = 166; b = 142;
+      } else if (t === Tile.Bed) {
+        r = 130; g = 90; b = 54;
+      } else if (t === Tile.Cliff) {
+        r = 130; g = 96; b = 64;
+      } else {
+        // natural ground: the biome-blended grass/path hue, with regional ground types over it
+        const c = this.mixRGB(x, z);
+        if (t === Tile.Path) { r = c.path[0]; g = c.path[1]; b = c.path[2]; }
+        else if (t === Tile.ForestFloor) { r = c.grass[0] * 0.72; g = c.grass[1] * 0.78; b = c.grass[2] * 0.68; }
+        else if (t === Tile.Heather) { r = 118; g = 138; b = 90; }
+        else if (t === Tile.Mud) { r = 84; g = 69; b = 46; }
+        else if (t === Tile.Gravel) { r = 154; g = 148; b = 138; }
+        else if (t === Tile.DryGrass) { r = 184; g = 154; b = 74; }
+        else if (t === Tile.Flowers) {
+          const k = hash2(x, z, 17);
+          if (k < 0.28) { r = 232; g = 214; b = 96; }        // bloom speckles
+          else { r = c.grass[0] * 1.04; g = c.grass[1] * 1.04; b = c.grass[2] * 1.02; }
+        } else { r = c.grass[0]; g = c.grass[1]; b = c.grass[2]; }
+        // sand/mud shore strip along the water's edge
+        const rd = this.riverDist[i];
+        if (rd > 0 && rd < 0.9 && t !== Tile.Path) { r = r * 0.45 + 206 * 0.55; g = g * 0.45 + 186 * 0.55; b = b * 0.45 + 138 * 0.55; }
+      }
+      // trees: a dithered dark-green canopy over whatever ground is below
+      if (this.treeCell[i]) {
+        const k = 0.5 + hash2(x, z, 19) * 0.22;
+        r = r * (1 - k) + 44 * k; g = g * (1 - k) + 76 * k; b = b * (1 - k) + 40 * k;
+      }
+      // village houses read as red roofs
+      if (this.houseCell[i]) { r = 172; g = 62; b = 54; }
+      // gentle relief: higher ground is a touch brighter
+      const shade = Math.min(1.14, Math.max(0.68, 0.84 + this.tileH(x, z) * 0.14));
+      put(i * 4, Math.min(255, r * shade), Math.min(255, g * shade), Math.min(255, b * shade));
+    }
   }
 
   private paintGrass(g: CanvasRenderingContext2D, ox: number, oz: number, tx: number, tz: number, flowers: boolean, pal: MixedColors) {
