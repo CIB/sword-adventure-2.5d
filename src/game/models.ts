@@ -192,29 +192,32 @@ export function buildHeroine(): Humanoid {
   return { root, body, head, armR, armL, handR, handL, legR, legL, weapon, shield, ponytail, materials };
 }
 
-export const SOLDIER_COLORS: Record<EnemyKind, string> = { sword: '#3c9c44', spear: '#3858c8', javelin: '#c83838', archer: '#7848b8', moblin: '#d95b42', moblin_spear: '#c84a32' };
+export const SOLDIER_COLORS: Record<EnemyKind, string> = { sword: '#3c9c44', spear: '#3858c8', javelin: '#c83838', archer: '#7848b8', moblin: '#3a6fbf', moblin_spear: '#4a84d6' };
 
 /**
- * Moblin — Link's Awakening inspired pig-like raider.
+ * Moblin — Link's Awakening inspired pig-like raider (classic Koholint blue).
  * Two loadouts: 'moblin' (sword + large wooden shield, blocks frontal attacks)
  * and 'moblin_spear' (throws a bone-tipped spear). Both share the same bulky
- * pig head, floppy ears, snout and tusks; they are noticeably stockier and more
- * orange than the armoured knights.
+ * pig head, floppy ears, snout and tusks; they are noticeably stockier and in
+ * the iconic LA blue (#4a7fd6 / #3a6fbf) with a dark navy vest, clearly distinct
+ * from the armoured knights.
  */
 function buildMoblin(kind: 'moblin' | 'moblin_spear'): Humanoid {
   const isSpear = kind === 'moblin_spear';
-  // pig palette — warm orange-pink skin, lighter snout, dark nostrils, ivory tusks
-  const pig = toon('#e8a07a');
-  const pigD = toon('#c87a52');
+  // LA palette — classic Koholint blue (Link's Awakening DX / Switch): vibrant blue skin
+  // with a creamy pig snout, ivory tusks and a dark navy vest. Restores the iconic
+  // blue moblin while keeping the pig read (snout/ears/tusks).
+  const pig = toon('#4a7fd6');
+  const pigD = toon('#2e5aa8');
   const snout = toon('#f0c4a8');
   const snoutDark = toon('#3a1a10');
   const tuskMat = toon('#f6f1de');
-  const earMat = toon('#d87a5a');
-  const earInner = toon('#a03028');
-  const vest = toon('#8b5a2e');
-  const vestD = toon('#6b4a22');
-  const belt = toon('#5a3a1e');
-  const boots = toon('#4a2e18');
+  const earMat = toon('#3a6fbf');
+  const earInner = toon('#1e3a7a');
+  const vest = toon('#2f4a8a');
+  const vestD = toon('#1a335a');
+  const belt = toon('#1e2e4a');
+  const boots = toon('#1a2540');
   const eyeMat = toon('#1a1a1a');
   const eyeRed = toon('#ff4a3a');
   (eyeRed as THREE.MeshToonMaterial).emissive.set('#ff2020');
