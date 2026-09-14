@@ -192,9 +192,149 @@ export function buildHeroine(): Humanoid {
   return { root, body, head, armR, armL, handR, handL, legR, legL, weapon, shield, ponytail, materials };
 }
 
-export const SOLDIER_COLORS: Record<EnemyKind, string> = { sword: '#3c9c44', spear: '#3858c8', javelin: '#c83838', archer: '#7848b8' };
+export const SOLDIER_COLORS: Record<EnemyKind, string> = { sword: '#3c9c44', spear: '#3858c8', javelin: '#c83838', archer: '#7848b8', moblin: '#d95b42', moblin_spear: '#c84a32' };
+
+/**
+ * Moblin — Link's Awakening inspired pig-like raider.
+ * Two loadouts: 'moblin' (sword + large wooden shield, blocks frontal attacks)
+ * and 'moblin_spear' (throws a bone-tipped spear). Both share the same bulky
+ * pig head, floppy ears, snout and tusks; they are noticeably stockier and more
+ * orange than the armoured knights.
+ */
+function buildMoblin(kind: 'moblin' | 'moblin_spear'): Humanoid {
+  const isSpear = kind === 'moblin_spear';
+  // pig palette — warm orange-pink skin, lighter snout, dark nostrils, ivory tusks
+  const pig = toon('#e8a07a');
+  const pigD = toon('#c87a52');
+  const snout = toon('#f0c4a8');
+  const snoutDark = toon('#3a1a10');
+  const tuskMat = toon('#f6f1de');
+  const earMat = toon('#d87a5a');
+  const earInner = toon('#a03028');
+  const vest = toon('#8b5a2e');
+  const vestD = toon('#6b4a22');
+  const belt = toon('#5a3a1e');
+  const boots = toon('#4a2e18');
+  const eyeMat = toon('#1a1a1a');
+  const eyeRed = toon('#ff4a3a');
+  (eyeRed as THREE.MeshToonMaterial).emissive.set('#ff2020');
+  (eyeRed as THREE.MeshToonMaterial).emissiveIntensity = 0.35;
+  const wood = toon('#8a5a2b');
+  const woodL = toon('#c48b4f');
+  const woodD = toon('#5a3a1e');
+  const steel = toon('#a3adc0');
+  const steelD = toon('#6b7382');
+  const gold = toon('#d9b24a');
+
+  const root = new THREE.Group();
+  const body = new THREE.Group();
+  root.add(body);
+  root.add(blobShadow(0.40));
+
+  // bulkier legs — bare pig legs with hoof-like boots, wider than the knights
+  const legL = new THREE.Group(); legL.position.set(0.13, 0.34, 0);
+  legL.add(part(UNIT_BOX, pigD, [0, -0.08, 0], [0.16, 0.18, 0.16]));
+  legL.add(part(UNIT_BOX, boots, [0, -0.26, 0.03], [0.18, 0.15, 0.22]));
+  const legR = new THREE.Group(); legR.position.set(-0.13, 0.34, 0);
+  legR.add(part(UNIT_BOX, pigD, [0, -0.08, 0], [0.16, 0.18, 0.16]));
+  legR.add(part(UNIT_BOX, boots, [0, -0.26, 0.03], [0.18, 0.15, 0.22]));
+  root.add(legL, legR);
+
+  // vest — leather, no plate, with a belt
+  body.add(part(UNIT_BOX, vest, [0, 0.58, 0], [0.58, 0.44, 0.34]));
+  body.add(part(UNIT_BOX, vestD, [0, 0.37, 0], [0.60, 0.10, 0.36]));
+  body.add(part(UNIT_BOX, belt, [0, 0.50, 0], [0.60, 0.06, 0.36]));
+  body.add(part(UNIT_BOX, gold, [0, 0.50, 0.18], [0.08, 0.06, 0.02])); // buckle
+  body.add(part(UNIT_BOX, vestD, [-0.30, 0.78, 0], [0.16, 0.10, 0.18]));
+  body.add(part(UNIT_BOX, vestD, [0.30, 0.78, 0], [0.16, 0.10, 0.18]));
+  body.add(part(UNIT_BOX, pig, [0, 0.80, 0], [0.16, 0.08, 0.14])); // neck
+
+  const { arm: armR, hand: handR } = makeArm(-0.34, vest, pig);
+  const { arm: armL, hand: handL } = makeArm(0.34, vest, pig);
+  body.add(armR, armL);
+
+  // pig head — large snout, floppy ears, tusks, bead eyes
+  const head = new THREE.Group();
+  head.position.set(0, 1.02, 0);
+  body.add(head);
+  // cranium
+  head.add(part(UNIT_SPHERE, pig, [0, 0.02, 0], [0.70, 0.62, 0.66]));
+  // snout — boxy, protruding
+  head.add(part(UNIT_BOX, snout, [0, -0.08, 0.32], [0.38, 0.26, 0.24]));
+  head.add(part(UNIT_BOX, snoutDark, [-0.08, -0.08, 0.44], [0.06, 0.06, 0.02])); // nostril L
+  head.add(part(UNIT_BOX, snoutDark, [0.08, -0.08, 0.44], [0.06, 0.06, 0.02])); // nostril R
+  head.add(part(UNIT_BOX, snoutDark, [0, -0.15, 0.38], [0.20, 0.03, 0.10])); // mouth slit
+  // tusks — ivory, curving out and up
+  head.add(part(UNIT_CONE, tuskMat, [-0.14, -0.16, 0.30], [0.08, 0.14, 0.08]).rotateZ(0.55).rotateX(-0.35));
+  head.add(part(UNIT_CONE, tuskMat, [0.14, -0.16, 0.30], [0.08, 0.14, 0.08]).rotateZ(-0.55).rotateX(-0.35));
+  // ears — large, droopy
+  head.add(part(UNIT_BOX, earMat, [-0.36, 0.10, -0.02], [0.22, 0.32, 0.10]).rotateZ(0.25));
+  head.add(part(UNIT_BOX, earInner, [-0.36, 0.08, 0.05], [0.14, 0.20, 0.03]).rotateZ(0.25));
+  head.add(part(UNIT_BOX, earMat, [0.36, 0.10, -0.02], [0.22, 0.32, 0.10]).rotateZ(-0.25));
+  head.add(part(UNIT_BOX, earInner, [0.36, 0.08, 0.05], [0.14, 0.20, 0.03]).rotateZ(-0.25));
+  // eyes — small, close-set, reddish glow
+  head.add(part(UNIT_BOX, eyeMat, [-0.13, 0.04, 0.30], [0.09, 0.09, 0.04]));
+  head.add(part(UNIT_BOX, eyeRed, [-0.13, 0.04, 0.32], [0.04, 0.04, 0.02]));
+  head.add(part(UNIT_BOX, eyeMat, [0.13, 0.04, 0.30], [0.09, 0.09, 0.04]));
+  head.add(part(UNIT_BOX, eyeRed, [0.13, 0.04, 0.32], [0.04, 0.04, 0.02]));
+  // brow ridge
+  head.add(part(UNIT_BOX, pigD, [0, 0.14, 0.26], [0.58, 0.10, 0.28]));
+  // little horn / hair tuft on top (spear variant has a mohawk)
+  if (isSpear) {
+    head.add(part(UNIT_CONE, toon('#5a3a1e'), [0, 0.36, -0.06], [0.20, 0.22, 0.16]));
+    head.add(part(UNIT_BOX, toon('#5a3a1e'), [0, 0.22, -0.08], [0.10, 0.14, 0.22]));
+  } else {
+    head.add(part(UNIT_BOX, steelD, [0, 0.32, -0.04], [0.48, 0.06, 0.38])); // brow band
+    head.add(part(UNIT_SPHERE, steelD, [0, 0.34, -0.04], [0.12, 0.08, 0.12]));
+  }
+
+  let weapon: THREE.Group | undefined;
+  let shield: THREE.Group | undefined;
+  if (isSpear) {
+    // throwing spear — long wooden shaft with crude iron tip and a red cloth wrap, LA-style
+    weapon = new THREE.Group();
+    // shaft longer than knight javelin
+    weapon.add(part(UNIT_CYL, wood, [0, 0.30, 0], [0.055, 1.25, 0.055]));
+    weapon.add(part(UNIT_CONE, steel, [0, 1.02, 0], [0.12, 0.24, 0.06]));
+    weapon.add(part(UNIT_BOX, toon('#c82828'), [0, 0.45, 0], [0.07, 0.18, 0.07])); // cloth
+    weapon.add(part(UNIT_BOX, woodL, [0, -0.28, 0], [0.04, 0.10, 0.06])); // butt
+    handR.add(weapon);
+  } else {
+    // sword & shield — LA sword moblin: big round wooden shield, crude cleaver-like sword
+    // cleaver sword: wider, slightly curved feel via boxes
+    weapon = new THREE.Group();
+    weapon.add(part(UNIT_BOX, steel, [0, -0.08 - 0.25, 0], [0.12, 0.50, 0.035])); // broad blade
+    weapon.add(part(UNIT_BOX, steelD, [0, -0.02, 0.015], [0.02, 0.45, 0.02])); // fuller line
+    weapon.add(part(UNIT_BOX, wood, [0, -0.04, 0], [0.24, 0.06, 0.08])); // guard
+    weapon.add(part(UNIT_CYL, wood, [0, 0.06, 0], [0.06, 0.14, 0.06])); // grip
+    weapon.add(part(UNIT_SPHERE, woodD, [0, 0.14, 0], [0.09, 0.09, 0.09])); // pommel
+    handR.add(weapon);
+
+    // large shield — Switch remake style: huge, covers torso, wooden with metal rim and pig snout boss
+    shield = new THREE.Group();
+    const disc = part(UNIT_CYL, wood, [0, 0, 0], [0.62, 0.06, 0.62]);
+    disc.rotation.x = Math.PI / 2;
+    shield.add(disc);
+    const rim = part(UNIT_CYL, woodD, [0, 0, -0.01], [0.66, 0.04, 0.66]);
+    rim.rotation.x = Math.PI / 2;
+    shield.add(rim);
+    // iron boss in centre
+    shield.add(part(UNIT_SPHERE, steelD, [0, 0, 0.06], [0.16, 0.16, 0.08]));
+    shield.add(part(UNIT_SPHERE, steel, [0, 0, 0.07], [0.10, 0.10, 0.06]));
+    // wooden cross reinforcement
+    shield.add(part(UNIT_BOX, woodD, [0, 0, 0.04], [0.58, 0.06, 0.02]));
+    shield.add(part(UNIT_BOX, woodD, [0, 0, 0.04], [0.06, 0.58, 0.02]));
+    shield.position.set(0, -0.02, 0.16);
+    handL.add(shield);
+  }
+
+  // moblins are bulkier / taller than knights — Koholint's brutes
+  root.scale.set(CHAR_SCALE.x * 1.09, CHAR_SCALE.y * 1.06, CHAR_SCALE.z * 1.08);
+  return { root, body, head, armR, armL, handR, handL, legR, legL, weapon, shield, materials: collectMaterials(root) };
+}
 
 export function buildSoldier(kind: EnemyKind): Humanoid {
+  if (kind === 'moblin' || kind === 'moblin_spear') return buildMoblin(kind);
   const m = {
     steel: toon('#a3adc0'), steelD: toon('#6b7382'), tunic: toon(SOLDIER_COLORS[kind]), visor: toon('#15151c'),
     eye: toon('#ffe066'), boots: toon('#4a3020'), wood: toon('#8a5a2b'), gold: toon('#d9b24a'), skin: toon('#8b8f9b'),
@@ -1257,5 +1397,19 @@ export function buildJavelinProjectile(): THREE.Group {
   const tip = part(UNIT_CONE, toon('#dfe6f4'), [0, 0, 0.5], [0.1, 0.16, 0.05]);
   tip.rotation.x = Math.PI / 2;
   g.add(tip);
+  return g;
+}
+
+/** Moblin throwing spear — thicker, cruder than the knight javelin, with a red cloth wrap and a broader iron head. */
+export function buildMoblinSpearProjectile(): THREE.Group {
+  const g = new THREE.Group();
+  const shaft = part(UNIT_CYL, toon('#8a5a2b'), [0, 0, 0], [0.06, 1.1, 0.06]);
+  shaft.rotation.x = Math.PI / 2;
+  g.add(shaft);
+  const tip = part(UNIT_CONE, toon('#d0d8e8'), [0, 0, 0.60], [0.13, 0.26, 0.06]);
+  tip.rotation.x = Math.PI / 2;
+  g.add(tip);
+  g.add(part(UNIT_BOX, toon('#c82828'), [0, 0, 0.10], [0.07, 0.07, 0.16]));
+  g.add(part(UNIT_BOX, toon('#c48b4f'), [0, 0, -0.48], [0.05, 0.05, 0.12]));
   return g;
 }

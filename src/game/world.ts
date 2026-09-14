@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { getGradientMap as getGradientMapRef } from './models';
 import { MAP_W, MAP_H, TEX_PX, Tile, RNG, hash2, LEVEL_H, MAX_WALK_SLOPE, WATER_DEPTH, BRIDGE_H } from './constants';
 
-export type EnemyKind = 'sword' | 'spear' | 'javelin' | 'archer';
+export type EnemyKind = 'sword' | 'spear' | 'javelin' | 'archer' | 'moblin' | 'moblin_spear';
 export interface TreeSpec { x: number; z: number; scale: number; y?: number; kind?: 'oak' | 'pine' | 'autumn' | 'birch' | 'blossom' }
 export interface TileObj { tx: number; tz: number; v?: number }
 export interface HouseSpec { x: number; z: number; w: number; d: number; roof?: string; wall?: string; door?: 'S' | 'E' | 'W'; sign?: 'shop' | 'inn' | 'none' }
@@ -786,6 +786,12 @@ export class World {
       post('Watchtower Guard', [190, 8], 7, 5, 'cluster', ['archer', 'spear', 'archer', 'sword'], 'northRoad'),
       post("Knights' Camp Garrison", [155, 106], 5.5, 5, 'cluster', ['sword', 'spear', 'sword', 'javelin'], 'crownRoad'),
       post('Crown Hollow Guard', [198, 92], 6, 6, 'cluster', ['archer', 'sword', 'archer', 'spear'], 'crownRoad'),
+      // Moblins — Link's Awakening inspired: pig-like raiders with sword & shield or throwing spear.
+      // They haunt the Mysterious Woods and the highland hollows the knights avoid.
+      post('Mysterious Woods Pack', [68, 32], 12, 8, 'spread', ['moblin', 'moblin_spear', 'moblin', 'moblin_spear', 'moblin'], 'northRoad'),
+      post('Moblin Cave', [172, 28], 10, 7, 'spread', ['moblin_spear', 'moblin', 'moblin_spear', 'moblin_spear'], 'northRoad'),
+      post('Moor Moblin Outpost', [188, 72], 10, 7, 'spread', ['moblin', 'moblin_spear', 'moblin', 'archer'], 'crownRoad'),
+      post('Marsh Moblin Den', [150, 156], 11, 8, 'spread', ['moblin_spear', 'moblin', 'moblin', 'javelin'], 'drownedRoad'),
     ];
   }
 

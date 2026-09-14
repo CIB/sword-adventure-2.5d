@@ -329,7 +329,7 @@ export class Game implements GameCtx {
   // ------------------------------------------------------------------ GameCtx
   rand() { return this.rng.next(); }
 
-  spawnProjectile(kind: 'arrow' | 'javelin', x: number, z: number, dx: number, dz: number, dmg: number) {
+  spawnProjectile(kind: 'arrow' | 'javelin' | 'moblin_spear', x: number, z: number, dx: number, dz: number, dmg: number) {
     this.projectiles.push(new Projectile(this, kind, x, z, { x: dx, z: dz }, dmg));
   }
 

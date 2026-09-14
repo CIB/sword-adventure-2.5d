@@ -6,7 +6,7 @@ import { ATTACK_KEYS, SHIELD_KEYS } from './input';
 import type { EnemyKind, Vec2, World, NpcSpec } from './world';
 import type { Post, WorldSoldier } from './worldstate';
 import {
-  buildArrow, buildHeart, buildHeroine, buildJavelinProjectile, buildRupee, buildSoldier, part,
+  buildArrow, buildHeart, buildHeroine, buildJavelinProjectile, buildMoblinSpearProjectile, buildRupee, buildSoldier, part,
   UNIT_BOX, UNIT_OCTA, UNIT_SPHERE, type Humanoid, buildVillager, buildDog, VILLAGER_LOOKS,
 } from './models';
 
@@ -17,7 +17,7 @@ export interface GameCtx {
   player: Player;
   enemies: Enemy[];
   rand(): number;
-  spawnProjectile(kind: 'arrow' | 'javelin', x: number, z: number, dx: number, dz: number, dmg: number): void;
+  spawnProjectile(kind: 'arrow' | 'javelin' | 'moblin_spear', x: number, z: number, dx: number, dz: number, dmg: number): void;
   spawnEffect(e: Effect): void;
   tryHitPlayer(dmg: number, sx: number, sz: number, opts?: { projectile?: boolean }): 'hit' | 'blocked' | 'immune';
   /** true while a dialogue box is open (player + NPCs freeze) */
@@ -342,6 +342,9 @@ const STATS: Record<EnemyKind, Stats> = {
   spear: { hp: 4, speed: 1.5, chase: 2.5, dmg: 2, sight: 7, range: 1.8, attackDur: 0.24, recover: 0.45, cooldown: 1.1 },
   javelin: { hp: 2, speed: 2.1, chase: 2.5, dmg: 1, sight: 8, range: 6.5, attackDur: 0.16, recover: 0.5, cooldown: 2.2 },
   archer: { hp: 2, speed: 2.0, chase: 2.2, dmg: 1, sight: 9, range: 8.5, attackDur: 0.16, recover: 0.4, cooldown: 1.8 },
+  // Moblins — LA-inspired: sword+shield bruiser with a frontal block + charge, and a spear-thrower
+  moblin: { hp: 4, speed: 1.7, chase: 2.7, dmg: 2, sight: 6.8, range: 1.15, attackDur: 0.24, recover: 0.5, cooldown: 1.2 },
+  moblin_spear: { hp: 3, speed: 2.0, chase: 2.6, dmg: 1, sight: 8.5, range: 7.0, attackDur: 0.20, recover: 0.6, cooldown: 2.0 },
 };
 
 /** how far a guard on a tight post (bridge, camp) may drift from its own spot, in tiles */
@@ -373,6 +376,9 @@ export class Enemy {
   /** how long to hold a freshly picked patrol heading after bumping into something */
   blockT = 0;
   fired = false;
+  // Moblin shield guard (sword variant) — LA Switch remake: big shield blocks while raised, breaks after 3 hits
+  moblinGuardHits = 0;
+  moblinGuardBroken = 0;
   readonly st: Stats;
   readonly HW = 0.3;
   readonly HH = 0.25;
@@ -400,7 +406,8 @@ export class Enemy {
   /** point to march to (set by the Game every frame while this soldier walks its route in) */
   follow: Vec2 | null = null;
 
-  get melee() { return this.kind === 'sword' || this.kind === 'spear'; }
+  get melee() { return this.kind === 'sword' || this.kind === 'spear' || this.kind === 'moblin'; }
+  get isMoblin() { return this.kind === 'moblin' || this.kind === 'moblin_spear'; }
 
   /**
    * The tile this guard stands watch on, taken from its own world record: a replacement inherits
@@ -512,6 +519,16 @@ export class Enemy {
       return;
     }
 
+    // Moblin Shield moblin dazed after guard breaks — stands vulnerable, shield down
+    if (this.kind === 'moblin' && this.moblinGuardBroken > 0) {
+      this.moblinGuardBroken = Math.max(0, this.moblinGuardBroken - dt);
+      if (this.moblinGuardBroken <= 0) this.moblinGuardHits = 0;
+      this.animate(false);
+      this.sync();
+      // can still be alerted / start chasing again once stun ends, but while dazed hold still
+      if (this.moblinGuardBroken > 0) return;
+    }
+
     const dx = p.pos.x - this.pos.x, dz = p.pos.z - this.pos.z;
     const dist = Math.hypot(dx, dz) || 0.001;
     let moving = false;
@@ -595,7 +612,11 @@ export class Enemy {
       case 'chase': {
         if (p.dead || dist > 11) { this.state = 'patrol'; this.stateT = 1; break; }
         if (dist <= st.range && this.cooldown <= 0) {
-          this.state = 'windup'; this.stateT = this.kind === 'sword' ? 0.22 : 0.3; this.faceToward(dx, dz);
+          this.state = 'windup';
+          if (this.kind === 'sword') this.stateT = 0.22;
+          else if (this.kind === 'moblin') this.stateT = 0.32; // pig lifts cleaver overhead like Switch remake wind-up
+          else this.stateT = 0.3;
+          this.faceToward(dx, dz);
           break;
         }
         moving = this.walk(dx, dz, st.chase, dt);
@@ -603,7 +624,7 @@ export class Enemy {
       }
       case 'ranged': {
         if (p.dead || dist > 13) { this.state = 'patrol'; this.stateT = 1; break; }
-        if (this.kind === 'javelin') {
+        if (this.kind === 'javelin' || this.kind === 'moblin_spear') {
           if (dist < 2.8) moving = this.walk(-dx, -dz, st.chase, dt);
           else if (dist > 5.5) moving = this.walk(dx, dz, st.chase, dt);
           else {
@@ -611,7 +632,11 @@ export class Enemy {
             if (!moving) this.strafeDir *= -1;
             this.faceToward(dx, dz);
           }
-          if (this.cooldown <= 0 && dist < st.range && dist > 1.5) { this.state = 'windup'; this.stateT = 0.4; this.faceToward(dx, dz); }
+          if (this.cooldown <= 0 && dist < st.range && dist > 1.5) {
+            this.state = 'windup';
+            this.stateT = this.kind === 'moblin_spear' ? 0.45 : 0.4; // LA spear moblin overhead wind-up
+            this.faceToward(dx, dz);
+          }
         } else {
           const ax = Math.abs(dx), az = Math.abs(dz);
           const aligned = ax < 0.45 || az < 0.45;
@@ -631,7 +656,8 @@ export class Enemy {
         if (this.kind !== 'archer') this.faceToward(dx, dz);
         if (this.stateT <= 0) {
           this.state = 'attack'; this.stateT = 0; this.attackHit = false; this.fired = false; this.yawPrev = this.yawCur = -1.7;
-          if (this.kind === 'sword') g.audio.swing(); else if (this.kind === 'spear') g.audio.throwJav();
+          if (this.kind === 'sword' || this.kind === 'moblin') g.audio.swing();
+          else if (this.kind === 'spear' || this.kind === 'moblin_spear') g.audio.throwJav();
         }
         break;
       }
@@ -663,6 +689,16 @@ export class Enemy {
         this.attackHit = true;
         if (g.tryHitPlayer(st.dmg, this.pos.x, this.pos.z) === 'blocked') this.recoil();
       }
+    } else if (this.kind === 'moblin') {
+      // LA sword moblin: broad cleaver sweep with a short charge step forward (Switch remake)
+      if (this.stateT < 0.14) g.world.moveBox(this.pos, fv[0] * 2.8 * dt, fv[1] * 2.8 * dt, this.HW, this.HH);
+      const pr = Math.min(1, this.stateT / st.attackDur);
+      this.yawPrev = this.yawCur;
+      this.yawCur = lerp(-1.6, 1.25, easeOut(pr));
+      if (!this.attackHit && !p.dead && dist < 1.0 + 0.4 && inArc(angleTo(dx, dz), normAngle(fa + this.yawPrev), normAngle(fa + this.yawCur), 0.42)) {
+        this.attackHit = true;
+        if (g.tryHitPlayer(st.dmg, this.pos.x, this.pos.z) === 'blocked') this.recoil();
+      }
     } else if (this.kind === 'spear') {
       if (this.stateT < 0.12) g.world.moveBox(this.pos, fv[0] * 3 * dt, fv[1] * 3 * dt, this.HW, this.HH);
       if (!this.attackHit && !p.dead) {
@@ -680,6 +716,15 @@ export class Enemy {
         this.fired = true;
         const inv = 1 / dist;
         g.spawnProjectile('javelin', this.pos.x + dx * inv * 0.5, this.pos.z + dz * inv * 0.5, dx * inv, dz * inv, st.dmg);
+        g.audio.throwJav();
+        if (this.model.weapon) this.model.weapon.visible = false;
+      }
+    } else if (this.kind === 'moblin_spear') {
+      // LA spear moblin: single heavy throw, spear visible until release
+      if (!this.fired && this.stateT > 0.08) {
+        this.fired = true;
+        const inv = 1 / dist;
+        g.spawnProjectile('moblin_spear', this.pos.x + dx * inv * 0.5, this.pos.z + dz * inv * 0.5, dx * inv, dz * inv, st.dmg);
         g.audio.throwJav();
         if (this.model.weapon) this.model.weapon.visible = false;
       }
@@ -704,6 +749,32 @@ export class Enemy {
   /** returns true when the enemy died */
   hurt(dmg: number, sx: number, sz: number): boolean {
     if (!this.alive) return false;
+    // Moblin Shield Guard — frontal block while shield is up (LA Switch remake: big shield halts movement and absorbs hits, breaks after 3)
+    if (this.kind === 'moblin' && this.moblinGuardBroken <= 0) {
+      const shieldUp = this.state !== 'windup' && this.state !== 'attack' && this.state !== 'recover' && this.knockT <= 0;
+      if (shieldUp) {
+        const fv = FACING_VEC[this.facing];
+        let ax = sx - this.pos.x, az = sz - this.pos.z;
+        const alen = Math.hypot(ax, az) || 1; ax /= alen; az /= alen;
+        const dot = fv[0] * ax + fv[1] * az;
+        if (dot > 0.25) {
+          this.moblinGuardHits++;
+          this.game.spawnEffect(fxSpark(this.pos.x + fv[0] * 0.55, 0.85, this.pos.z + fv[1] * 0.55, 0.7).at(this.pos.x, this.pos.z));
+          this.flashT = 0.07;
+          setEmissive(this.model.materials, true);
+          // halt movement like the Switch moblins — block stops the pig dead
+          this.knockT = 0.09;
+          this.knock = { x: 0, z: 0 };
+          if (this.moblinGuardHits >= 3) {
+            this.moblinGuardBroken = 1.4;
+            this.game.spawnEffect(fxPuff(this.pos.x, this.pos.z).at(this.pos.x, this.pos.z));
+            this.state = 'recover';
+            this.stateT = 0.25;
+          }
+          return false;
+        }
+      }
+    }
     this.hp -= dmg;
     let dx = this.pos.x - sx, dz = this.pos.z - sz;
     const d = Math.hypot(dx, dz) || 1;
@@ -730,7 +801,64 @@ export class Enemy {
     m.legR.rotation.x = -swing * 0.7;
     m.body.position.y = moving ? Math.abs(Math.sin(this.animT)) * 0.03 : 0;
     const k = this.kind, s = this.state;
-    if (k === 'sword') {
+    if (k === 'moblin') {
+      // LA sword+shield brute — big shield blocks while patrolling/chasing, drops when dazed
+      if (this.moblinGuardBroken > 0) {
+        // dazed after shield break — wobbles, shield droops, sword hangs
+        m.armR.rotation.set(0.45 + Math.sin(this.animT * 6) * 0.15, 0.2, 0.2);
+        m.armL.rotation.set(0.5, 0.1, -0.35);
+        m.head.rotation.z = Math.sin(this.animT * 8) * 0.22;
+        m.head.rotation.x = 0.18;
+        m.body.rotation.set(0.18, Math.sin(this.animT * 5) * 0.12, 0);
+        if (m.shield) { m.shield.position.set(0, -0.08, 0.08); m.shield.rotation.set(0.5, 0, -0.3); }
+      } else if (s === 'windup') {
+        // Switch remake wind-up: pig reels back, cleaver overhead, shield braced forward (movement halts)
+        m.armR.rotation.set(-Math.PI / 2 - 0.65, -1.45, 0);
+        m.armL.rotation.set(-1.15, -0.45, 0.05);
+        if (m.shield) { m.shield.position.set(0, -0.02, 0.18); m.shield.rotation.set(1.0, 0.2, 0); }
+        m.body.rotation.set(-0.08, -0.32, 0);
+        m.head.rotation.set(0, 0.15, 0);
+      } else if (s === 'attack') {
+        m.armR.rotation.set(-Math.PI / 2 + 0.12, this.yawCur, 0);
+        m.armL.rotation.set(-0.9, -0.35, 0);
+        if (m.shield) { m.shield.position.set(0, -0.03, 0.15); m.shield.rotation.set(0.7, 0.25, 0); }
+        m.body.rotation.set(0.06, 0.15, 0);
+      } else if (s === 'recover') {
+        m.armR.rotation.set(-Math.PI / 2 + 0.4, 0.9, 0);
+        m.armL.rotation.set(-0.6, -0.2, -0.1);
+        if (m.shield) { m.shield.position.set(0, -0.05, 0.12); m.shield.rotation.set(0.3, 0, 0); }
+      } else {
+        // guard stance — shield held forward, cleaver ready at shoulder (LA: shield blocks while moving)
+        const bob = moving ? 0 : Math.sin(this.animT * 2) * 0.02;
+        m.armR.rotation.set(-swing * 0.25 + 0.55, -0.15, 0.1);
+        m.armL.rotation.set(-1.05 + bob, -0.40, 0.02);
+        if (m.shield) { m.shield.position.set(0, -0.02, 0.16); m.shield.rotation.set(0.95, 0.30, 0); }
+        m.body.rotation.set(0.04, 0, 0);
+        m.head.rotation.set(0, 0, 0);
+      }
+    } else if (k === 'moblin_spear') {
+      const w = m.weapon!;
+      if (s === 'windup') {
+        // LA spear throw: lifts spear high overhead with a visible hold
+        m.armR.rotation.set(2.55, 0, 0.25);
+        w.rotation.x = -0.9;
+        m.armL.rotation.set(-0.8, 0, 0.15);
+        m.body.rotation.set(-0.12, -0.15, 0);
+        m.head.rotation.set(-0.1, 0, 0);
+      } else if (s === 'attack' || s === 'recover') {
+        m.armR.rotation.set(-Math.PI / 2 + 0.35, 0, 0);
+        w.rotation.x = 0;
+        m.armL.rotation.set(swing * 0.25, 0, -0.1);
+        m.body.rotation.set(0.05, 0.1, 0);
+      } else {
+        // patrol/chase — spear carried low, trot
+        m.armR.rotation.set(-swing * 0.3 + 0.05, 0, 0.1);
+        w.rotation.x = 0;
+        m.armL.rotation.set(swing * 0.35, 0, -0.1);
+        m.body.rotation.set(0, 0, 0);
+        m.head.rotation.set(0, 0, 0);
+      }
+    } else if (k === 'sword') {
       if (s === 'windup') m.armR.rotation.set(-Math.PI / 2 - 0.5, -1.7, 0);
       else if (s === 'attack') m.armR.rotation.set(-Math.PI / 2 + 0.1, this.yawCur, 0);
       else if (s === 'recover') m.armR.rotation.set(-Math.PI / 2 + 0.4, 1.2, 0);
@@ -895,12 +1023,14 @@ export class Projectile {
   alive = true;
   life = 0;
   speed: number;
-  constructor(private game: GameCtx, public kind: 'arrow' | 'javelin', x: number, z: number, public dir: Vec2, public dmg: number) {
+  constructor(private game: GameCtx, public kind: 'arrow' | 'javelin' | 'moblin_spear', x: number, z: number, public dir: Vec2, public dmg: number) {
     this.pos = { x, z };
-    this.mesh = kind === 'arrow' ? buildArrow() : buildJavelinProjectile();
-    this.speed = kind === 'arrow' ? 9.5 : 6.5;
+    if (kind === 'arrow') this.mesh = buildArrow();
+    else if (kind === 'moblin_spear') this.mesh = buildMoblinSpearProjectile();
+    else this.mesh = buildJavelinProjectile();
+    this.speed = kind === 'arrow' ? 9.5 : kind === 'moblin_spear' ? 7.2 : 6.5;
     this.mesh.rotation.y = Math.atan2(dir.x, dir.z);
-    if (kind === 'javelin') this.mesh.rotation.x = -0.25;
+    if (kind === 'javelin' || kind === 'moblin_spear') this.mesh.rotation.x = -0.25;
     game.scene.add(this.mesh);
     this.sync();
   }
