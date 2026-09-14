@@ -405,8 +405,14 @@ export class WorldState {
       let spots = this.patchSpots(p, tightR);
       const count = (s: typeof spots) => s.roomyOff.length + s.plainOff.length + s.roomyRoad.length + s.plainRoad.length;
       if (count(spots) < spec.kinds.length && tightR < R) spots = this.patchSpots(p, R);
-      const pool = [...this.shuffle(spots.roomyOff), ...this.shuffle(spots.plainOff),
-        ...this.shuffle(spots.roomyRoad), ...this.shuffle(spots.plainRoad)];
+      // A roaming post guards the land, so it keeps off the roads; a knot holds a bridge or a
+      // plaza, so for those the deck itself is the ground worth standing on — it fills the deck
+      // tiles first, across the full width of the bridge, before spilling onto the ground beside it.
+      const pool = p.tight
+        ? [...this.shuffle(spots.roomyRoad), ...this.shuffle(spots.plainRoad),
+          ...this.shuffle(spots.roomyOff), ...this.shuffle(spots.plainOff)]
+        : [...this.shuffle(spots.roomyOff), ...this.shuffle(spots.plainOff),
+          ...this.shuffle(spots.roomyRoad), ...this.shuffle(spots.plainRoad)];
       for (let i = 0; i < spec.kinds.length; i++) {
         const spot = pool[i] ?? (() => { const f = this.world.nearestFree(p.cx, p.cz); return { x: f.x, z: f.z }; })();
         p.homes.push(spot);

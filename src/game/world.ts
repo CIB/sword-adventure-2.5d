@@ -741,6 +741,24 @@ export class World {
     const post = (name: string, at: [number, number], rx: number, rz: number, style: PostStyle,
       kinds: EnemyKind[], entry: string | null, reinforce?: number): PostSpec =>
       ({ name, at, rx, rz, style, kinds, entry, reinforce });
+    // A bridge guard doesn't hold the middle of the deck: it holds one exit — the far one, away
+    // from the village, so the knot stands between home and whatever comes over the river. The
+    // patch is worked out from the deck itself, so it always matches the bridge it guards.
+    const bridgePost = (name: string, at: [number, number], kinds: EnemyKind[], entry: string | null,
+      reinforce?: number): PostSpec => {
+      const b = this.bridges.find((b) => at[0] >= b.x0 && at[0] <= b.x1 && at[1] >= b.z0 && at[1] <= b.z1);
+      if (!b) throw new Error(`no bridge at ${at[0]},${at[1]} for post '${name}'`);
+      const vx = (this.village.x0 + this.village.x1) / 2, vz = (this.village.z0 + this.village.z1) / 2;
+      const alongX = b.x1 - b.x0 >= b.z1 - b.z0; // which way the deck runs
+      const farX = Math.abs(b.x1 - vx) >= Math.abs(b.x0 - vx) ? b.x1 : b.x0;
+      const farZ = Math.abs(b.z1 - vz) >= Math.abs(b.z0 - vz) ? b.z1 : b.z0;
+      return {
+        name,
+        at: alongX ? [farX + 0.5, (b.z0 + b.z1 + 1) / 2] : [(b.x0 + b.x1 + 1) / 2, farZ + 0.5],
+        rx: alongX ? 1.5 : 2, rz: alongX ? 2 : 1.5,
+        style: 'cluster', kinds, entry, reinforce,
+      };
+    };
     this.posts = [
       // the home meadow: the first, gentlest patch (and the one the player clears first)
       post('Meadow Watch', [44, 38], 14, 10, 'spread', ['sword', 'sword', 'javelin', 'spear', 'sword'], 'westRoad', 40),
@@ -748,12 +766,12 @@ export class World {
       post('Orchard Watch', [16, 98], 8, 7, 'spread', ['sword', 'archer'], 'westRoad'),
       post('Mirror Lake Watch', [58, 116], 10, 8, 'spread', ['sword', 'spear', 'archer', 'sword'], 'westRoad'),
       post('Millbrook Watch', [86, 142], 14, 9, 'spread', ['sword', 'spear', 'sword', 'javelin', 'archer'], 'westRoad'),
-      // the bridges: a thick knot of soldiers holding the deck — the patch is the deck itself, so
-      // the cluster stands on the bridge rather than on the road up to it
-      post('Brook Bridge Guard', [61.5, 114], 2, 3.5, 'cluster', ['sword', 'spear', 'sword'], 'westRoad'),
-      post('North Bridge Guard', [116, 20.5], 4.5, 2, 'cluster', ['sword', 'spear', 'spear', 'archer', 'sword'], 'northRoad'),
-      post('Great Bridge Guard', [124, 44.5], 4.5, 2, 'cluster', ['sword', 'sword', 'spear', 'archer', 'spear'], 'crownRoad'),
-      post('South Bridge Guard', [135.5, 125.5], 5.5, 2, 'cluster', ['sword', 'spear', 'archer', 'sword'], 'drownedRoad'),
+      // the bridges: a thick knot of soldiers holding one exit of the deck — the far one, away from
+      // the village, so they stand between home and whatever comes over the water
+      bridgePost('Brook Bridge Guard', [61, 113], ['sword', 'spear', 'sword'], 'westRoad'),
+      bridgePost('North Bridge Guard', [116, 20], ['sword', 'spear', 'spear', 'archer', 'sword'], 'northRoad'),
+      bridgePost('Great Bridge Guard', [122, 44], ['sword', 'sword', 'spear', 'archer', 'spear'], 'crownRoad'),
+      bridgePost('South Bridge Guard', [134, 125], ['sword', 'spear', 'archer', 'sword'], 'drownedRoad'),
       // the woods and the wilds: wide, loose patches
       post('Willowmere Patrol', [86, 24], 21, 13, 'spread', ['sword', 'spear', 'sword', 'archer', 'sword', 'javelin', 'spear', 'sword'], 'northRoad'),
       post('Mesa Watch', [87, 61], 9, 6, 'spread', ['sword', 'spear', 'archer', 'sword'], 'crownRoad'),

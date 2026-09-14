@@ -198,7 +198,7 @@ const offCentre = (p: { cx: number; cz: number; rx: number; rz: number }, x: num
   console.log(`INFO spread posts: ${offRoad}/${total} guard spots off the roads`);
   check('spread posts guard the land, not the roads', total > 0 && offRoad / total > 0.8);
 }
-// the bridges are held in force: a tight knot, close to the deck
+// the bridges are held in force: a tight knot on the deck, at the exit away from the village
 {
   const bridges = ws.posts.filter((p) => p.name.includes('Bridge'));
   const spreadOf = (p: (typeof ws.posts)[number]) =>
@@ -208,6 +208,26 @@ const offCentre = (p: { cx: number; cz: number; rx: number; rz: number }, x: num
   console.log(`INFO bridge knots reach ${tight.toFixed(1)} tiles out; spread posts ${loose.toFixed(1)}`);
   check('bridge guards hold a thick knot', bridges.length >= 3 && tight < 7);
   check('bridge knots are tighter than a spread patch', tight * 2 < loose);
+  // one exit of the bridge — the far one, away from the village — not the middle of the deck
+  const vx = (v.x0 + v.x1) / 2, vz = (v.z0 + v.z1) / 2;
+  const decks = bridges.map((p) => ({
+    p,
+    b: world.bridges.find((b) => p.cx >= b.x0 - 3 && p.cx <= b.x1 + 3 && p.cz >= b.z0 - 3 && p.cz <= b.z1 + 3),
+  }));
+  check('every bridge post is anchored to its bridge', decks.every((d) => d.b));
+  const far = decks.filter((d) => d.b).map((d) => {
+    const b = d.b!, midX = (b.x0 + b.x1 + 1) / 2, midZ = (b.z0 + b.z1 + 1) / 2;
+    return Math.hypot(d.p.cx - vx, d.p.cz - vz) > Math.hypot(midX - vx, midZ - vz);
+  });
+  check('bridge guards hold the exit away from the village', far.length > 0 && far.every(Boolean),
+    `${far.filter(Boolean).length}/${far.length}`);
+  const onDeck = decks.filter((d) => d.b).map((d) => {
+    const b = d.b!;
+    return d.p.homes.filter((h) => Math.floor(h.x) >= b.x0 && Math.floor(h.x) <= b.x1
+      && Math.floor(h.z) >= b.z0 && Math.floor(h.z) <= b.z1).length;
+  });
+  console.log(`INFO bridge knots stand on their decks: ${onDeck.join('/')} guards`);
+  check('bridge knots stand on the deck they hold', onDeck.every((n) => n >= 2), onDeck.join('/'));
 }
 // reinforcements: every post that recruits has a road route in from its map-edge entry
 {

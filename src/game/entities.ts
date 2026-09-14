@@ -525,7 +525,7 @@ export class Enemy {
           // a replacement marching in from off the map: walk the road to its post
           const fx = this.follow.x - this.pos.x, fz = this.follow.z - this.pos.z;
           moving = this.walkSlide(fx, fz, Math.min(st.chase, 1.6), dt);
-        } else if (post && this.strayed() > 0.92 && !this.atSpot()) {
+        } else if (post && this.strayed() > (tight ? 0.6 : 0.92) && !this.atSpot()) {
           // strayed towards the edge of its ground (usually after a chase): walk back to the spot it guards,
           // following around whatever is in the way instead of grinding against it
           const spot = this.spot;
@@ -551,17 +551,18 @@ export class Enemy {
         } else {
           // on guard: wander its own patch at random, standing about now and then
           const out = post ? this.strayed() : 0;
-          if (out > 0.7 && this.blockT <= 0) {
+          if (out > (tight ? 0.4 : 0.7) && this.blockT <= 0) {
             // walking out towards the edge of its ground: turn back in now rather than at the next
             // re-pick, which can be seconds away and several tiles further out. A knot guard turns
-            // back to the tile it holds; one on a wide patch turns back to the middle of it.
+            // back to the tile it holds — and sooner, since it has barely any room to drift;
+            // one on a wide patch turns back to the middle of it.
             const own = this.spot;
             const ax = tight && own ? own.x : post!.cx, az = tight && own ? own.z : post!.cz;
             const f = facingFrom(ax - this.pos.x, az - this.pos.z);
             const v = FACING_VEC[f];
             if (!this.blocked(v[0], v[1]) && this.dir.x * v[0] + this.dir.z * v[1] < 0.5) {
               this.dir = { x: v[0], z: v[1] };
-              this.blockT = 0.7 + g.rand() * 0.7;
+              this.blockT = tight ? 0.35 + g.rand() * 0.35 : 0.7 + g.rand() * 0.7;
             }
           }
           moving = this.walkSlide(this.dir.x, this.dir.z, st.speed * (tight ? 0.45 : 0.8), dt);
