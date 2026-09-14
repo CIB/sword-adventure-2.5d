@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { getGradientMap as getGradientMapRef } from './models';
 import { MAP_W, MAP_H, TEX_PX, Tile, RNG, hash2, LEVEL_H, MAX_WALK_SLOPE, WATER_DEPTH, BRIDGE_H } from './constants';
 
-export type EnemyKind = 'sword' | 'spear' | 'javelin' | 'archer';
+export type EnemyKind = 'sword' | 'spear' | 'javelin' | 'archer' | 'moblin' | 'moblin_spear';
 export interface TreeSpec { x: number; z: number; scale: number; y?: number; kind?: 'oak' | 'pine' | 'autumn' | 'birch' | 'blossom' }
 export interface TileObj { tx: number; tz: number; v?: number }
 export interface HouseSpec { x: number; z: number; w: number; d: number; roof?: string; wall?: string; door?: 'S' | 'E' | 'W'; sign?: 'shop' | 'inn' | 'none' }
@@ -786,6 +786,18 @@ export class World {
       post('Watchtower Guard', [190, 8], 7, 5, 'cluster', ['archer', 'spear', 'archer', 'sword'], 'northRoad'),
       post("Knights' Camp Garrison", [155, 106], 5.5, 5, 'cluster', ['sword', 'spear', 'sword', 'javelin'], 'crownRoad'),
       post('Crown Hollow Guard', [198, 92], 6, 6, 'cluster', ['archer', 'sword', 'archer', 'spear'], 'crownRoad'),
+      // Moblins — Link's Awakening inspired: blue pig-kin raiders (classic Koholint blue #4a7fd6).
+      // Own territory is mostly the east side — highland, moor, marsh — where the knights thin out,
+      // with sporadic packs haunting forests on both sides of the river (Willowmere, heron woods,
+      // riverside grove, southern grove), just as LA scatters them through the Mysterious Woods
+      // while clustering them in the eastern hollows.
+      post('Mysterious Woods Pack', [68, 32], 12, 8, 'spread', ['moblin', 'moblin_spear', 'moblin', 'moblin_spear', 'moblin'], 'northRoad'),
+      post('Heron Woods Moblin Pack', [30, 52], 10, 7, 'spread', ['moblin', 'moblin_spear', 'moblin'], 'westRoad'),
+      post('Southern Grove Moblin Camp', [36, 152], 11, 8, 'spread', ['moblin_spear', 'moblin', 'moblin_spear', 'moblin'], 'westRoad'),
+      post('Moblin Cave', [172, 28], 10, 7, 'spread', ['moblin_spear', 'moblin', 'moblin_spear', 'moblin_spear'], 'northRoad'),
+      post('Highland Moblin Roost', [188, 16], 8, 6, 'spread', ['moblin_spear', 'moblin', 'moblin_spear', 'archer'], 'northRoad'),
+      post('Moor Moblin Outpost', [188, 72], 10, 7, 'spread', ['moblin', 'moblin_spear', 'moblin', 'archer'], 'crownRoad'),
+      post('Marsh Moblin Den', [150, 156], 11, 8, 'spread', ['moblin_spear', 'moblin', 'moblin', 'javelin'], 'drownedRoad'),
     ];
   }
 
