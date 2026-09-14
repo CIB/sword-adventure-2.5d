@@ -166,6 +166,15 @@ export class AudioEngine {
   talk() { const t = this.ctx?.currentTime ?? 0; this.tone('square', 880, 0.05, 0.08, { when: t }); this.tone('square', 1320, 0.07, 0.08, { when: t + 0.05 }); }
   blip() { this.tone('square', 1500 + Math.random() * 300, 0.03, 0.035); }
   lowHp() { this.tone('square', 1046, 0.06, 0.07); }
+  // ---- the farm
+  /** the hoe biting into soil: a dull thud with a little grit */
+  hoe() { this.tone('triangle', 140, 0.1, 0.16, { f1: 60 }); this.noise(0.09, 0.14, 'lowpass', 900, { f1: 300 }); }
+  /** a cast of seed pattering onto the earth */
+  sow() { const t = this.ctx?.currentTime ?? 0; for (let i = 0; i < 5; i++) this.noise(0.025, 0.07, 'bandpass', 2600 + i * 350, { q: 3, when: t + 0.12 + i * 0.045 + Math.random() * 0.02 }); }
+  /** water pouring from the can for `dur` seconds */
+  water(dur: number) { this.noise(dur, 0.1, 'bandpass', 1400, { f1: 900, q: 0.6, attack: 0.08 }); this.noise(dur * 0.8, 0.05, 'highpass', 3200, { attack: 0.1 }); }
+  /** a root tearing out of the ground, then a happy little pop */
+  harvest() { const t = this.ctx?.currentTime ?? 0; this.noise(0.12, 0.16, 'lowpass', 700, { f1: 250 }); this.tone('square', 520, 0.06, 0.08, { f1: 1040, when: t + 0.1 }); }
   start() { const t = this.ctx?.currentTime ?? 0; [523, 659, 784, 1047].forEach((f, i) => this.tone('square', f, 0.12, 0.12, { when: t + i * 0.1 })); this.tone('square', 1047, 0.4, 0.12, { when: t + 0.4 }); this.tone('triangle', 523, 0.5, 0.15, { when: t + 0.4 }); }
   gameOver() { const t = this.ctx?.currentTime ?? 0; [392, 349, 330, 262].forEach((f, i) => this.tone('sawtooth', f, 0.32, 0.14, { when: t + i * 0.3, lp: 900 })); }
 

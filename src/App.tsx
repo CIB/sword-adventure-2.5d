@@ -149,6 +149,7 @@ export default function App() {
     const input = new Input();
     const game = new Game(glRef.current, hudRef.current, audio, input);
     gameRef.current = game;
+    if (import.meta.env.DEV) (window as unknown as { __game?: Game }).__game = game; // dev console / screenshot tooling
     game.onPhase = (p) => {
       setPhase(p);
       if (p === 'gameover') setStats({ kills: game.player.kills, rupees: game.player.rupees });
