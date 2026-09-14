@@ -189,11 +189,12 @@ export class Game implements GameCtx {
    *
    * `hudW/hudH` size the HUD separately: when the app magnifies the world with an integer CSS upscale (`zoom`), the
    * world renders below the HUD's resolution, and the HUD's 320x240-derived layout can't shrink to match.
+   * `isThor` marks the AYN Thor / very wide layout: larger HUD, frametime in the top row, bigger dialogs.
    */
-  resize(w: number, h: number, hudW = w, hudH = h) {
+  resize(w: number, h: number, hudW = w, hudH = h, isThor = false) {
     w = Math.max(1, Math.round(w));
     h = Math.max(1, Math.round(h));
-    this.hud.resize(hudW, hudH); // before the early-return: the HUD size is independent of the world's
+    this.hud.resize(hudW, hudH, isThor); // before the early-return: the HUD size is independent of the world's
     if (w === this.viewW && h === this.viewH) return;
     this.viewW = w;
     this.viewH = h;

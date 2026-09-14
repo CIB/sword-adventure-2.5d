@@ -1,4 +1,4 @@
-import { VIEW_W, VIEW_H, MAX_HP } from './constants';
+import { VIEW_W, VIEW_H, MAX_HP, FT_COLS_THOR } from './constants';
 
 const FONT: Record<string, string[]> = {
   '0': ['111', '101', '101', '101', '111'], '1': ['010', '110', '010', '010', '111'], '2': ['111', '001', '111', '100', '111'],
@@ -42,19 +42,29 @@ export function drawText(g: CanvasRenderingContext2D, str: string, x: number, y:
 }
 
 /**
- * Frametime graph — a transparent strip in its own row just below the HUD's top row (charge meter, item
- * boxes, counters, life). It deliberately does NOT share the top row: that row's free middle vanishes on
- * narrow HUDs (the integer viewport scale collapses the HUD to ~278px wide on 4:3-ish desktop windows, where
- * the kill counter and the life hearts nearly touch), so a graph squeezed into it would disappear exactly
- * when the layout gets tight. Own row = always room. Nothing is drawn behind the bars (no panel), so the
- * game shows straight through.
+ * Frametime graph — two layouts:
+ * - Normal (narrow HUD): transparent strip in its own row just below the HUD's top row. It deliberately does NOT
+ *   share the top row because that row's free middle vanishes on narrow HUDs (the integer viewport scale collapses
+ *   the HUD to ~278px wide on 4:3-ish desktop windows, where the kill counter and the life hearts nearly touch),
+ *   so a graph squeezed into it would disappear exactly when the layout gets tight. Own row = always room.
+ * - Thor / wide HUD (AYN Thor): the HUD is wide enough that there's space between the left counters and the
+ *   right life hearts. The graph lives in the top row there, shorter (FT_COLS_THOR, ~96 cols), so it doesn't need
+ *   its own row below. Nothing is drawn behind the bars (no panel), so the game shows straight through.
  */
-const FT_X0 = 8;           // left edge, in line with the charge meter above
-/** Plot columns = seconds of history at a fixed 1px per frame; also the cap on the ring buffer's use. */
+const FT_X0 = 8;           // left edge, in line with the charge meter above (normal layout)
+ /** Plot columns = seconds of history at a fixed 1px per frame; also the cap on the ring buffer's use. */
 const FT_COLS = 256;
-const FT_TEXT_Y = 48;      // ms readout row (the top row ends at y 46)
-const FT_PLOT_Y = 54;      // first plot row
-const FT_PLOT_H = 19;      // plot rows; the bottom row (72) + baseline stay clear of the toast (y ≥ 74)
+const FT_TEXT_Y = 48;      // ms readout row (the top row ends at y 46) — normal layout
+const FT_PLOT_Y = 54;      // first plot row — normal layout
+const FT_PLOT_H = 19;      // plot rows; the bottom row (72) + baseline stay clear of the toast (y ≥ 74) — normal
+
+// Thor / wide layout — in the top row between counters and life
+const FT_THOR_LEFT = 184;   // just after the kill counter (helmet at 140 + 3 digits)
+const FT_THOR_RIGHT_MARGIN = 90; // keep clear of life hearts (W-88)
+const FT_THOR_TEXT_Y = 8;
+const FT_THOR_PLOT_Y = 16;
+const FT_THOR_PLOT_H = 16;
+
 /** Full-scale frametime in ms: a 50ms (20fps) frame pegs the top of the plot, longer ones clamp to it. */
 const FT_MAX_MS = 50;
 /** Dotted reference lines: 60fps and 30fps. */
@@ -98,7 +108,9 @@ export class Hud {
   /** internal resolution in game pixels — updated by resize() so the layout follows the viewport */
   private w = VIEW_W;
   private h = VIEW_H;
-  /** frametime history in ms (ring buffer), fed by pushFrameTime() */
+  /** true on AYN Thor / very wide HUD — larger HUD via HUD_SCALE_THOR, frametime in top row, shorter */
+  private thorMode = false;
+  /** frametime history in ms (ring buffer), fed by pushFrameTime() — always FT_COLS capacity (256) */
   private ftBuf = new Float32Array(FT_COLS);
   private ftHead = 0;  // slot the next sample goes into
   private ftCount = 0; // samples recorded, saturating at FT_COLS
@@ -110,8 +122,10 @@ export class Hud {
   }
 
   /** Resize the HUD backing store to the game's new internal resolution. */
-  resize(w: number, h: number) {
+  resize(w: number, h: number, isThor = false) {
     const nw = Math.max(1, Math.round(w)), nh = Math.max(1, Math.round(h));
+    // thorMode is independent of size change — always update it, even if dimensions didn't change
+    this.thorMode = !!isThor;
     if (nw === this.w && nh === this.h) return; // assigning canvas.width clears the canvas — only do it on a real change
     this.w = nw;
     this.h = nh;
@@ -209,17 +223,63 @@ export class Hud {
    * Frametime graph: one 1px column per frame (newest at the right edge) over the dotted 60/30fps reference
    * lines, plus a ~1s ms readout above it. Transparent — only the bars, the two faint reference lines and a
    * soft baseline shadow are drawn, so the world shows straight through behind them.
+   *
+   * On Thor / wide HUD the graph lives in the top row between the counters and the life display, shorter
+   * (FT_COLS_THOR), so it doesn't need its own row below.
    */
   private drawFrameGraph() {
     const g = this.g;
-    if (!this.ftCount) return;                // first frame: nothing recorded yet
+    if (!this.ftCount) return;
+
+    if (this.thorMode) {
+      // Thor / wide: in the top row, between left counters and right life
+      const left = FT_THOR_LEFT;
+      const rightLimit = this.w - FT_THOR_RIGHT_MARGIN;
+      const available = rightLimit - left;
+      if (available < 16) return;
+      const plotW = Math.min(FT_COLS_THOR, available);
+      const x0 = left;
+      const yText = FT_THOR_TEXT_Y;
+      const yPlot = FT_THOR_PLOT_Y;
+      const plotH = FT_THOR_PLOT_H;
+      const yBot = yPlot + plotH - 1;
+      const rowOf = (ms: number) => yBot - Math.round(Math.min(ms, FT_MAX_MS) / FT_MAX_MS * (plotH - 1));
+
+      const n = Math.min(plotW, this.ftCount);
+      const start = x0 + plotW - n;
+      for (let i = 0; i < n; i++) {
+        const ms = this.ftBuf[(this.ftHead - n + i + FT_COLS) % FT_COLS];
+        const [body, tip] = ms > FT_WARN_MAX ? FT_BAD : ms > FT_GOOD_MAX ? FT_WARN : FT_GOOD;
+        const top = rowOf(ms);
+        g.fillStyle = body;
+        g.fillRect(start + i, top, 1, yBot - top + 1);
+        g.fillStyle = tip;
+        g.fillRect(start + i, top, 1, 1);
+      }
+      g.fillStyle = 'rgba(248,248,248,0.34)';
+      for (const ms of [FT_60, FT_30]) {
+        const y = rowOf(ms);
+        for (let x = x0; x < x0 + plotW; x += 2) g.fillRect(x, y, 1, 1);
+      }
+      g.fillStyle = 'rgba(0,0,0,0.4)';
+      g.fillRect(x0 - 1, yBot + 1, plotW + 2, 1);
+
+      const avg = this.avgFrameTime(FT_AVG);
+      // keep the ms readout from overlapping the life label (W-82)
+      const textW = 24; // "99.9MS" ~6 chars *4
+      const textX = x0 + textW + 4 > this.w - 82 ? Math.max(x0, this.w - 82 - textW - 4) : x0;
+      this.text(`${Math.min(avg, 99.9).toFixed(1)}MS`, textX, yText, avg > FT_WARN_MAX ? FT_BAD[1] : avg > FT_GOOD_MAX ? FT_WARN[1] : '#f8f8f8');
+      return;
+    }
+
+    // Normal / narrow layout: own row below the top HUD row
     const x0 = FT_X0;
-    const plotW = Math.min(FT_COLS, this.w - FT_X0 - 8); // never run off the right edge
-    const yBot = FT_PLOT_Y + FT_PLOT_H - 1;   // bottom plot row — bars grow up from here
+    const plotW = Math.min(FT_COLS, this.w - FT_X0 - 8);
+    const yBot = FT_PLOT_Y + FT_PLOT_H - 1;
     const rowOf = (ms: number) => yBot - Math.round(Math.min(ms, FT_MAX_MS) / FT_MAX_MS * (FT_PLOT_H - 1));
 
     const n = Math.min(plotW, this.ftCount);
-    const start = x0 + plotW - n;             // right-aligned: the newest frame is the rightmost column
+    const start = x0 + plotW - n;
     for (let i = 0; i < n; i++) {
       const ms = this.ftBuf[(this.ftHead - n + i + FT_COLS) % FT_COLS];
       const [body, tip] = ms > FT_WARN_MAX ? FT_BAD : ms > FT_GOOD_MAX ? FT_WARN : FT_GOOD;
@@ -227,17 +287,15 @@ export class Hud {
       g.fillStyle = body;
       g.fillRect(start + i, top, 1, yBot - top + 1);
       g.fillStyle = tip;
-      g.fillRect(start + i, top, 1, 1); // bright cap: makes 1px spikes easy to spot
+      g.fillRect(start + i, top, 1, 1);
     }
-
-    // dotted 60/30fps reference lines, over the bars so the targets stay readable
     g.fillStyle = 'rgba(248,248,248,0.34)';
     for (const ms of [FT_60, FT_30]) {
       const y = rowOf(ms);
       for (let x = x0; x < x0 + plotW; x += 2) g.fillRect(x, y, 1, 1);
     }
     g.fillStyle = 'rgba(0,0,0,0.4)';
-    g.fillRect(x0 - 1, yBot + 1, plotW + 2, 1); // baseline shadow, so the bars read on bright ground
+    g.fillRect(x0 - 1, yBot + 1, plotW + 2, 1);
 
     const avg = this.avgFrameTime(FT_AVG);
     this.text(`${Math.min(avg, 99.9).toFixed(1)}MS`, x0, FT_TEXT_Y, avg > FT_WARN_MAX ? FT_BAD[1] : avg > FT_GOOD_MAX ? FT_WARN[1] : '#f8f8f8');
@@ -245,7 +303,7 @@ export class Hud {
 
   draw(s: HudState) {
     const g = this.g, W = this.w, H = this.h;
-    const pad = !!s.gamepad; // gamepad: show button labels instead of key labels
+    const pad = !!s.gamepad;
     g.clearRect(0, 0, W, H);
     if (!s.dialogue && s.canTalk && Math.floor(s.time * 2) % 2 === 0) this.text(pad ? 'A - TALK' : 'E - TALK', W / 2 - 16, H - 14, '#f8f8f8');
     if (s.toast) this.text(s.toast, W / 2 - s.toast.length * 4, H / 2 - 30, '#f8d848', 2);
@@ -268,7 +326,7 @@ export class Hud {
     this.text(String(s.rupees).padStart(3, '0'), 104, 12, '#f8f8f8', 2);
     this.helmetIcon(140, 12);
     this.text(String(s.kills).padStart(3, '0'), 152, 12, '#f8f8f8', 2);
-    // frametime graph — transparent strip in its own row below the top HUD row
+    // frametime graph — Thor: in top row between counters and life, shorter; normal: own row below
     this.drawFrameGraph();
     // life — right-anchored so it keeps the same margin from the edge at any viewport width
     const lx = W - 82;
