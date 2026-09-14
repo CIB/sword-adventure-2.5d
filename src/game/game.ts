@@ -16,7 +16,7 @@ import {
 import { GrassSystem } from './grass';
 import { updateFoliage, makeVegInstancesWind } from './foliage';
 import { Hud } from './hud';
-import { WorldState } from './worldstate';
+import { WorldState, type Post } from './worldstate';
 import { WorldMap } from './map';
 
 export type Phase = 'title' | 'playing' | 'paused' | 'gameover';
@@ -70,7 +70,7 @@ export class Game implements GameCtx {
   viewW = VIEW_W;
   viewH = VIEW_H;
   world = new World();
-  /** persistent world state (chunks + the squad world system) — the world sim's data model */
+  /** persistent world state (chunks + the guard-post world system) — the world sim's data model */
   worldState: WorldState;
   /** tile-resolution world map (Tab / N) drawn from the world state + the terrain bitmap */
   private worldMap: WorldMap;
@@ -278,49 +278,51 @@ export class Game implements GameCtx {
   }
 
   /**
-   * The world system step. Squads march their routes in world state (always, hot or not); the
-   * members of squads near the player are materialised as live entities, and the live entities
-   * follow their squad's formation slot unless they're fighting. Leaving the active region
-   * de-materialises a squad back into pure world state. Nobody ever respawns.
+   * The world system step. Every soldier holds its post's patch in world state (wandering its own
+   * ground, or walking the road in from the map's edge); the ones near the player are materialised
+   * as live entities that do the same under their own AI, mirroring their position back into world
+   * state. Walking out of the active region de-materialises a soldier again. A fallen soldier never
+   * comes back — but his post recruits a replacement, who marches in from off the map.
    */
   private updateWorld(dt: number) {
     const ws = this.worldState;
+    // live entities are the authority for their soldiers' positions: mirror them back first
+    for (const e of this.enemies) {
+      const m = e.alive ? e.soldier : null;
+      if (m) { m.x = e.pos.x; m.z = e.pos.z; }
+    }
     ws.tick(dt);
+    // materialise / de-materialise soldiers around the player (per soldier, so a lone replacement
+    // walking in down a road is a real entity too, not just a dot in world state)
     const p = this.player.pos;
     const R = Math.max(24, Math.hypot(this.viewW, this.viewH) / PX_PER_TILE / 2 + 8); // covers the view, plus margin
-    const RH = R + 8; // hysteresis so squads at the edge don't flicker in and out
-    for (const sq of ws.squads) {
-      const living = WorldState.living(sq);
-      if (!living.length) { if (sq.hot) { sq.hot = false; for (const e of this.enemies) if (e.squad === sq) e.dispose(); } continue; }
-      const hot = living.some((m) => Math.hypot(m.x - p.x, m.z - p.z) < (sq.hot ? RH : R));
-      if (hot && !sq.hot) {
-        sq.hot = true;
-        for (let i = 0; i < sq.members.length; i++) {
-          const m = sq.members[i];
-          if (m.state === 'down') continue;
-          const slot = sq.slots[i];
-          const spot = this.world.nearestFree(slot.x, slot.z);
-          this.enemies.push(new Enemy(this, m.kind, spot.x, spot.z, sq, i));
+    const RH = R + 8; // hysteresis so soldiers at the edge don't flicker in and out
+    for (const post of ws.posts) {
+      for (let i = 0; i < post.members.length; i++) {
+        const m = post.members[i];
+        if (m.state === 'down') { if (m.hot) { m.hot = false; this.releaseSoldier(post, i); } continue; }
+        const near = Math.hypot(m.x - p.x, m.z - p.z) < (m.hot ? RH : R);
+        if (near && !m.hot) {
+          m.hot = true;
+          const spot = this.world.nearestFree(m.x, m.z);
+          this.enemies.push(new Enemy(this, m.kind, spot.x, spot.z, post, i));
           this.spawnEffect(fxPuff(spot.x, spot.z).at(spot.x, spot.z));
-        }
-      } else if (!hot && sq.hot) {
-        sq.hot = false;
-        for (const e of this.enemies) if (e.squad === sq) e.dispose();
-        for (let i = 0; i < sq.members.length; i++) {
-          const m = sq.members[i];
-          if (m.state === 'down') continue;
-          m.x = sq.slots[i].x; m.z = sq.slots[i].z;
+        } else if (!near && m.hot) {
+          m.hot = false;
+          this.releaseSoldier(post, i);
         }
       }
     }
-    // live entities: hand them their slot and mirror their position back into world state
+    // hand every materialised soldier its marching orders (null = free to wander its patch)
     for (const e of this.enemies) {
-      if (!e.alive || !e.squad) continue;
-      const slot = e.squad.slots[e.memberIndex];
-      e.follow = slot ? { x: slot.x, z: slot.z } : null;
-      const m = e.soldier;
-      if (m) { m.x = e.pos.x; m.z = e.pos.z; }
+      if (!e.alive || !e.post) continue;
+      e.follow = WorldState.targetFor(e.post, e.memberIndex);
     }
+  }
+
+  /** drop the live entity standing in for one world-state soldier */
+  private releaseSoldier(post: Post, index: number) {
+    for (const e of this.enemies) if (e.post === post && e.memberIndex === index) e.dispose();
   }
 
   // ------------------------------------------------------------------ GameCtx
@@ -495,7 +497,7 @@ export class Game implements GameCtx {
     this.grass.resetCuts();
     const ps = this.world.playerStart;
     this.player.reset(ps.x, ps.z);
-    this.worldState.reset(); // a fresh run is a fresh world: new squads, nothing carried over
+    this.worldState.reset(); // a fresh run is a fresh world: new guards on every post, nothing carried over
     this.cam = { x: ps.x, z: ps.z - 1 };
     this.deathTimer = 0;
     this.talking = false; this.convo = null;
@@ -661,9 +663,10 @@ export class Game implements GameCtx {
     this.audio.enemyDie();
     this.spawnEffect(fxPuff(e.pos.x, e.pos.z).at(e.pos.x, e.pos.z));
     this.dropLoot(e.pos.x, e.pos.z, 0.35, 0.4);
-    // soldiers don't respawn: the world-state record stays down for good
+    // this soldier is down for good; the world sim queues his post a replacement, who will
+    // march in from off the map along the roads (see WorldState.tick)
     const m = e.soldier;
-    if (m) m.state = 'down';
+    if (m) { m.state = 'down'; m.hot = false; }
   }
 
   private cutBush(b: BushObj) {

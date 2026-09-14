@@ -11,14 +11,29 @@ export type PropKind = 'well' | 'sign' | 'stall' | 'bench' | 'weathercock' | 'la
   | 'windmill' | 'anvil' | 'forge' | 'cauldron' | 'grave' | 'deadtree' | 'reeds' | 'rosebush' | 'beehive' | 'wheelbarrow' | 'statue' | 'mushroom' | 'amberrock';
 export interface PropSpec { kind: PropKind; x: number; z: number; rot?: number }
 export interface NpcSpec { id: string; x: number; z: number; facing?: 0 | 1 | 2 | 3; wander?: number }
-/** one stop on a squad's patrol route: a named road-network point + how long to rest there */
-export interface SquadStopSpec { at: string; rest: number }
+/** how tightly a post's guards hold their ground */
+export type PostStyle = 'cluster' | 'spread';
 /**
- * A squad of soldiers in the world system: it marches along the road network between its stops
- * (out-and-back, or a loop), resting at each stop, and its members never respawn once fallen.
- * WorldState resolves the stops and pathfinds the exact route over the road tiles.
+ * A guard post: a patch of the world a handful of soldiers hold. They don't march routes — they
+ * stand guard and wander their own area (tightly on a bridge, loosely through a wood), and when one
+ * falls the post recruits a replacement, who walks in from off the map along the roads.
+ * WorldState resolves the area into guard spots and pathfinds the reinforcement route.
  */
-export interface SquadSpec { name: string; stops: SquadStopSpec[]; loop: boolean; kinds: EnemyKind[] }
+export interface PostSpec {
+  name: string;
+  /** area centre in tile coords */
+  at: [number, number];
+  /** area radii in tiles (an ellipse) */
+  rx: number;
+  rz: number;
+  /** 'cluster' holds a tight knot (bridges, camps); 'spread' roams the patch, 2D-Zelda style */
+  style: PostStyle;
+  kinds: EnemyKind[];
+  /** map-edge entry (see World.edgeEntries) that reinforcements arrive at; null = no replacements */
+  entry: string | null;
+  /** seconds between replacements while the post is under strength */
+  reinforce?: number;
+}
 export interface BridgeSpec { x0: number; z0: number; x1: number; z1: number; y: number; deadEnd?: boolean } // tile-inclusive rect + deck height; deadEnd = jetty (far end over water)
 export interface Vec2 { x: number; z: number }
 
@@ -94,10 +109,10 @@ export class World {
   ];
   props: PropSpec[] = [];
   npcs: NpcSpec[] = [];
-  /** named road-network stop points (tile coords) that squad routes are built from */
-  squadStops: Record<string, [number, number]> = {};
-  /** the world system's squads (see SquadSpec) */
-  squads: SquadSpec[] = [];
+  /** named road points on the map's edge (tile coords) that reinforcements march in from */
+  edgeEntries: Record<string, [number, number]> = {};
+  /** the world system's guard posts (see PostSpec) */
+  posts: PostSpec[] = [];
   playerStart: Vec2 = { x: 9.5, z: 9.5 };
   /** Village bounds (tiles, inclusive) - enemies stay out */
   village = { x0: 1, z0: 1, x1: 32, z1: 29 };
@@ -295,30 +310,33 @@ export class World {
     // painted band fully inside one chunk row/column (centres at 8k+2.5..8k+5.5), so a road only
     // ever touches a chunk border where it actually crosses it. The old east-road corridor ran 34
     // tiles exactly along the x=160 border; it now runs along the chunk-20 middle at x=164.5.
+    // Four of the roads deliberately run OFF THE MAP (north through Willowmere, west along the
+    // orchard lane, east past the Crown hollow, east across the Drowned Field): they are where the
+    // world beyond the map is, and where a guard post's replacements march in from (see edgeEntries).
     const roads = [
       // south gate -> meadow crossroads -> great bridge (bends around the pond and the heron woods)
       [[10.5, 29], [10.5, 34.5], [26.5, 34.5], [26.5, 42.5], [42.5, 42.5], [58.5, 52.5], [82.5, 52.5], [98.5, 44.5], [121.5, 44.5]],
       // east gate -> forest trail through Willowmere -> north bridge
       [[33, 10.5], [44.5, 10.5], [44.5, 13.5], [60.5, 13.5], [60.5, 20.5], [78.5, 20.5], [84.5, 26.5], [98.5, 26.5], [104.5, 20.5], [114.5, 20.5]],
-      // beyond the great bridge: east road and the moor road to the Crown hollow
-      [[125.5, 44.5], [164.5, 44.5], [164.5, 82.5], [190.5, 82.5], [198.5, 92.5]],
+      // the Willowmere road: north out of the woods and off the top of the map
+      [[84.5, 26.5], [84.5, -2.5]],
+      // beyond the great bridge: east road and the moor road to the Crown hollow, which carries on
+      // east off the map
+      [[125.5, 44.5], [164.5, 44.5], [164.5, 82.5], [190.5, 82.5], [198.5, 92.5], [210.5, 92.5]],
       // the highland climb (off the corridor, up the terraces toward the watchtower)
       [[164.5, 44.5], [164.5, 28.5], [176.5, 22.5], [188.5, 12.5]],
       // north bridge -> highland foot (joins the climb road)
       [[120.5, 20.5], [140.5, 20.5], [146.5, 28.5], [164.5, 28.5]],
       // south road: crossroads -> heron pond -> Mirror Lake -> brook bridge -> Millbrook -> south bridge
       [[42.5, 42.5], [42.5, 74.5], [34.5, 84.5], [34.5, 100.5], [48.5, 108.5], [61.5, 108.5], [61.5, 133.5], [100.5, 133.5], [100.5, 125.5], [130.5, 125.5]],
-      // east bank south -> the Drowned Field shrine; camp track
-      [[138.5, 125.5], [162.5, 125.5], [176.5, 141.5]],
+      // east bank south -> the Drowned Field shrine, and on east off the map; camp track
+      [[138.5, 125.5], [162.5, 125.5], [176.5, 141.5], [210.5, 141.5]],
       [[164.5, 82.5], [164.5, 104.5], [152.5, 110.5]],
-      // orchard lane (hermit hill)
+      // orchard lane (hermit hill), and the west road running off the map past it
       [[34.5, 84.5], [20.5, 84.5], [14.5, 96.5]],
+      [[20.5, 84.5], [-2.5, 84.5]],
       // mesa spur: the standing stones down to the meadow road
       [[82.5, 52.5], [85.5, 59.5]],
-      // village bypass: the cart lane skirting the fields links the south road to the forest
-      // trail OUTSIDE the walls (squads never enter the village, so the network needs the ring)
-      [[26.5, 34.5], [42.5, 34.5]],
-      [[42.5, 42.5], [42.5, 13.5], [44.5, 13.5]],
     ];
     const onRoad = (x: number, z: number) => x >= v.x0 && x <= v.x1 && z >= v.z0 && z <= v.z1 - 1 ? false : roads.some((p) => polyDist(x + 0.5, z + 0.5, p) < 1.1);
     for (let z = 0; z < h; z++) for (let x = 0; x < w; x++) if (get(x, z) === Tile.Grass && onRoad(x, z)) set(x, z, Tile.Path);
@@ -395,10 +413,12 @@ export class World {
     };
     const treeOK = (x: number, z: number) => get(x, z) === Tile.Grass && !this.houseCell[this.idx(x, z)] && !inYard(x, z) && !inPad(x, z) && !nearSpawn(x, z) && !nearRoad(x, z) && flat(x, z) && this.riverDist[this.idx(x, z)] > 1.5;
     const plant = (x: number, z: number) => { if (treeOK(x, z)) this.treeCell[this.idx(x, z)] = 1; };
-    // border forest (the world's edge)
+    // border forest (the world's edge) — except where a road runs off the map: those tiles stay
+    // clear, so the road reads as leaving the world instead of dying in a wall of trees
+    const offMapRoad = (x: number, z: number) => { const t = get(x, z); return t === Tile.Path || t === Tile.Bridge; };
     for (let z = 0; z < h; z++) for (let x = 0; x < w; x++) {
       const ring = Math.min(x, z, w - 1 - x, h - 1 - z);
-      if (ring < 2) { if (get(x, z) !== Tile.Water) this.treeCell[this.idx(x, z)] = 1; continue; }
+      if (ring < 2) { if (get(x, z) !== Tile.Water && !offMapRoad(x, z)) this.treeCell[this.idx(x, z)] = 1; continue; }
       if (ring <= 5 && treeOK(x, z)) { const p = [0.65, 0.4, 0.22, 0.1][ring - 2]; if (rng.next() < p) this.treeCell[this.idx(x, z)] = 1; }
     }
     // woodlands: hand-placed ellipses (x, z, rx, rz, density). Willowmere is the big one.
@@ -700,56 +720,51 @@ export class World {
 
     for (const np of this.npcs) if (this.isSolidTile(Math.floor(np.x), Math.floor(np.z))) { const p = this.nearestFree(np.x, np.z); np.x = p.x; np.z = p.z; }
 
-    // 12. squads: the world system's soldiers --------------------------------------------------------------
-    // Soldiers are no longer hand-placed spawn points that the game materialises all at once (and
-    // re-spawns when killed). They belong to the WORLD SYSTEM: named squads that patrol the road
-    // network between camps, resting at each stop, and never respawn. WorldState builds each
-    // squad's exact route by pathfinding over the road tiles; see worldstate.ts.
-    // Stops are named points on the road network (tile coords; WorldState snaps them to the
-    // nearest usable road tile). `rest` is how long the squad lingers at that stop, in seconds.
-    this.squadStops = {
-      southGate: [10.5, 33.5],     // by the village's south gate (turnaround; far enough that a trailing formation slot never crowds the gate)
-      crossroads: [42.5, 44.5],    // the meadow crossroads
-      eastGate: [36.5, 10.5],      // by the village's east gate (turnaround, kept clear of the fence)
-      northBridge: [120.5, 20.5],  // the north bridge's east end
-      greatBridgeE: [129.5, 44.5], // the great bridge's east bank
-      watchtower: [188.5, 6.5],    // the watchtower ruin on the highland
-      crown: [198.5, 92.5],        // the Crown hollow
-      camp: [154.5, 106.5],        // the knights' camp
-      southBridgeE: [138.5, 125.5],// the south bridge's east end
-      shrine: [178.5, 142.5],      // the Drowned Field shrine
-      millbrook: [87.5, 130.5],    // the mill yard at Millbrook
-      mirrorLake: [34.5, 100.5],   // the fisher's bend on the south road
-      heronPond: [34.5, 84.5],     // the orchard lane junction
-      orchard: [14.5, 96.5],       // the hermit's orchard hill
-      mesa: [87.5, 61.5],          // the standing stones
-      // garrison circuits: four corners around each landmark's plaza
-      campA: [152.5, 104.5], campB: [156.5, 104.5], campC: [156.5, 108.5], campD: [152.5, 108.5],
-      towerA: [188.5, 5.5], towerB: [192.5, 5.5], towerC: [192.5, 9.5], towerD: [188.5, 9.5],
-      crownA: [197.5, 90.5], crownB: [200.5, 90.5], crownC: [200.5, 93.5], crownD: [197.5, 93.5],
-      shrineA: [177.5, 140.5], shrineB: [179.5, 140.5], shrineC: [179.5, 143.5], shrineD: [177.5, 143.5],
+    // 12. guard posts: the world system's soldiers ----------------------------------------------------------
+    // Soldiers are no longer hand-placed spawn points that the game materialises all at once. They
+    // belong to the WORLD SYSTEM: named POSTS — an area of the world a handful of soldiers hold.
+    // They stand guard and wander their own patch (tightly on a bridge, loosely through a wood), and
+    // when one falls the post recruits a replacement, who marches in from off the map along the
+    // roads. WorldState resolves each post's area and its reinforcement route; see worldstate.ts.
+    //
+    // Entries are the road points on the map's edge (tile coords; snapped to the nearest usable road
+    // tile) that reinforcements arrive at.
+    this.edgeEntries = {
+      northRoad: [84.5, 0.5],      // the Willowmere road, off the top of the map
+      westRoad: [0.5, 84.5],       // the orchard lane, off the west edge
+      crownRoad: [207.5, 92.5],    // the Crown road, off the east edge
+      drownedRoad: [207.5, 141.5], // the Drowned Field road, off the east edge
     };
-    const sq = (name: string, stops: { at: string; rest?: number }[], loop: boolean, kinds: EnemyKind[]): SquadSpec =>
-      ({ name, stops: stops.map((t) => ({ at: t.at, rest: t.rest ?? 4 })), loop, kinds });
-    this.squads = [
-      // road patrols: out from the crossroads / bridges to a camp and back
-      sq('Meadow Watch', [{ at: 'crossroads' }, { at: 'southGate', rest: 10 }], false, ['sword', 'sword']),
-      sq('Green Lane Patrol', [{ at: 'crossroads' }, { at: 'eastGate', rest: 10 }], false, ['sword', 'sword', 'javelin']),
-      sq('Willowmere Patrol', [{ at: 'eastGate' }, { at: 'northBridge', rest: 14 }], false, ['sword', 'spear', 'archer']),
-      sq('Bridge Wardens', [{ at: 'crossroads' }, { at: 'greatBridgeE', rest: 10 }, { at: 'northBridge', rest: 14 }], false, ['sword', 'spear', 'spear', 'archer']),
-      sq('Highland Patrol', [{ at: 'greatBridgeE' }, { at: 'watchtower', rest: 30 }], false, ['spear', 'archer', 'archer']),
-      sq('Moor Patrol', [{ at: 'greatBridgeE' }, { at: 'crown', rest: 26 }], false, ['sword', 'javelin', 'archer']),
-      sq('South Road Patrol', [{ at: 'crossroads' }, { at: 'heronPond' }, { at: 'mirrorLake', rest: 24 }], false, ['sword', 'spear', 'sword', 'javelin']),
-      sq('Orchard Watch', [{ at: 'heronPond' }, { at: 'orchard', rest: 22 }], false, ['sword', 'archer']),
-      sq('Millbrook Watch', [{ at: 'mirrorLake' }, { at: 'millbrook', rest: 28 }], false, ['sword', 'spear']),
-      sq('Drowned Field Patrol', [{ at: 'southBridgeE' }, { at: 'shrine', rest: 26 }], false, ['spear', 'javelin', 'archer', 'sword']),
-      sq("Knights' Camp Patrol", [{ at: 'camp', rest: 12 }, { at: 'crown', rest: 24 }], false, ['spear', 'spear', 'javelin']),
-      sq('Mesa Watch', [{ at: 'mesa', rest: 30 }, { at: 'crossroads' }], false, ['sword', 'spear']),
-      // garrisons: a slow circuit around their landmark, resting at each corner in turn
-      sq('Camp Garrison', [{ at: 'campA', rest: 20 }, { at: 'campB' }, { at: 'campC', rest: 14 }, { at: 'campD' }], true, ['sword', 'spear', 'sword']),
-      sq('Tower Garrison', [{ at: 'towerA', rest: 18 }, { at: 'towerB' }, { at: 'towerC', rest: 12 }, { at: 'towerD' }], true, ['archer', 'spear']),
-      sq('Crown Garrison', [{ at: 'crownA', rest: 16 }, { at: 'crownB' }, { at: 'crownC', rest: 20 }, { at: 'crownD' }], true, ['archer', 'sword', 'archer']),
-      sq('Shrine Garrison', [{ at: 'shrineA', rest: 18 }, { at: 'shrineB' }, { at: 'shrineC', rest: 14 }, { at: 'shrineD' }], true, ['javelin', 'archer', 'javelin']),
+    // `at` is the area's centre, rx/rz its radii in tiles; 'cluster' holds a tight knot, 'spread'
+    // roams the patch the way the old hand-placed soldiers did. `entry` is where its replacements
+    // come from, `reinforce` the seconds between them.
+    const post = (name: string, at: [number, number], rx: number, rz: number, style: PostStyle,
+      kinds: EnemyKind[], entry: string | null, reinforce?: number): PostSpec =>
+      ({ name, at, rx, rz, style, kinds, entry, reinforce });
+    this.posts = [
+      // the home meadow: the first, gentlest patch (and the one the player clears first)
+      post('Meadow Watch', [44, 38], 14, 10, 'spread', ['sword', 'sword', 'javelin', 'spear', 'sword'], 'westRoad', 40),
+      post('Heron Pond Watch', [26, 64], 11, 8, 'spread', ['sword', 'spear', 'sword', 'archer'], 'westRoad'),
+      post('Orchard Watch', [16, 98], 8, 7, 'spread', ['sword', 'archer'], 'westRoad'),
+      post('Mirror Lake Watch', [58, 116], 10, 8, 'spread', ['sword', 'spear', 'archer', 'sword'], 'westRoad'),
+      post('Millbrook Watch', [86, 142], 14, 9, 'spread', ['sword', 'spear', 'sword', 'javelin', 'archer'], 'westRoad'),
+      // the bridges: a thick knot of soldiers holding the deck — the patch is the deck itself, so
+      // the cluster stands on the bridge rather than on the road up to it
+      post('Brook Bridge Guard', [61.5, 114], 2, 3.5, 'cluster', ['sword', 'spear', 'sword'], 'westRoad'),
+      post('North Bridge Guard', [116, 20.5], 4.5, 2, 'cluster', ['sword', 'spear', 'spear', 'archer', 'sword'], 'northRoad'),
+      post('Great Bridge Guard', [124, 44.5], 4.5, 2, 'cluster', ['sword', 'sword', 'spear', 'archer', 'spear'], 'crownRoad'),
+      post('South Bridge Guard', [135.5, 125.5], 5.5, 2, 'cluster', ['sword', 'spear', 'archer', 'sword'], 'drownedRoad'),
+      // the woods and the wilds: wide, loose patches
+      post('Willowmere Patrol', [86, 24], 21, 13, 'spread', ['sword', 'spear', 'sword', 'archer', 'sword', 'javelin', 'spear', 'sword'], 'northRoad'),
+      post('Mesa Watch', [87, 61], 9, 6, 'spread', ['sword', 'spear', 'archer', 'sword'], 'crownRoad'),
+      post('Riverside Watch', [100, 72], 14, 10, 'spread', ['sword', 'spear', 'archer', 'sword', 'javelin'], 'crownRoad'),
+      post('Highland Guard', [178, 22], 13, 9, 'spread', ['archer', 'spear', 'archer', 'spear', 'archer'], 'northRoad'),
+      post('Moor Patrol', [172, 84], 19, 13, 'spread', ['sword', 'spear', 'javelin', 'sword', 'archer', 'spear'], 'crownRoad'),
+      post('Drowned Field Patrol', [170, 146], 21, 15, 'spread', ['spear', 'javelin', 'archer', 'sword', 'spear', 'sword', 'archer'], 'drownedRoad'),
+      // the garrisons: landmarks held in force
+      post('Watchtower Guard', [190, 8], 7, 5, 'cluster', ['archer', 'spear', 'archer', 'sword'], 'northRoad'),
+      post("Knights' Camp Garrison", [155, 106], 5.5, 5, 'cluster', ['sword', 'spear', 'sword', 'javelin'], 'crownRoad'),
+      post('Crown Hollow Guard', [198, 92], 6, 6, 'cluster', ['archer', 'sword', 'archer', 'spear'], 'crownRoad'),
     ];
   }
 

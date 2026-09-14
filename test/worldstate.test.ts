@@ -1,7 +1,7 @@
 // Node-side validation of the world-state layer: chunk aggregation, the chunk road graph, the
 // chunk-border alignment guarantees (roads and linear water CROSS borders, never run along them),
-// the squad system (routes, marching/resting, permanence of death), the map screen's tile-level
-// rendering, and the world minimap painter.
+// the guard-post system (patches, wandering, permanence of death, reinforcements marching in from
+// off the map), the map screen's tile-level rendering, and the world minimap painter.
 // Stubs the DOM bits World's texture helpers need (none are called here) and a canvas 2D context.
 // Run: npx esbuild test/worldstate.test.ts --bundle --platform=node --format=esm | node --input-type=module
 const g2d = () => ({
@@ -20,7 +20,7 @@ let failures = 0;
 const check = (name: string, cond: boolean, extra = '') => {
   console.log(`${cond ? 'PASS' : 'FAIL'} ${name}${extra ? ' — ' + extra : ''}`);
   if (!cond) failures++;
-  };
+};
 
 const world = new World();
 const ws = new WorldState(world);
@@ -122,101 +122,199 @@ check('road graph has a real network', edgeCount / 2 > 30);
   check('village road component is large', seen.size > 40);
 }
 
-// ---- squads
-check('every world squad spec became a squad', ws.squads.length === world.squads.length && ws.squads.length >= 12);
-const soldierCount = ws.squads.reduce((n, s) => n + s.members.length, 0);
-console.log(`INFO ${ws.squads.length} squads, ${soldierCount} soldiers`);
-check('squads have soldiers', soldierCount >= 30);
-check('soldier ids are unique', new Set(ws.squads.flatMap((s) => s.members.map((m) => m.id))).size === soldierCount);
-
-// routes: closed loops over walkable road tiles, outside the village
-const v = world.village;
-const onNet = (x: number, z: number) => ROAD.has(world.tile(Math.floor(x), Math.floor(z))) && !world.isSolidTile(Math.floor(x), Math.floor(z));
-let routeOK = true, outsideOK = true;
-for (const sq of ws.squads) {
-  if (sq.route.length < 2 || sq.total <= 0) routeOK = false;
-  for (const p of sq.route) {
-    if (!onNet(p.x, p.z)) routeOK = false;
-    if (p.x > v.x0 - 0.5 && p.x < v.x1 + 1.5 && p.z > v.z0 - 0.5 && p.z < v.z1 + 1.5) outsideOK = false;
-  }
-  // every stop sits on the route at its recorded distance
-  for (const s of sq.stops) {
-    const p = sq.route[0]; // (checked via marching below — stops are triggerable distances)
-    void p;
-  }
-}
-check('routes are closed road loops of walkable tiles', routeOK);
-check('routes never enter the village', outsideOK);
-
-// every stop is reachable: march a squad around its whole loop and confirm it rests at each stop
+// ---- roads run off the map (where reinforcements march in from)
 {
-  const sq = ws.squads.find((s) => s.stops.length >= 2 && !s.hot)!;
-  let rests = 0;
-  const seenStops = new Set<number>();
-  const prevDist = -1;
-  // simulate up to 3 full loops
-  for (let t = 0; t < Math.ceil((sq.total / sq.speed) * 3) + 10 && rests < sq.stops.length; t++) {
-    ws.tick(1);
-    if (sq.state === 'rest' && !seenStops.has(Math.round(sq.dist * 100))) { seenStops.add(Math.round(sq.dist * 100)); rests++; }
-    if (sq.dist < prevDist) break; // wrapped
-  }
-  void prevDist;
-  check('a marching squad rests at its stops', rests >= 2, `${rests}/${sq.stops.length} stops`);
-}
-
-// ticking moves cold squads along their routes (and keeps them near the route + out of the village)
-{
-  const distToRoute = (sq: { route: { x: number; z: number }[] }, x: number, z: number) => {
-    let best = Infinity;
-    for (let i = 1; i < sq.route.length; i++) {
-      const a = sq.route[i - 1], b = sq.route[i];
-      const dx = b.x - a.x, dz = b.z - a.z;
-      const t = Math.max(0, Math.min(1, ((x - a.x) * dx + (z - a.z) * dz) / (dx * dx + dz * dz)));
-      best = Math.min(best, Math.hypot(x - (a.x + dx * t), z - (a.z + dz * t)));
-    }
-    return best;
+  const onEdge = (x: number, z: number) => {
+    const tx = Math.floor(x), tz = Math.floor(z);
+    return tx === 0 || tz === 0 || tx === MAP_W - 1 || tz === MAP_H - 1;
   };
-  let near = true, out = true, moved = false;
-  const before = ws.squads.map((s) => s.members.map((m) => ({ x: m.x, z: m.z })));
-  for (let t = 0; t < 900; t++) ws.tick(0.1); // 90 sim-minutes
-  ws.squads.forEach((sq, si) => {
-    sq.members.forEach((m, mi) => {
+  const entries = Object.entries(ws.entries);
+  check('every edge entry resolved to a road tile', entries.length === Object.keys(world.edgeEntries).length
+    && entries.every(([, p]) => ROAD.has(world.tile(Math.floor(p.x), Math.floor(p.z))) && !world.isSolidTile(Math.floor(p.x), Math.floor(p.z))));
+  check('edge entries sit on the map border', entries.every(([, p]) => onEdge(p.x, p.z)),
+    entries.map(([k, p]) => `${k}@${p.x},${p.z}`).join(' '));
+  // the border forest leaves the road clear, so it reads as leaving the world
+  check('no trees block a road at the map edge', entries.every(([, p]) => {
+    for (let i = 0; i < 6; i++) {
+      for (const [dx, dz] of [[i, 0], [-i, 0], [0, i], [0, -i]]) {
+        const x = Math.floor(p.x) + dx, z = Math.floor(p.z) + dz;
+        if (x < 0 || z < 0 || x >= MAP_W || z >= MAP_H) continue;
+        if (ROAD.has(world.tile(x, z)) && world.treeCell[world.idx(x, z)]) return false;
+      }
+    }
+    return true;
+  }));
+}
+
+// ---- the roads near the village are the old ones: no cart lane ringing the walls
+{
+  const v = world.village;
+  const road = (x: number, z: number) => ROAD.has(world.tile(x, z));
+  // the bypass ran east from the south road along z~34 and north up x~42 to the forest trail.
+  // (z starts below the east-gate road's band, which was always there.)
+  let laneTiles = 0;
+  for (let x = 36; x <= 45; x++) for (let z = 32; z <= 37; z++) if (road(x, z)) laneTiles++;
+  for (let z = 16; z <= 40; z++) for (let x = 38; x <= 45; x++) if (road(x, z)) laneTiles++;
+  check('no village bypass lane east of the walls', laneTiles === 0, `${laneTiles} road tiles`);
+  // ... and the two roads that were always there still leave the village at its gates
+  check('the south gate road still leaves the village', road(10, 31) || road(11, 31) || road(10, 32));
+  check('the east gate road still leaves the village', road(34, 10) || road(35, 10) || road(34, 11));
+  void v;
+}
+
+// ---- guard posts
+check('every world post spec became a post', ws.posts.length === world.posts.length && ws.posts.length >= 12);
+const soldierCount = ws.posts.reduce((n, p) => n + p.members.length, 0);
+console.log(`INFO ${ws.posts.length} posts, ${soldierCount} soldiers, ${ws.posts.filter((p) => p.tight).length} of them tight`);
+check('posts have soldiers', soldierCount >= 60);
+check('soldier ids are unique', new Set(ws.posts.flatMap((p) => p.members.map((m) => m.id))).size === soldierCount);
+check('every post fields one soldier per kind', ws.posts.every((p, i) => p.members.length === world.posts[i].kinds.length && p.homes.length === p.members.length));
+
+const v = world.village;
+const inVillage = (x: number, z: number) => x > v.x0 - 0.5 && x < v.x1 + 1.5 && z > v.z0 - 0.5 && z < v.z1 + 1.5;
+const offCentre = (p: { cx: number; cz: number; rx: number; rz: number }, x: number, z: number) =>
+  Math.hypot((x - p.cx) / p.rx, (z - p.cz) / p.rz);
+{
+  let homesOK = true, outsideOK = true, walkableOK = true;
+  for (const p of ws.posts) {
+    for (const m of p.members) {
+      if (offCentre(p, m.hx, m.hz) > 1) homesOK = false;
+      if (world.isSolidTile(Math.floor(m.hx), Math.floor(m.hz))) walkableOK = false;
+      if (inVillage(m.x, m.z) || inVillage(m.hx, m.hz)) outsideOK = false;
+      if (m.state !== 'post') homesOK = false; // the first watch starts on its spot
+    }
+  }
+  check('every guard has a spot inside its patch', homesOK);
+  check('every guard spot is walkable ground', walkableOK);
+  check('guards never stand in the village', outsideOK);
+}
+// posts hold their own ground, not the roads: a spread post keeps most of its guards off the road
+{
+  let offRoad = 0, total = 0;
+  for (const p of ws.posts) {
+    if (p.tight) continue;
+    for (const m of p.members) { total++; if (!ROAD.has(world.tile(Math.floor(m.hx), Math.floor(m.hz)))) offRoad++; }
+  }
+  console.log(`INFO spread posts: ${offRoad}/${total} guard spots off the roads`);
+  check('spread posts guard the land, not the roads', total > 0 && offRoad / total > 0.8);
+}
+// the bridges are held in force: a tight knot, close to the deck
+{
+  const bridges = ws.posts.filter((p) => p.name.includes('Bridge'));
+  const spreadOf = (p: (typeof ws.posts)[number]) =>
+    Math.max(...p.members.map((m) => Math.hypot(m.x - p.cx, m.z - p.cz)));
+  const tight = Math.max(...bridges.map(spreadOf));
+  const loose = Math.max(...ws.posts.filter((p) => !p.tight).map(spreadOf));
+  console.log(`INFO bridge knots reach ${tight.toFixed(1)} tiles out; spread posts ${loose.toFixed(1)}`);
+  check('bridge guards hold a thick knot', bridges.length >= 3 && tight < 7);
+  check('bridge knots are tighter than a spread patch', tight * 2 < loose);
+}
+// reinforcements: every post that recruits has a road route in from its map-edge entry
+{
+  const withEntry = ws.posts.filter((p) => p.entry);
+  check('most posts recruit replacements', withEntry.length >= ws.posts.length - 2, `${withEntry.length}/${ws.posts.length}`);
+  check('every reinforcement route starts at the map edge', withEntry.every((p) =>
+    p.route.length >= 2 && p.route[0].x === p.entry!.x && p.route[0].z === p.entry!.z));
+  check('every reinforcement route runs over road tiles', withEntry.every((p) =>
+    p.route.every((pt) => ROAD.has(world.tile(Math.floor(pt.x), Math.floor(pt.z))))));
+}
+
+// ---- the watch wanders its own patch (cold simulation)
+{
+  const before = ws.posts.map((p) => p.members.map((m) => ({ x: m.x, z: m.z })));
+  for (let t = 0; t < 1200; t++) ws.tick(0.25); // 5 sim-minutes
+  let inPatch = true, out = true, moved = false, tightOK = true;
+  ws.posts.forEach((p, pi) => {
+    p.members.forEach((m, mi) => {
       if (m.state === 'down') return;
-      if (distToRoute(sq, m.x, m.z) > 3.5) near = false;
-      if (m.x > v.x0 - 0.5 && m.x < v.x1 + 1.5 && m.z > v.z0 - 0.5 && m.z < v.z1 + 1.5) out = false;
-      if (Math.hypot(m.x - before[si][mi].x, m.z - before[si][mi].z) > 2) moved = true;
+      if (offCentre(p, m.x, m.z) > 1.05) inPatch = false;
+      if (inVillage(m.x, m.z)) out = false;
+      if (Math.hypot(m.x - before[pi][mi].x, m.z - before[pi][mi].z) > 1.5) moved = true;
+      if (p.tight && Math.hypot(m.x - m.hx, m.z - m.hz) > 3) tightOK = false;
     });
   });
-  check('soldiers march along their routes', near && moved);
-  check('soldiers never enter the village', out);
+  check('guards wander their own patch and stay in it', inPatch && moved);
+  check('guards never enter the village', out);
+  check('tight posts barely leave their spot', tightOK);
 }
 
-// death is permanent: no respawn, no new soldiers
+// ---- death is permanent, and the post recruits a replacement from off the map
 {
-  const victim = ws.squads[0];
-  for (const m of victim.members) m.state = 'down';
-  const count = () => ws.squads.reduce((n, s) => n + s.members.length, 0);
-  const others = count();
-  for (let t = 0; t < 1200; t++) ws.tick(0.1); // 2 sim-minutes
-  check('fallen soldiers never respawn', WorldState.living(victim).length === 0);
-  check('the world creates no new soldiers', count() === others);
+  const post = ws.posts.find((p) => p.name === 'Willowmere Patrol')!;
+  const victim = post.members[0];
+  const victimKind = victim.kind;
+  victim.state = 'down';
+  const countBefore = post.members.length;
+  const ids = new Set(post.members.map((m) => m.id));
+
+  // nothing happens on the spot: the fallen soldier stays down
+  for (let t = 0; t < 40; t++) ws.tick(0.5);
+  check('a fallen soldier never gets up', victim.state === 'down');
+
+  // ... but the post sends for a replacement, who appears on the map's edge
+  let recruit = post.members.find((m) => !ids.has(m.id)) ?? null;
+  for (let t = 0; t < 400 && !recruit; t++) { ws.tick(0.5); recruit = post.members.find((m) => !ids.has(m.id)) ?? null; }
+  check('the post recruits a replacement', !!recruit && post.members.length === countBefore + 1);
+  check('the replacement is the same kind of soldier', recruit?.kind === victimKind);
+  check('the replacement starts on the map edge', !!recruit && recruit.state === 'enroute'
+    && Math.hypot(recruit.x - post.entry!.x, recruit.z - post.entry!.z) < 3, recruit ? `${recruit.x.toFixed(1)},${recruit.z.toFixed(1)}` : '');
+
+  // he walks the road in and takes up the fallen guard's spot
+  let arrived = false;
+  for (let t = 0; t < 1600 && !arrived; t++) {
+    ws.tick(0.5);
+    arrived = recruit!.state === 'post';
+  }
+  check('the replacement marches in and takes up the post', arrived, recruit ? `${recruit.x.toFixed(1)},${recruit.z.toFixed(1)}` : '');
+  check('he holds the fallen guard\'s spot', arrived && recruit!.hx === victim.hx && recruit!.hz === victim.hz);
+  check('the fallen soldier is still down', victim.state === 'down');
+
+  // the world never fields more soldiers than the posts have spots for
+  const extra = ws.posts.reduce((n, p) => n + Math.max(0, WorldState.living(p).length - p.homes.length), 0);
+  check('no post is ever over strength', extra === 0, `${extra} extra`);
 }
-// hot squads' members are not advanced by the tick (live entities are the authority)
+
+// hot soldiers are not advanced by the tick (live entities are the authority)
 {
-  const sq = ws.squads[1];
-  sq.hot = true;
-  const m = WorldState.living(sq)[0];
+  const post = ws.posts.find((p) => !p.tight)!;
+  const m = WorldState.living(post)[0];
+  m.hot = true;
   const x0 = m.x, z0 = m.z;
   ws.tick(5);
-  check('hot squads keep their live positions', m.x === x0 && m.z === z0);
-  sq.hot = false;
+  check('materialised soldiers keep their live positions', m.x === x0 && m.z === z0);
+  m.hot = false;
 }
+
+// a materialised replacement still has its route advanced by the world sim
+{
+  const post = ws.posts.find((p) => p.name === 'Crown Hollow Guard')!;
+  post.members[0].state = 'down';
+  let recruit = null as null | (typeof post.members)[number];
+  for (let t = 0; t < 400 && !recruit; t++) {
+    ws.tick(0.5);
+    recruit = post.members.find((m) => m.state === 'enroute') ?? null;
+  }
+  if (recruit) {
+    recruit.hot = true; // the live entity walks; the sim must still hand it waypoints
+    const wp0 = recruit.wp;
+    recruit.x = post.route[Math.min(wp0, post.route.length - 1)].x;
+    recruit.z = post.route[Math.min(wp0, post.route.length - 1)].z;
+    ws.tick(0.5);
+    check('the world sim advances a materialised recruit\'s route', recruit.wp > wp0 || recruit.state === 'post');
+    check('targetFor points a marching soldier at the road', WorldState.targetFor(post, post.members.indexOf(recruit)) !== null);
+    recruit.hot = false;
+  } else check('the world sim advances a materialised recruit\'s route', false, 'no recruit appeared');
+}
+// a soldier standing guard has no forced target: it is free to wander
+check('targetFor leaves a guard on post free to roam',
+  ws.posts.every((p) => p.members.every((m, i) => m.state !== 'post' || WorldState.targetFor(p, i) === null)));
 
 // reset() re-seeds the world
 {
   ws.reset();
-  check('reset revives every squad', ws.squads.every((s) => WorldState.living(s).length === s.members.length));
-  check('reset rebuilds valid routes', ws.squads.every((s) => s.route.length >= 2 && s.total > 0));
+  check('reset puts a fresh watch on every spot', ws.posts.every((p) => WorldState.living(p).length === p.homes.length));
+  check('reset clears the fallen', ws.posts.every((p) => p.members.every((m) => m.state === 'post')));
+  check('reset rebuilds every patch', ws.posts.every((p) => p.homes.length > 0 && p.members.length === p.homes.length));
 }
 
 // snapshot must be plain data (worker-transferable)
@@ -276,10 +374,11 @@ const mkCtx = (w: number, h: number) => {
   check('map terrain blit is smoothed at fractional scale', (ctx as any).imageSmoothingEnabled === true);
   // chunk grid lines over the terrain
   check('map draws the chunk grid', ops.filter((o) => o.style === 'rgba(0,0,0,0.13)').length === (CHUNKS_X - 1) + (CHUNKS_Z - 1));
-  // camps, squads, player
+  // the patch each post holds, camps, soldiers, player
+  check('map rings every guard post\'s patch', ops.filter((o) => o.style === 'rgba(240,72,56,0.35)').length === ws.posts.length * 48);
   check('map draws the camps', ops.some((o) => o.style === '#f8e8b0'));
-  const red = ops.filter((o) => o.style === '#f04838').length;
-  check('map draws a dot per living soldier', red === ws.squads.reduce((n, s) => n + WorldState.living(s).length, 0), `${red}`);
+  const red = ops.filter((o) => o.style === '#f04838' && o.w === 1 && o.h === 1).length;
+  check('map draws a dot per living soldier', red === ws.posts.reduce((n, p) => n + WorldState.living(p).length, 0), `${red}`);
   check('player marker drawn at t=0 (blink on)', ops.some((o) => o.style === '#58f0f8'));
   // blink off half a beat later
   ops.length = 0;

@@ -12,18 +12,21 @@ import type { World, EnemyKind, Vec2, Biome } from './world';
  * and rivers only ever CROSS chunk borders, never run along them (see the alignment tests), which
  * keeps the chunk model a faithful picture of the world.
  *
- * Soldiers live here as SQUADS, not spawn points. Each squad is a named patrol with a route built
- * once by pathfinding over the actual road tiles (paths, bridges and camp plazas — never through
- * the village, never through solid props). Squads march their route forever: road patrols walk
- * out to a camp and back, garrisons circuit their landmark, and every squad rests at its stops.
- * There is no respawning — when a member falls it stays down.
+ * Soldiers live here as GUARD POSTS, not spawn points and not marching columns. Each post is a
+ * named patch of the world — a bridge, a wood, a hill fort — that a handful of soldiers hold. Every
+ * member has a spot inside the patch; while nothing is happening they stand guard and wander about
+ * their own ground at random (tightly on a bridge deck, loosely across a wood), the way the old
+ * hand-placed soldiers did. Nobody patrols a road.
  *
- * The Game only *materialises* the members of squads near the player into live Enemy entities;
- * those entities follow their squad's formation slot unless they have spotted the player. While a
- * squad is materialised its members' positions mirror the live entities; otherwise the world sim
- * itself advances them along the route. Everything in here is plain data (no THREE, no DOM),
- * deliberately structured-clone friendly: the next step is to run the simulation tick in a Web
- * Worker at a low tick rate and ship snapshots/diffs across the thread boundary.
+ * A post that loses a man recruits: after a delay a replacement appears on the map's edge, where
+ * the roads run off the world, and walks the road network in to take up the fallen guard's spot.
+ * The fallen soldier himself never comes back.
+ *
+ * The Game only *materialises* the soldiers near the player into live Enemy entities; those
+ * entities wander their post's patch (or march their reinforcement route) on their own, and their
+ * positions are mirrored back here every frame. Everything in here is plain data (no THREE, no
+ * DOM), deliberately structured-clone friendly: the next step is to run the simulation tick in a
+ * Web Worker at a low tick rate and ship snapshots/diffs across the thread boundary.
  */
 
 /** tiles per world-state chunk side (MAP_W and MAP_H are multiples of this) */
@@ -31,7 +34,7 @@ export const CHUNK_T = 8;
 export const CHUNKS_X = MAP_W / CHUNK_T; // 26
 export const CHUNKS_Z = MAP_H / CHUNK_T; // 22
 
-/** tiles that count as "road" for the chunk road graph and the squad patrol network */
+/** tiles that count as "road" for the chunk road graph and the reinforcement network */
 const ROAD_TILES = new Set<number>([Tile.Path, Tile.Bridge, Tile.Cobble]);
 
 export interface ChunkInfo {
@@ -58,67 +61,85 @@ export interface ChunkInfo {
   biome: Biome;
 }
 
-export type SoldierState = 'march' | 'rest' | 'down';
+/** 'post' = holding ground in the patch, 'enroute' = a replacement walking in, 'down' = fallen */
+export type SoldierState = 'post' | 'enroute' | 'down';
 
 export interface WorldSoldier {
   id: number;
   kind: EnemyKind;
-  /** position in world tiles (float). While the squad is materialised this mirrors the live entity. */
+  /** position in world tiles (float). While materialised this mirrors the live entity. */
   x: number;
   z: number;
   state: SoldierState;
+  /** the spot in the post's patch this guard holds (wander centre; where a recruit ends up) */
+  hx: number;
+  hz: number;
+  /** where the guard is walking to: a wander target on post, the current waypoint when enroute */
+  tx: number;
+  tz: number;
+  /** index of the next route waypoint (enroute only) */
+  wp: number;
+  /** seconds of standing about left before the next wander target (cold simulation) */
+  idle: number;
+  /** seconds spent failing to make progress toward the current target (stuck detector) */
+  stuck: number;
+  /** materialised as a live entity near the player (the entity owns this soldier's movement) */
+  hot: boolean;
 }
 
-/** a rest stop along a squad's route, at a distance into the route polyline */
-export interface SquadStop { d: number; rest: number; x: number; z: number }
-
-export type SquadState = 'march' | 'rest';
-
-export interface Squad {
+export interface Post {
   id: number;
   name: string;
+  /** patch the post holds: centre + radii in tiles (an ellipse) */
+  cx: number;
+  cz: number;
+  rx: number;
+  rz: number;
+  /** a tight knot of guards (bridges, camps) instead of a loose roam */
+  tight: boolean;
+  /** the guard spots in the patch: one per soldier the post fields */
+  homes: Vec2[];
   members: WorldSoldier[];
-  /** closed patrol loop through road tile centres (last point connects back to the first) */
+  /** road route a replacement walks in on (map edge -> near the patch), tile centres */
   route: Vec2[];
-  /** cumulative length at each route point; cum[0] = 0, cum[n-1] = total */
-  cum: number[];
-  total: number;
-  /** rest stops along the route (distances into the loop) */
-  stops: SquadStop[];
-  /** distance travelled into the route loop */
-  dist: number;
-  /** march speed in tiles per second */
-  speed: number;
-  state: SquadState;
-  restT: number;
-  /** current formation slot per member (march column / rest ring), recomputed every tick */
-  slots: Vec2[];
-  /** current march heading (unit vector along the route) */
-  heading: Vec2;
-  /** the squad is materialised in the active region around the player (live entities exist) */
-  hot: boolean;
+  /** the road tile on the map's edge replacements appear on (null when the post recruits nobody) */
+  entry: Vec2 | null;
+  /** replacements owed (one per fall not yet answered), by the kind that fell */
+  queue: EnemyKind[];
+  /** falls already counted into the queue */
+  fallen: number;
+  /** countdown to the next replacement */
+  recruitT: number;
+  /** seconds between replacements */
+  reinforce: number;
 }
 
 /** chunk-coordinate bounding box (inclusive) */
 export interface ChunkBox { cx0: number; cz0: number; cx1: number; cz1: number }
 
-/** squad marching formation: [lateral, behind] offsets from the leader, in squad space */
-const FORMATION: [number, number][] = [
-  [0, 0], [0.85, 0.75], [-0.85, 0.75], [0, 1.6], [1.5, 1.6], [-1.5, 1.6],
-];
+/** how far a guard wanders from its spot, in tiles (tight knots barely shift their feet) */
+const WANDER_TIGHT = 1.5;
+/** stroll speed on post / marching speed on the reinforcement road, tiles per second */
+const STROLL_TIGHT = 0.4;
+const STROLL = 0.85;
+const MARCH = 1.6;
 
 export class WorldState {
   chunks: ChunkInfo[] = [];
   /** village bounds in chunk coordinates (drawn on the map, and a no-go area for the world sim) */
   village: ChunkBox;
-  /** resolved stop points (tile coords) the squad routes are built from */
-  stops: Record<string, Vec2> = {};
-  /** the rest stops that are proper camps (landmarks with a rest >= 15s), for the map */
+  /** resolved map-edge road points that replacements march in from (world positions) */
+  entries: Record<string, Vec2> = {};
+  /** the same entries as tile indices (what the route pathfinding works in) */
+  private entryTiles: Record<string, Vec2> = {};
+  /** the guard posts: centres of the 'cluster' ones are drawn as camps on the map */
   camps: Vec2[] = [];
-  squads: Squad[] = [];
+  posts: Post[] = [];
 
-  /** per-tile squad road network: 1 = road tile, walkable, outside the village */
+  /** per-tile road network: 1 = road tile, walkable, outside the village */
   private net = new Uint8Array(MAP_W * MAP_H);
+  private rng = new RNG(0x5eed);
+  private nextId = 0;
 
   constructor(private world: World) {
     this.village = {
@@ -127,7 +148,7 @@ export class WorldState {
     };
     this.analyzeChunks();
     this.buildNetwork();
-    this.buildSquads();
+    this.buildPosts();
   }
 
   idx(cx: number, cz: number) { return cz * CHUNKS_X + cx; }
@@ -193,11 +214,11 @@ export class WorldState {
     }
   }
 
-  // ---------------------------------------------------------------- squad road network
+  // ---------------------------------------------------------------- road network
   /**
-   * The tile-level network squads patrol on: every road tile (path / bridge / cobble) that is
-   * walkable (no tents, menhirs, crates... standing on it) and outside the village (expanded by a
-   * tile, so patrols never squeeze past the fence).
+   * The tile-level network reinforcements march in on: every road tile (path / bridge / cobble)
+   * that is walkable (no tents, menhirs, crates... standing on it) and outside the village
+   * (expanded by a tile, so a column never squeezes past the fence).
    */
   private buildNetwork() {
     const world = this.world;
@@ -210,10 +231,10 @@ export class WorldState {
     }
   }
 
-  /** nearest network tile to a world position (spiral search, ~4 tile radius) */
+  /** nearest network tile to a world position (spiral search, ~6 tile radius) */
   private snapToNet(x: number, z: number): Vec2 | null {
     const tx = Math.floor(x), tz = Math.floor(z);
-    for (let r = 0; r <= 4; r++) {
+    for (let r = 0; r <= 6; r++) {
       for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
         if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
         const nx = tx + dx, nz = tz + dz;
@@ -270,208 +291,296 @@ export class WorldState {
     return out;
   }
 
-  // ---------------------------------------------------------------- squads
-  /**
-   * Build every squad's route from the world's squad specs. Each leg is pathfound over the road
-   * network and corner-compressed; road patrols (`loop: false`) get the return leg appended so
-   * every route is a closed loop the squad walks forever. Throws on an unresolvable stop or an
-   * unreachable leg — that's a world-generation bug, and the tests catch it.
-   */
-  private buildSquads() {
-    this.stops = {};
-    for (const [id, [x, z]] of Object.entries(this.world.squadStops)) {
-      const p = this.snapToNet(x, z);
-      if (!p) throw new Error(`squad stop '${id}' at ${x},${z} is not on the road network`);
-      this.stops[id] = p;
-    }
-    // camps for the map: long-rest stops (the landmarks), de-duplicated by proximity
-    const campStops: Vec2[] = [];
-    for (const spec of this.world.squads) for (const s of spec.stops) {
-      if (s.rest < 15) continue;
-      const p = this.stops[s.at];
-      if (!campStops.some((c) => Math.hypot(c.x - p.x, c.z - p.z) < 3)) campStops.push(p);
-    }
-    this.camps = campStops;
+  // ---------------------------------------------------------------- geometry helpers
+  /** is (x,z) inside the village's no-go box (with a tile of slack for the fence line)? */
+  private inVillage(x: number, z: number): boolean {
+    const v = this.world.village;
+    return x > v.x0 - 0.5 && x < v.x1 + 1.5 && z > v.z0 - 0.5 && z < v.z1 + 1.5;
+  }
 
-    const rng = new RNG(0x5eed);
-    let soldierId = 0;
-    this.squads = this.world.squads.map((spec, id) => {
-      const tiles = spec.stops.map((s) => this.stops[s.at]);
-      // forward legs between consecutive stops
-      const legs: Vec2[][] = [];
-      for (let i = 0; i < tiles.length - 1; i++) {
-        const p = this.pathfind(tiles[i].x, tiles[i].z, tiles[i + 1].x, tiles[i + 1].z);
-        if (!p) throw new Error(`squad '${spec.name}': no road path from ${spec.stops[i].at} to ${spec.stops[i + 1].at}`);
-        legs.push(this.compress(p));
-      }
-      if (spec.loop) {
-        const p = this.pathfind(tiles[tiles.length - 1].x, tiles[tiles.length - 1].z, tiles[0].x, tiles[0].z);
-        if (!p) throw new Error(`squad '${spec.name}': no road path closing its loop`);
-        legs.push(this.compress(p));
-      } else {
-        // out-and-back: walk the whole route in reverse to get home
-        for (let i = legs.length - 1; i >= 0; i--) legs.push(legs[i].slice().reverse());
-      }
-      // stitch the legs into one closed loop, dropping the duplicated junction points
-      const route: Vec2[] = [];
-      const lengthSoFar = () => {
-        let L = 0;
-        for (let i = 1; i < route.length; i++) L += Math.hypot(route[i].x - route[i - 1].x, route[i].z - route[i - 1].z);
-        return L;
-      };
-      const stopDist: number[] = [0];   // distance of each spec stop into the route
-      for (let li = 0; li < legs.length; li++) {
-        const leg = legs[li];
-        if (li === 0) route.push(...leg);
-        else {
-          const last = route[route.length - 1];
-          if (Math.hypot(leg[0].x - last.x, leg[0].z - last.z) > 1e-6) route.push(leg[0]);
-          route.push(...leg.slice(1));
+  /** normalised distance from a post's centre: 1 = on the edge of its patch */
+  private offCentre(p: Post, x: number, z: number): number {
+    return Math.hypot((x - p.cx) / p.rx, (z - p.cz) / p.rz);
+  }
+
+  /**
+   * A tile centre inside the post's patch to stand guard on. `roomy` also wants the eight tiles
+   * around it clear, so a guard put here can actually walk about instead of being wedged in a
+   * one-tile pocket of forest; `offRoad` keeps it off the paths, so a post guards the land rather
+   * than the road through it. Callers relax the two in turn when a patch is too tight to have both.
+   */
+  private spotInPatch(p: Post, cx: number, cz: number, radius: number, roomy = true, offRoad = true): Vec2 | null {
+    for (let tries = 0; tries < 40; tries++) {
+      const a = this.rng.next() * Math.PI * 2;
+      const r = Math.sqrt(this.rng.next()) * radius;
+      let x = cx + Math.cos(a) * r, z = cz + Math.sin(a) * r;
+      const k = this.offCentre(p, x, z);
+      if (k > 0.97) { const s = 0.97 / k; x = p.cx + (x - p.cx) * s; z = p.cz + (z - p.cz) * s; }
+      const tx = Math.floor(x), tz = Math.floor(z);
+      if (tx < 1 || tz < 1 || tx >= MAP_W - 1 || tz >= MAP_H - 1) continue;
+      if (this.inVillage(tx + 0.5, tz + 0.5)) continue;
+      // rounding to the tile centre can nudge a clamped point back out of the patch
+      if (this.offCentre(p, tx + 0.5, tz + 0.5) > 1) continue;
+      let clear = !this.world.isSolidTile(tx, tz);
+      if (clear && roomy) {
+        for (let dz = -1; dz <= 1 && clear; dz++) for (let dx = -1; dx <= 1; dx++) {
+          if (this.world.isSolidTile(tx + dx, tz + dz)) { clear = false; break; }
         }
-        // spec stop li+1 sits where the next leg begins (the current end of the stitched route)
-        if (li + 1 < tiles.length) stopDist[li + 1] = lengthSoFar();
       }
-      // cumulative lengths over the closed loop
-      const cumArr: number[] = [0];
-      for (let i = 1; i < route.length; i++) cumArr.push(cumArr[i - 1] + Math.hypot(route[i].x - route[i - 1].x, route[i].z - route[i - 1].z));
-      const total = cumArr[cumArr.length - 1];
-      // rest stops: each spec stop on the way out, and (out-and-back) again on the way home
-      const stops: SquadStop[] = [];
-      const stopAt = (d: number, rest: number) => {
-        const p = this.pointOnRoute(route, cumArr, total, d);
-        stops.push({ d, rest, x: p.x, z: p.z });
-      };
-      for (let i = 0; i < spec.stops.length; i++) stopAt(stopDist[i] ?? 0, spec.stops[i].rest);
-      if (!spec.loop) {
-        for (let i = spec.stops.length - 2; i >= 1; i--) stopAt(total - (stopDist[i] ?? 0), spec.stops[i].rest);
+      if (!clear) continue;
+      if (offRoad && ROAD_TILES.has(this.world.tiles[this.world.idx(tx, tz)])) continue;
+      return { x: tx + 0.5, z: tz + 0.5 };
+    }
+    return null;
+  }
+
+  /**
+   * Every walkable tile in the patch, grouped by how good a standing spot it is: `roomy` ones
+   * have their eight neighbours clear, so a guard there can actually turn about; the `Off`
+   * groups keep off the roads, so a post guards the land rather than the path through it.
+   * Enumerating beats probing at random — a bridge deck only has a handful of roomy tiles, and
+   * two guards drawing the same one would stand on top of each other.
+   */
+  private patchSpots(p: Post, radius: number) {
+    const out = { roomyOff: [] as Vec2[], plainOff: [] as Vec2[], roomyRoad: [] as Vec2[], plainRoad: [] as Vec2[] };
+    const r = Math.min(radius, Math.max(p.rx, p.rz));
+    const x0 = Math.max(1, Math.floor(p.cx - r)), x1 = Math.min(MAP_W - 2, Math.ceil(p.cx + r));
+    const z0 = Math.max(1, Math.floor(p.cz - r)), z1 = Math.min(MAP_H - 2, Math.ceil(p.cz + r));
+    for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) {
+      if (this.offCentre(p, x + 0.5, z + 0.5) > 1) continue;
+      if (this.world.isSolidTile(x, z)) continue;
+      if (this.inVillage(x + 0.5, z + 0.5)) continue;
+      let roomy = true;
+      for (let dz = -1; dz <= 1 && roomy; dz++) for (let dx = -1; dx <= 1; dx++) {
+        if (this.world.isSolidTile(x + dx, z + dz)) { roomy = false; break; }
       }
-      stops.sort((a, b) => a.d - b.d);
-      const sq: Squad = {
+      const v = { x: x + 0.5, z: z + 0.5 };
+      if (roomy) (ROAD_TILES.has(this.world.tiles[this.world.idx(x, z)]) ? out.roomyRoad : out.roomyOff).push(v);
+      else (ROAD_TILES.has(this.world.tiles[this.world.idx(x, z)]) ? out.plainRoad : out.plainOff).push(v);
+    }
+    return out;
+  }
+
+  private shuffle<T>(list: T[]): T[] {
+    for (let i = list.length - 1; i > 0; i--) {
+      const j = Math.floor(this.rng.next() * (i + 1));
+      const t = list[i]; list[i] = list[j]; list[j] = t;
+    }
+    return list;
+  }
+
+  // ---------------------------------------------------------------- posts
+  /**
+   * Build every guard post from the world's specs: guard spots scattered through its patch, a
+   * reinforcement route pathfound from its map-edge entry to the nearest road tile by the patch,
+   * and its first watch. Throws on an unresolvable entry or an empty patch — that's a
+   * world-generation bug, and the tests catch it.
+   */
+  private buildPosts() {
+    this.rng = new RNG(0x5eed);
+    this.nextId = 0;
+    this.entries = {};
+    this.entryTiles = {};
+    for (const [id, [x, z]] of Object.entries(this.world.edgeEntries)) {
+      const tile = this.snapToNet(x, z);
+      if (!tile) throw new Error(`edge entry '${id}' at ${x},${z} is not on the road network`);
+      this.entryTiles[id] = tile;                       // tile indices, for pathfinding
+      this.entries[id] = { x: tile.x + 0.5, z: tile.z + 0.5 }; // world position, like every other point
+    }
+    // camps for the map: the centres of the tight posts (the garrisons and bridge guards)
+    this.camps = this.world.posts.filter((s) => s.style === 'cluster').map((s) => ({ x: s.at[0], z: s.at[1] }));
+
+    this.posts = this.world.posts.map((spec, id) => {
+      const p: Post = {
         id, name: spec.name,
-        members: spec.kinds.map((kind) => ({ id: soldierId++, kind, x: 0, z: 0, state: 'march' as SoldierState })),
-        route, cum: cumArr, total, stops,
-        dist: 0, speed: 1.3 + rng.next() * 0.15,
-        state: 'march', restT: 0,
-        slots: spec.kinds.map(() => ({ x: 0, z: 0 })),
-        heading: { x: 0, z: 1 },
-        hot: false,
+        cx: spec.at[0], cz: spec.at[1], rx: spec.rx, rz: spec.rz,
+        tight: spec.style === 'cluster',
+        homes: [], members: [], route: [], entry: null,
+        queue: [], fallen: 0, recruitT: spec.reinforce ?? 55, reinforce: spec.reinforce ?? 55,
       };
-      // spread the squads out along their routes so the world starts in motion
-      sq.dist = total * rng.next();
-      this.updateSlots(sq);
-      for (let i = 0; i < sq.members.length; i++) { sq.members[i].x = sq.slots[i].x; sq.members[i].z = sq.slots[i].z; }
-      return sq;
+      // guard spots: packed near the centre for a tight post, scattered through the patch otherwise.
+      // Each soldier gets its own tile, drawn from the best group the patch has enough of.
+      const R = Math.max(p.rx, p.rz);
+      const tightR = R * (p.tight ? 0.45 : 0.92);
+      let spots = this.patchSpots(p, tightR);
+      const count = (s: typeof spots) => s.roomyOff.length + s.plainOff.length + s.roomyRoad.length + s.plainRoad.length;
+      if (count(spots) < spec.kinds.length && tightR < R) spots = this.patchSpots(p, R);
+      const pool = [...this.shuffle(spots.roomyOff), ...this.shuffle(spots.plainOff),
+        ...this.shuffle(spots.roomyRoad), ...this.shuffle(spots.plainRoad)];
+      for (let i = 0; i < spec.kinds.length; i++) {
+        const spot = pool[i] ?? (() => { const f = this.world.nearestFree(p.cx, p.cz); return { x: f.x, z: f.z }; })();
+        p.homes.push(spot);
+      }
+      if (!p.homes.length) throw new Error(`guard post '${spec.name}' has no soldiers`);
+      // the reinforcement route: map edge -> the road tile nearest the patch. Soldiers walk the
+      // last stretch cross-country to their own spot.
+      if (spec.entry) {
+        const entry = this.entryTiles[spec.entry];
+        if (!entry) throw new Error(`guard post '${spec.name}': unknown entry '${spec.entry}'`);
+        const near = this.nearestRoadTo(p.cx, p.cz);
+        if (!near) throw new Error(`guard post '${spec.name}': no road near its patch`);
+        const path = this.pathfind(entry.x, entry.z, near.x, near.z);
+        if (!path) throw new Error(`guard post '${spec.name}': no road path from '${spec.entry}'`);
+        p.route = this.compress(path);
+        p.entry = this.entries[spec.entry];
+      }
+      // the first watch: everyone on their spot, glancing about
+      p.members = spec.kinds.map((kind, i) => this.newSoldier(kind, p.homes[i]));
+      return p;
     });
   }
 
-  /** position on a route polyline at distance d (wrapping around the closed loop) */
-  private pointOnRoute(route: Vec2[], cum: number[], total: number, d: number): Vec2 {
-    let dd = ((d % total) + total) % total;
-    for (let i = 1; i < route.length; i++) {
-      if (dd <= cum[i] || i === route.length - 1) {
-        const t = cum[i] > cum[i - 1] ? (dd - cum[i - 1]) / (cum[i] - cum[i - 1]) : 0;
-        return { x: route[i - 1].x + (route[i].x - route[i - 1].x) * t, z: route[i - 1].z + (route[i].z - route[i - 1].z) * t };
+  /** nearest road-network tile to a world position (spiral search over the whole map, bounded) */
+  private nearestRoadTo(x: number, z: number): Vec2 | null {
+    const tx = Math.floor(x), tz = Math.floor(z);
+    for (let r = 0; r <= 40; r++) {
+      for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) {
+        if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
+        const nx = tx + dx, nz = tz + dz;
+        if (nx < 0 || nz < 0 || nx >= MAP_W || nz >= MAP_H) continue;
+        if (this.net[nz * MAP_W + nx]) return { x: nx, z: nz };
       }
     }
-    return { ...route[0] };
+    return null;
   }
 
-  /** did a march from `prev` to `cur` (possibly wrapping) cross distance `d`? */
-  private crossed(prev: number, cur: number, d: number): boolean {
-    if (prev === cur) return false;
-    if (prev < cur) return d > prev && d <= cur;
-    return d > prev || d <= cur; // wrapped past the loop start
+  /** a fresh soldier record standing on a guard spot */
+  private newSoldier(kind: EnemyKind, home: Vec2): WorldSoldier {
+    return {
+      id: this.nextId++, kind, x: home.x, z: home.z, state: 'post',
+      hx: home.x, hz: home.z, tx: home.x, tz: home.z,
+      wp: 0, idle: this.rng.next() * 3, stuck: 0, hot: false,
+    };
   }
 
-  /** recompute the squad's formation slots (march column or rest ring) from its route state */
-  private updateSlots(sq: Squad) {
-    const n = sq.members.length;
-    if (sq.state === 'rest') {
-      const stop = sq.stops.find((s) => Math.abs(s.d - sq.dist) < 1e-6) ?? { x: sq.slots[0].x, z: sq.slots[0].z };
-      for (let i = 0; i < n; i++) {
-        const a = (i + 0.35) * Math.PI * 2 / n;
-        const r = 0.95 + (i % 2) * 0.4;
-        sq.slots[i].x = stop.x + Math.cos(a) * r;
-        sq.slots[i].z = stop.z + Math.sin(a) * r;
-      }
-    } else {
-      const p = this.pointOnRoute(sq.route, sq.cum, sq.total, sq.dist);
-      // heading from the segment ahead
-      let h = { x: 0, z: 1 };
-      let dd = ((sq.dist % sq.total) + sq.total) % sq.total;
-      for (let i = 1; i < sq.route.length; i++) {
-        if (dd <= sq.cum[i] || i === sq.route.length - 1) {
-          const dx = sq.route[i].x - sq.route[i - 1].x, dz = sq.route[i].z - sq.route[i - 1].z;
-          const l = Math.hypot(dx, dz) || 1;
-          h = { x: dx / l, z: dz / l };
-          break;
-        }
-      }
-      sq.heading = h;
-      for (let i = 0; i < n; i++) {
-        const [lat, behind] = FORMATION[i % FORMATION.length];
-        const k = Math.floor(i / FORMATION.length); // extra ranks trail further back
-        const b = behind + k * 2.2;
-        sq.slots[i].x = p.x - h.x * b + h.z * lat;
-        sq.slots[i].z = p.z - h.z * b - h.x * lat;
-      }
-    }
-  }
-
-  /** living members of a squad */
-  static living(sq: Squad): WorldSoldier[] { return sq.members.filter((m) => m.state !== 'down'); }
+  /** living (not fallen) members of a post */
+  static living(p: Post): WorldSoldier[] { return p.members.filter((m) => m.state !== 'down'); }
 
   /**
-   * The world simulation tick: every squad marches its route or rests at a stop. While a squad is
-   * materialised (hot) the live entities are the authority for its members' positions, so their
-   * records are left alone; cold squads advance their members to the formation slots here.
+   * The point a materialised soldier is walking to, or null when it is free to wander its patch:
+   * the next waypoint of its reinforcement route, then its own guard spot.
+   */
+  static targetFor(p: Post, index: number): Vec2 | null {
+    const m = p.members[index];
+    if (!m || m.state !== 'enroute') return null;
+    return m.wp < p.route.length ? p.route[m.wp] : { x: m.hx, z: m.hz };
+  }
+
+  /** pick the next wander target: somewhere on this guard's own ground */
+  private pickWander(p: Post, m: WorldSoldier) {
+    const radius = p.tight ? WANDER_TIGHT : Math.max(2.5, Math.min(p.rx, p.rz) * 0.6);
+    const spot = this.spotInPatch(p, m.hx, m.hz, radius)
+      ?? this.spotInPatch(p, m.hx, m.hz, radius, false)
+      ?? this.spotInPatch(p, m.hx, m.hz, radius, false, false);
+    if (spot) { m.tx = spot.x; m.tz = spot.z; return; }
+    m.tx = m.hx; m.tz = m.hz;
+  }
+
+  /**
+   * Walk a soldier toward a point with the same box physics the live entities use (so it slides
+   * around trees and stops at cliffs instead of walking through them). Returns the distance moved.
+   */
+  private stepToward(m: WorldSoldier, tx: number, tz: number, speed: number, dt: number): number {
+    let dx = tx - m.x, dz = tz - m.z;
+    const d = Math.hypot(dx, dz);
+    if (d < 1e-4) return 0;
+    dx /= d; dz /= d;
+    const ox = m.x, oz = m.z;
+    this.world.moveBox(m, dx * speed * dt, dz * speed * dt, 0.3, 0.25, speed * dt);
+    // the village is a safe haven: soldiers never cross the fence line
+    if (this.inVillage(m.x, m.z)) { m.x = ox; m.z = oz; }
+    return Math.hypot(m.x - ox, m.z - oz);
+  }
+
+  /** a guard on its patch: stand about, then stroll to a new spot on its own ground */
+  private wander(p: Post, m: WorldSoldier, dt: number) {
+    if (m.idle > 0) {
+      m.idle -= dt;
+      if (m.idle > 0) return;
+      this.pickWander(p, m);
+    }
+    const speed = p.tight ? STROLL_TIGHT : STROLL;
+    const moved = this.stepToward(m, m.tx, m.tz, speed, dt);
+    m.stuck = moved < speed * dt * 0.4 ? m.stuck + dt : 0;
+    if (Math.hypot(m.tx - m.x, m.tz - m.z) < 0.4) {
+      // arrived: stand guard for a while (tight posts mostly stand and glance around)
+      m.idle = p.tight ? 2 + this.rng.next() * 5 : 0.6 + this.rng.next() * 2.6;
+    } else if (m.stuck > 1.2) {
+      m.stuck = 0;
+      this.pickWander(p, m); // couldn't get there: pick somewhere else
+    }
+  }
+
+  /** a replacement on the road: follow the route, then walk cross-country to its spot */
+  private march(p: Post, m: WorldSoldier, dt: number) {
+    while (m.wp < p.route.length && Math.hypot(p.route[m.wp].x - m.x, p.route[m.wp].z - m.z) < 0.75) m.wp++;
+    const reachedRoad = m.wp >= p.route.length;
+    const tx = reachedRoad ? m.hx : p.route[m.wp].x, tz = reachedRoad ? m.hz : p.route[m.wp].z;
+    if (reachedRoad && Math.hypot(tx - m.x, tz - m.z) < 0.6) {
+      m.state = 'post'; // arrived: take up the fallen guard's spot
+      m.idle = this.rng.next() * 2;
+      return;
+    }
+    if (m.hot) return; // the live entity does the walking; the world sim only advances the route
+    const moved = this.stepToward(m, tx, tz, MARCH, dt);
+    m.stuck = moved < MARCH * dt * 0.4 ? m.stuck + dt : 0;
+    // boxed in by trees or a cliff: sidestep a little and keep trying
+    if (m.stuck > 1.5) {
+      m.stuck = 0;
+      const a = this.rng.next() * Math.PI * 2;
+      this.stepToward(m, m.x + Math.cos(a) * 2, m.z + Math.sin(a) * 2, MARCH, dt * 4);
+    }
+  }
+
+  /** put a replacement on the map's edge, walking in to take a fallen guard's spot */
+  private recruit(p: Post, kind: EnemyKind) {
+    // take the spot of a fallen guard, so the post keeps its shape
+    const taken = new Set(WorldState.living(p).map((m) => m.hx * 1000 + m.hz));
+    const home = p.homes.find((h) => !taken.has(h.x * 1000 + h.z)) ?? p.homes[0];
+    const m = this.newSoldier(kind, home);
+    m.state = 'enroute';
+    m.x = p.entry!.x; m.z = p.entry!.z;
+    m.tx = m.x; m.tz = m.z;
+    p.members.push(m);
+  }
+
+  /**
+   * The world simulation tick. Every soldier holds its patch (wandering its own ground) or walks
+   * its reinforcement route in; posts recruit replacements for the men they've lost, one at a
+   * time, from the map's edge. Materialised (hot) soldiers are moved by their live entities, so
+   * the world sim leaves their positions alone — it still advances their route, though.
    */
   tick(dt: number) {
-    for (const sq of this.squads) {
-      if (!WorldState.living(sq).length) continue;
-      if (sq.state === 'rest') {
-        sq.restT -= dt;
-        if (sq.restT <= 0) sq.state = 'march';
-      } else {
-        const prev = sq.dist;
-        sq.dist += sq.speed * dt;
-        if (sq.dist >= sq.total) sq.dist -= sq.total;
-        for (const s of sq.stops) {
-          if (this.crossed(prev, sq.dist, s.d)) {
-            sq.dist = s.d;
-            sq.state = 'rest';
-            sq.restT = s.rest;
-            break;
-          }
-        }
+    for (const p of this.posts) {
+      // 1. account for the fallen and queue a replacement for each (of the same kind)
+      const downed: WorldSoldier[] = [];
+      for (const m of p.members) if (m.state === 'down') downed.push(m);
+      for (let i = p.fallen; i < downed.length; i++) p.queue.push(downed[i].kind);
+      p.fallen = downed.length;
+      // 2. recruit: one replacement at a time, only while the post is under strength
+      if (p.queue.length && p.entry && p.members.length - downed.length < p.homes.length) {
+        p.recruitT -= dt;
+        if (p.recruitT <= 0) { this.recruit(p, p.queue.shift()!); p.recruitT = p.reinforce; }
       }
-      this.updateSlots(sq);
-      if (!sq.hot) {
-        for (let i = 0; i < sq.members.length; i++) {
-          const m = sq.members[i];
-          if (m.state === 'down') continue;
-          m.x = sq.slots[i].x;
-          m.z = sq.slots[i].z;
-          m.state = sq.state === 'rest' ? 'rest' : 'march';
-        }
-      } else {
-        // materialised: live entities are the authority for positions (the Game mirrors them
-        // back), but the squad state still tells the map whether the squad is resting
-        for (const m of sq.members) if (m.state !== 'down') m.state = sq.state === 'rest' ? 'rest' : 'march';
+      // 3. advance the watch
+      for (const m of p.members) {
+        if (m.state === 'down') continue;
+        if (m.state === 'enroute') this.march(p, m, dt);
+        else if (!m.hot) this.wander(p, m, dt);
       }
     }
   }
 
   /**
-   * Re-seed every squad from the world's specs (fresh soldiers, spread along their routes).
+   * Re-seed every post from the world's specs (a fresh watch on every spot, nobody fallen).
    * Called when a run starts over — a restart is a new world, not a respawn of the old one.
    */
   reset() {
-    this.buildSquads(); // fresh squads come in cold (hot: false) and spread along their routes
+    this.buildPosts(); // fresh posts come in cold (hot: false) and standing on their spots
   }
 
   /** Plain-data snapshot — the payload shape that will cross the worker boundary. */
-  snapshot(): { chunks: ChunkInfo[]; squads: Squad[]; camps: Vec2[]; village: ChunkBox } {
-    return { chunks: this.chunks, squads: this.squads, camps: this.camps, village: this.village };
+  snapshot(): { chunks: ChunkInfo[]; posts: Post[]; camps: Vec2[]; village: ChunkBox } {
+    return { chunks: this.chunks, posts: this.posts, camps: this.camps, village: this.village };
   }
 }
