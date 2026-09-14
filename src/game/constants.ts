@@ -23,6 +23,14 @@ export const ZOOM_MIN_TILES_X = 12;
  * on screen than the world HUD without resampling blur. 1.15 = "slightly larger".
  */
 export const HUD_SCALE = 1.15;
+/**
+ * On the AYN Thor (and other very wide handhelds) the HUD is made noticeably larger so it remains readable
+ * at a distance. 1.7 is ~48% larger than 1.15, matching the "+50% or so" request, while still leaving room
+ * between the left counters and the right life hearts for the frametime graph.
+ */
+export const HUD_SCALE_THOR = 1.7;
+/** Shorter frametime strip used when the graph lives in the top row (Thor / wide HUD). */
+export const FT_COLS_THOR = 96;
 export const CAM_HEIGHT = 40;
 export const SHEAR = 0.85; // oblique projection factor: 1 unit of height = 0.85 tiles of screen space
 export const LEVEL_H = 0.5;   // world units per terrain level
