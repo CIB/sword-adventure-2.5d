@@ -10,8 +10,8 @@ import type { World } from './world';
  * grid. The cached base bitmap is painted once by World.paintMinimap; every frame afterwards is a
  * nearest-neighbour blit plus the live world-state overlay:
  *
- *   - camps (rest stops) as little tents, the village bounds, a faint chunk grid
- *   - every squad as a column of soldiers at its world position (red = marching, amber = resting)
+ *   - the patch each guard post holds (a faint ring), camps as little tents, the village bounds
+ *   - every soldier at its world position (red = on post, amber = a replacement marching in)
  *   - the player
  *
  * The chunk grid stays as a whisper — it's the resolution of the background world simulation —
@@ -23,7 +23,9 @@ const VILLAGE = '#f8d848';
 const CAMP = '#f8e8b0';
 const CAMP_DARK = '#7a5a30';
 const SOLDIER = '#f04838';
-const SOLDIER_REST = '#f8a030';
+const SOLDIER_ENROUTE = '#f8a030';
+/** the ring drawn around each post's patch: what the soldiers there are guarding */
+const PATCH = 'rgba(240,72,56,0.35)';
 const PLAYER = '#58f0f8';
 
 export interface MapView {
@@ -108,17 +110,28 @@ export class WorldMap {
       g.fillRect(px - t + 3, py - t + 3, t - 5, 1);
     }
 
-    // squads: every living soldier at its world position, coloured by squad state
-    let alive = 0, fallen = 0, resting = 0;
-    for (const sq of state.squads) {
-      for (const m of sq.members) {
+    // the patch each post holds: a faint ellipse of the ground its soldiers guard
+    g.fillStyle = PATCH;
+    for (const post of state.posts) {
+      const steps = 48;
+      for (let i = 0; i < steps; i++) {
+        const a = (i / steps) * Math.PI * 2;
+        const [px, py] = this.px(post.cx + Math.cos(a) * post.rx, post.cz + Math.sin(a) * post.rz, x0, y0, scale);
+        g.fillRect(px, py, 1, 1);
+      }
+    }
+
+    // soldiers: every living one at its world position, coloured by what it's doing
+    let alive = 0, fallen = 0, enroute = 0;
+    for (const post of state.posts) {
+      for (const m of post.members) {
         if (m.state === 'down') { fallen++; continue; }
         alive++;
-        if (m.state === 'rest') resting++;
+        if (m.state === 'enroute') enroute++;
         const [px, py] = this.px(m.x, m.z, x0, y0, scale);
         g.fillStyle = '#000';
         g.fillRect(px - 1, py - 1, 3, 3);
-        g.fillStyle = m.state === 'rest' ? SOLDIER_REST : SOLDIER;
+        g.fillStyle = m.state === 'enroute' ? SOLDIER_ENROUTE : SOLDIER;
         g.fillRect(px, py, 1, 1);
       }
     }
@@ -135,9 +148,9 @@ export class WorldMap {
     // header + legend
     const title = 'WORLD MAP';
     drawText(g, title, Math.floor(W / 2 - title.length * 2), Math.max(2, y0 - 12), '#f8f0d8');
-    const sub = `${state.squads.length} SQUADS - ${alive} SOLDIERS (${resting} RESTING) - ${fallen} FALLEN`;
+    const sub = `${state.posts.length} POSTS - ${alive} SOLDIERS (${enroute} MARCHING IN) - ${fallen} FALLEN`;
     drawText(g, sub, Math.floor(W / 2 - sub.length * 2), y0 + mh + 4, '#9aa8b8');
-    const legend = 'RED PATROL  AMBER REST  TAN CAMP';
+    const legend = 'RED ON POST  AMBER MARCHING IN  TAN CAMP';
     drawText(g, legend, Math.floor(W / 2 - legend.length * 2), y0 + mh + 12, '#c8b088');
     const hint = v.gamepad ? 'R3: CLOSE' : 'TAB: CLOSE';
     drawText(g, hint, Math.floor(W / 2 - hint.length * 2), y0 + mh + 20, '#f8d848');

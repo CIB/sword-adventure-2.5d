@@ -4,7 +4,7 @@ import type { AudioEngine } from './audio';
 import type { Input } from './input';
 import { ATTACK_KEYS, SHIELD_KEYS } from './input';
 import type { EnemyKind, Vec2, World, NpcSpec } from './world';
-import type { Squad, WorldSoldier } from './worldstate';
+import type { Post, WorldSoldier } from './worldstate';
 import {
   buildArrow, buildHeart, buildHeroine, buildJavelinProjectile, buildRupee, buildSoldier, part,
   UNIT_BOX, UNIT_OCTA, UNIT_SPHERE, type Humanoid, buildVillager, buildDog, VILLAGER_LOOKS,
@@ -344,6 +344,9 @@ const STATS: Record<EnemyKind, Stats> = {
   archer: { hp: 2, speed: 2.0, chase: 2.2, dmg: 1, sight: 9, range: 8.5, attackDur: 0.16, recover: 0.4, cooldown: 1.8 },
 };
 
+/** how far a guard on a tight post (bridge, camp) may drift from its own spot, in tiles */
+const TIGHT_LEASH = 2.2;
+
 export class Enemy {
   pos: Vec2;
   facing: Facing = 0;
@@ -363,18 +366,25 @@ export class Enemy {
   yawPrev = 0;
   yawCur = 0;
   strafeDir = 1;
+  /** the committed heading (and time left on it) this guard uses to walk back to its patch */
+  detourX = 0;
+  detourZ = 1;
+  detourT = 0;
+  /** how long to hold a freshly picked patrol heading after bumping into something */
+  blockT = 0;
   fired = false;
   readonly st: Stats;
   readonly HW = 0.3;
   readonly HH = 0.25;
 
   /**
-   * A materialised soldier. Squad members (the only kind there is now) carry their world-state
-   * record and squad: while no player is in sight they march after their formation slot instead of
-   * wandering, and their death is written back to the world state permanently.
+   * A materialised soldier. Every soldier belongs to a guard POST: a patch of the world it holds.
+   * Left alone it wanders that patch at random — never leaving it, tight on a bridge deck and loose
+   * across a wood — and its death is written back to the world state permanently. A replacement
+   * marching in from off the map carries a route to follow instead (`follow`).
    */
   constructor(private game: GameCtx, public kind: EnemyKind, x: number, z: number,
-    public squad: Squad | null = null, public memberIndex = 0) {
+    public post: Post | null = null, public memberIndex = 0) {
     this.pos = { x, z };
     this.st = STATS[kind];
     this.hp = this.st.hp;
@@ -385,16 +395,70 @@ export class Enemy {
     this.sync();
   }
 
-  /** the world-state record behind this entity (null only for non-squad enemies, e.g. tests) */
-  get soldier(): WorldSoldier | null { return this.squad ? this.squad.members[this.memberIndex] : null; }
-  /** current formation slot to march after (set by the Game every frame; null = free-roam patrol) */
+  /** the world-state record behind this entity (null only for post-less enemies, e.g. tests) */
+  get soldier(): WorldSoldier | null { return this.post ? this.post.members[this.memberIndex] : null; }
+  /** point to march to (set by the Game every frame while this soldier walks its route in) */
   follow: Vec2 | null = null;
 
   get melee() { return this.kind === 'sword' || this.kind === 'spear'; }
 
+  /**
+   * The tile this guard stands watch on, taken from its own world record: a replacement inherits
+   * the spot of the man it replaces, so it settles into the same place rather than joining a queue.
+   */
+  private get spot(): Vec2 | null {
+    const m = this.soldier;
+    if (m) return { x: m.hx, z: m.hz };
+    return this.post ? this.post.homes[this.memberIndex] ?? null : null;
+  }
+
+  /**
+   * How far outside its ground this guard is: 1 = at the limit, >1 = strayed and walking back.
+   * A tight post (a bridge, a camp) measures from the guard's own spot, so the knot stays thick;
+   * a spread post measures from the edge of the whole patch it holds.
+   */
+  private strayed(): number {
+    const p = this.post;
+    if (!p) return 0;
+    const spot = this.spot;
+    if (p.tight && spot) return Math.hypot(this.pos.x - spot.x, this.pos.z - spot.z) / TIGHT_LEASH;
+    return Math.hypot((this.pos.x - p.cx) / p.rx, (this.pos.z - p.cz) / p.rz);
+  }
+
   private pickPatrolDir() {
+    const p = this.post;
+    // drifting towards the edge of its ground? Turn back in early enough that it never actually
+    // leaves the patch — unless that way is blocked, in which case any other heading beats
+    // fixating on a tree
+    if (p && this.strayed() > (p.tight ? 0.9 : 0.7)) {
+      const f = facingFrom(p.cx - this.pos.x, p.cz - this.pos.z);
+      const v = FACING_VEC[f];
+      if (!this.blocked(v[0], v[1])) { this.dir = { x: v[0], z: v[1] }; return; }
+    }
     const f = randomFacing(this.game.rand());
     this.dir = { x: FACING_VEC[f][0], z: FACING_VEC[f][1] };
+  }
+
+  /** standing on the tile it guards (within a step of it) */
+  private atSpot(): boolean {
+    const spot = this.spot;
+    return !!spot && Math.hypot(this.pos.x - spot.x, this.pos.z - spot.z) < 0.9;
+  }
+
+  /** would a step this way be stopped dead? Keeps a guard from fixating on a blocked heading. */
+  private blocked(dx: number, dz: number): boolean {
+    const len = Math.hypot(dx, dz) || 1;
+    return this.game.world.boxCollides(this.pos.x + (dx / len) * 0.8, this.pos.z + (dz / len) * 0.8, this.HW, this.HH);
+  }
+
+  /** walk a direction, falling back to its two axes so a guard slides along what it bumps into */
+  private walkSlide(dx: number, dz: number, speed: number, dt: number): boolean {
+    if (this.walk(dx, dz, speed, dt)) return true;
+    if (Math.abs(dx) > 1e-6 && Math.abs(dz) > 1e-6) {
+      if (this.walk(dx, 0, speed, dt)) return true;
+      if (this.walk(0, dz, speed, dt)) return true;
+    }
+    return false;
   }
 
   private faceToward(dx: number, dz: number, hyst = 1) {
@@ -454,23 +518,63 @@ export class Enemy {
 
     switch (this.state) {
       case 'patrol': {
+        const post = this.post;
+        const tight = !!post?.tight;
+        this.blockT = Math.max(0, this.blockT - dt);
         if (this.follow) {
-          // squad member on the march: walk to the formation slot (catching up at chase speed if
-          // the squad moved on while we were busy), then stand guard and glance around
+          // a replacement marching in from off the map: walk the road to its post
           const fx = this.follow.x - this.pos.x, fz = this.follow.z - this.pos.z;
-          const fd = Math.hypot(fx, fz);
-          if (fd > 0.4) {
-            moving = this.walk(fx, fz, Math.min(st.chase, 0.9 + fd), dt);
-          } else {
-            this.stateT -= dt;
-            if (this.stateT <= 0) { this.facing = randomFacing(g.rand()); this.stateT = 1.5 + g.rand() * 2.5; }
+          moving = this.walkSlide(fx, fz, Math.min(st.chase, 1.6), dt);
+        } else if (post && this.strayed() > (tight ? 0.6 : 0.92) && !this.atSpot()) {
+          // strayed towards the edge of its ground (usually after a chase): walk back to the spot it guards,
+          // following around whatever is in the way instead of grinding against it
+          const spot = this.spot;
+          const hx = (spot ? spot.x : post.cx) - this.pos.x, hz = (spot ? spot.z : post.cz) - this.pos.z;
+          // Commit to a heading for a second or two: re-aiming every frame just shuffles the guard
+          // back and forth against whatever is in the way. Blocked, it swings wide on a random side.
+          this.detourT = Math.max(0, this.detourT - dt);
+          if (this.detourT <= 0) {
+            const len = Math.hypot(hx, hz) || 1, ux = hx / len, uz = hz / len;
+            if (!this.blocked(hx, hz)) { this.detourX = ux; this.detourZ = uz; }
+            else {
+              const side = g.rand() < 0.5 ? 1 : -1;
+              this.detourX = ux - uz * side * 1.5;
+              this.detourZ = uz + ux * side * 1.5;
+              if (this.blocked(this.detourX, this.detourZ)) { this.detourX = -uz * side; this.detourZ = ux * side; }
+            }
+            // a knot guard holds a tile, so it swings wide for less time than one crossing a patch
+            this.detourT = this.blocked(this.detourX, this.detourZ) ? 0.3
+              : tight ? 0.5 + g.rand() * 0.6 : 0.9 + g.rand() * 1.4;
           }
+          moving = this.walkSlide(this.detourX, this.detourZ, st.speed, dt);
+          this.stateT = Math.max(this.stateT, 0.5);
         } else {
-          moving = this.walk(this.dir.x, this.dir.z, st.speed, dt);
+          // on guard: wander its own patch at random, standing about now and then
+          const out = post ? this.strayed() : 0;
+          if (out > (tight ? 0.4 : 0.7) && this.blockT <= 0) {
+            // walking out towards the edge of its ground: turn back in now rather than at the next
+            // re-pick, which can be seconds away and several tiles further out. A knot guard turns
+            // back to the tile it holds — and sooner, since it has barely any room to drift;
+            // one on a wide patch turns back to the middle of it.
+            const own = this.spot;
+            const ax = tight && own ? own.x : post!.cx, az = tight && own ? own.z : post!.cz;
+            const f = facingFrom(ax - this.pos.x, az - this.pos.z);
+            const v = FACING_VEC[f];
+            if (!this.blocked(v[0], v[1]) && this.dir.x * v[0] + this.dir.z * v[1] < 0.5) {
+              this.dir = { x: v[0], z: v[1] };
+              this.blockT = tight ? 0.35 + g.rand() * 0.35 : 0.7 + g.rand() * 0.7;
+            }
+          }
+          moving = this.walkSlide(this.dir.x, this.dir.z, st.speed * (tight ? 0.45 : 0.8), dt);
           this.stateT -= dt;
-          if (!moving || this.stateT <= 0) {
+          if (!moving) {
+            // ran into something: pick another way, but hold it a moment so it doesn't jitter in place
+            if (this.blockT <= 0) { this.pickPatrolDir(); this.blockT = 0.4 + g.rand() * 0.6; }
+          } else if (this.stateT <= 0) {
             this.pickPatrolDir();
-            if (g.rand() < 0.3) { this.state = 'idle'; this.stateT = 0.5 + g.rand(); } else this.stateT = 1 + g.rand() * 2;
+            const idleP = tight ? 0.62 : 0.3;
+            if (g.rand() < idleP) { this.state = 'idle'; this.stateT = (tight ? 1.6 : 0.5) + g.rand() * (tight ? 3.4 : 1); }
+            else this.stateT = 1 + g.rand() * 2;
           }
         }
         if (!p.dead && this.canSee(dist, dx, dz)) this.becomeAlert();
