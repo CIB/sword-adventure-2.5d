@@ -6,7 +6,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import {
   buildHeroine, buildSoldier, buildVillager, buildDog, VILLAGER_LOOKS, buildTrees, buildBush, buildBerryBush, buildRock, buildStump,
-  buildFence, buildHouse, buildProp, buildHeart, buildRupee, buildArrow, buildJavelinProjectile,
+  buildFence, buildHouse, buildProp, buildHeart, buildRupee, buildArrow, buildJavelinProjectile, buildMoblinSpearProjectile,
   buildFernGeo, buildTallGrassGeo, buildBriarGeo, buildLilyGeo, buildBoulderGeo, vegObject, type Humanoid,
 } from '../game/models';
 import type { PropKind, HouseSpec, EnemyKind } from '../game/world';
@@ -27,6 +27,7 @@ const grass = new GrassSystem(world);
 const catalog: Cat[] = [
   { name: 'Heroine', items: [{ name: 'Aria', build: () => hum(buildHeroine()) }] },
   { name: 'Fallen Knights', items: (['sword', 'spear', 'javelin', 'archer'] as EnemyKind[]).map((k) => ({ name: k[0].toUpperCase() + k.slice(1) + ' knight', build: () => hum(buildSoldier(k)) })) },
+  { name: 'Moblins', items: (['moblin', 'moblin_spear'] as EnemyKind[]).map((k) => ({ name: k === 'moblin' ? 'Sword moblin (shield)' : 'Spear moblin (thrower)', build: () => hum(buildSoldier(k)) })) },
   { name: 'Villagers', items: [...Object.keys(VILLAGER_LOOKS).map((id) => ({ name: id[0].toUpperCase() + id.slice(1), build: () => hum(buildVillager(VILLAGER_LOOKS[id])) })), { name: 'Dog', build: () => hum(buildDog()) }] },
   { name: 'Houses', items: world.houses.map((h, i) => ({ name: `House ${i + 1} (${h.w}×${h.d}${h.sign && h.sign !== 'none' ? ', ' + h.sign : ''})`, build: () => { const spec: HouseSpec = { ...h, x: -h.w / 2, z: -h.d / 2 }; return { obj: buildHouse(spec), footprint: Math.max(h.w, h.d) + 2 }; } })) },
   { name: 'Foliage', items: [
@@ -49,7 +50,7 @@ const catalog: Cat[] = [
   { name: 'Props', items: PROPS.map((k) => ({ name: k[0].toUpperCase() + k.slice(1), build: () => ({ obj: buildProp({ kind: k, x: 0, z: 0 }), footprint: k === 'tower' || k === 'windmill' ? 6 : k === 'statue' ? 3 : k === 'tent' || k === 'stall' ? 4 : k === 'deadtree' ? 2.5 : 2 }) })) },
   { name: 'Pickups & projectiles', items: [
     { name: 'Heart', build: () => ({ obj: buildHeart() }) }, { name: 'Rupee (green)', build: () => ({ obj: buildRupee(false) }) }, { name: 'Rupee (blue)', build: () => ({ obj: buildRupee(true) }) },
-    { name: 'Arrow', build: () => ({ obj: buildArrow() }) }, { name: 'Javelin', build: () => ({ obj: buildJavelinProjectile() }) },
+    { name: 'Arrow', build: () => ({ obj: buildArrow() }) }, { name: 'Javelin', build: () => ({ obj: buildJavelinProjectile() }) }, { name: 'Moblin spear', build: () => ({ obj: buildMoblinSpearProjectile() }) },
   ] },
   { name: 'Bridges', items: [{ name: 'All bridges (world)', build: () => { const g = new THREE.Group(); for (const o of world.createBridgeMeshes()) g.add(o); const b = world.bridges[0]; g.position.set(-(b.x0 + b.x1 + 1) / 2, 0, -(b.z0 + b.z1 + 1) / 2); const w = new THREE.Group(); w.add(g); return { obj: w, footprint: 12 }; } }] },
 ];
