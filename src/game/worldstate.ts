@@ -342,7 +342,11 @@ export class WorldState {
    * two guards drawing the same one would stand on top of each other.
    */
   private patchSpots(p: Post, radius: number) {
-    const out = { roomyOff: [] as Vec2[], plainOff: [] as Vec2[], roomyRoad: [] as Vec2[], plainRoad: [] as Vec2[] };
+    const out = {
+      roomyRoad: [] as Vec2[], plainRoad: [] as Vec2[],
+      roomyDeck: [] as Vec2[], plainDeck: [] as Vec2[],
+      roomyOff: [] as Vec2[], plainOff: [] as Vec2[],
+    };
     const r = Math.min(radius, Math.max(p.rx, p.rz));
     const x0 = Math.max(1, Math.floor(p.cx - r)), x1 = Math.min(MAP_W - 2, Math.ceil(p.cx + r));
     const z0 = Math.max(1, Math.floor(p.cz - r)), z1 = Math.min(MAP_H - 2, Math.ceil(p.cz + r));
@@ -354,9 +358,13 @@ export class WorldState {
       for (let dz = -1; dz <= 1 && roomy; dz++) for (let dx = -1; dx <= 1; dx++) {
         if (this.world.isSolidTile(x + dx, z + dz)) { roomy = false; break; }
       }
+      const t = this.world.tiles[this.world.idx(x, z)];
       const v = { x: x + 0.5, z: z + 0.5 };
-      if (roomy) (ROAD_TILES.has(this.world.tiles[this.world.idx(x, z)]) ? out.roomyRoad : out.roomyOff).push(v);
-      else (ROAD_TILES.has(this.world.tiles[this.world.idx(x, z)]) ? out.plainRoad : out.plainOff).push(v);
+      // a bridge deck is told apart from the road that runs on from it: a knot groups on the road,
+      // with the planks only as somewhere to stand when the road runs out
+      (t === Tile.Bridge ? (roomy ? out.roomyDeck : out.plainDeck)
+        : ROAD_TILES.has(t) ? (roomy ? out.roomyRoad : out.plainRoad)
+          : (roomy ? out.roomyOff : out.plainOff)).push(v);
     }
     return out;
   }
@@ -403,16 +411,19 @@ export class WorldState {
       const R = Math.max(p.rx, p.rz);
       const tightR = R * (p.tight ? 0.45 : 0.92);
       let spots = this.patchSpots(p, tightR);
-      const count = (s: typeof spots) => s.roomyOff.length + s.plainOff.length + s.roomyRoad.length + s.plainRoad.length;
+      const count = (s: typeof spots) => s.roomyRoad.length + s.plainRoad.length
+        + s.roomyDeck.length + s.plainDeck.length + s.roomyOff.length + s.plainOff.length;
       if (count(spots) < spec.kinds.length && tightR < R) spots = this.patchSpots(p, R);
-      // A roaming post guards the land, so it keeps off the roads; a knot holds a bridge or a
-      // plaza, so for those the deck itself is the ground worth standing on — it fills the deck
-      // tiles first, across the full width of the bridge, before spilling onto the ground beside it.
+      // A roaming post guards the land, so it keeps off the roads. A knot groups on the road by
+      // what it holds — the road running on from a bridge, the cobbles of a camp — so it takes
+      // road tiles first, the planks of a deck only when the road runs out, open ground last.
       const pool = p.tight
         ? [...this.shuffle(spots.roomyRoad), ...this.shuffle(spots.plainRoad),
+          ...this.shuffle(spots.roomyDeck), ...this.shuffle(spots.plainDeck),
           ...this.shuffle(spots.roomyOff), ...this.shuffle(spots.plainOff)]
         : [...this.shuffle(spots.roomyOff), ...this.shuffle(spots.plainOff),
-          ...this.shuffle(spots.roomyRoad), ...this.shuffle(spots.plainRoad)];
+          ...this.shuffle(spots.roomyRoad), ...this.shuffle(spots.plainRoad),
+          ...this.shuffle(spots.roomyDeck), ...this.shuffle(spots.plainDeck)];
       for (let i = 0; i < spec.kinds.length; i++) {
         const spot = pool[i] ?? (() => { const f = this.world.nearestFree(p.cx, p.cz); return { x: f.x, z: f.z }; })();
         p.homes.push(spot);

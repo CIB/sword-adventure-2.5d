@@ -741,21 +741,24 @@ export class World {
     const post = (name: string, at: [number, number], rx: number, rz: number, style: PostStyle,
       kinds: EnemyKind[], entry: string | null, reinforce?: number): PostSpec =>
       ({ name, at, rx, rz, style, kinds, entry, reinforce });
-    // A bridge guard doesn't hold the middle of the deck: it holds one exit — the far one, away
-    // from the village, so the knot stands between home and whatever comes over the river. The
-    // patch is worked out from the deck itself, so it always matches the bridge it guards.
+    // A bridge guard doesn't stand on the planks: it groups on the road just off one end of the
+    // bridge — the far end, away from the village — so the knot stands between home and whatever
+    // comes over the river, on solid road with the bridge at its back. Worked out from the deck
+    // itself, so it always matches the bridge it guards.
     const bridgePost = (name: string, at: [number, number], kinds: EnemyKind[], entry: string | null,
       reinforce?: number): PostSpec => {
       const b = this.bridges.find((b) => at[0] >= b.x0 && at[0] <= b.x1 && at[1] >= b.z0 && at[1] <= b.z1);
       if (!b) throw new Error(`no bridge at ${at[0]},${at[1]} for post '${name}'`);
       const vx = (this.village.x0 + this.village.x1) / 2, vz = (this.village.z0 + this.village.z1) / 2;
       const alongX = b.x1 - b.x0 >= b.z1 - b.z0; // which way the deck runs
-      const farX = Math.abs(b.x1 - vx) >= Math.abs(b.x0 - vx) ? b.x1 : b.x0;
-      const farZ = Math.abs(b.z1 - vz) >= Math.abs(b.z0 - vz) ? b.z1 : b.z0;
+      const dirX = Math.abs(b.x1 - vx) >= Math.abs(b.x0 - vx) ? 1 : -1; // the end away from town
+      const dirZ = Math.abs(b.z1 - vz) >= Math.abs(b.z0 - vz) ? 1 : -1;
+      const endX = dirX > 0 ? b.x1 : b.x0, endZ = dirZ > 0 ? b.z1 : b.z0;
       return {
         name,
-        at: alongX ? [farX + 0.5, (b.z0 + b.z1 + 1) / 2] : [(b.x0 + b.x1 + 1) / 2, farZ + 0.5],
-        rx: alongX ? 1.5 : 2, rz: alongX ? 2 : 1.5,
+        // two tiles clear of the last plank, centred on the road that runs on from the bridge
+        at: alongX ? [endX + dirX * 2 + 0.5, (b.z0 + b.z1 + 1) / 2] : [(b.x0 + b.x1 + 1) / 2, endZ + dirZ * 2 + 0.5],
+        rx: alongX ? 2.5 : 2, rz: alongX ? 2 : 2.5,
         style: 'cluster', kinds, entry, reinforce,
       };
     };

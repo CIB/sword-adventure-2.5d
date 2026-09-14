@@ -226,8 +226,14 @@ const offCentre = (p: { cx: number; cz: number; rx: number; rz: number }, x: num
     return d.p.homes.filter((h) => Math.floor(h.x) >= b.x0 && Math.floor(h.x) <= b.x1
       && Math.floor(h.z) >= b.z0 && Math.floor(h.z) <= b.z1).length;
   });
-  console.log(`INFO bridge knots stand on their decks: ${onDeck.join('/')} guards`);
-  check('bridge knots stand on the deck they hold', onDeck.every((n) => n >= 2), onDeck.join('/'));
+  // they group on the road that runs on from the bridge, not out on the planks
+  const ROAD_NO_DECK = new Set<number>([Tile.Path, Tile.Cobble]);
+  const onRoad = decks.filter((d) => d.b).map((d) =>
+    d.p.homes.filter((h) => ROAD_NO_DECK.has(world.tile(Math.floor(h.x), Math.floor(h.z)))).length);
+  console.log(`INFO bridge knots: ${onRoad.map((n, i) => `${n}/${bridges[i].homes.length}`).join(' ')} on the road, ${onDeck.join('/')} still on a deck`);
+  check('bridge knots group on the road off their bridge',
+    onRoad.every((n, i) => n === bridges[i].homes.length), onRoad.join('/'));
+  check('bridge knots leave the planks clear', onDeck.every((n) => n <= 1), onDeck.join('/'));
 }
 // reinforcements: every post that recruits has a road route in from its map-edge entry
 {
