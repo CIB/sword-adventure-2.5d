@@ -49,9 +49,13 @@ void main(){
   gl_FragColor = vec4(c, 1.0);
 }`;
 
-/** Characters with hand-made (AI-generated, SNES-style) portraits in public/portraits/; everyone else gets a live render of their 3D head. */
+/**
+ * Characters with hand-made (AI-generated, SNES-style) portraits in public/portraits/; everyone else gets
+ * a live render of their 3D head. NPC ids map to in-game names: `bard` = Marigold, `granny` = Grandma
+ * (Maud). `aria` is the heroine herself (no NPC dialogue, but reserved so her portrait is available).
+ */
 const PORTRAITS = new Set(['elder', 'bard', 'granny', 'aria']);
-const PORTRAIT_VERSION = 2; // bump when portrait images change (busts the browser cache)
+const PORTRAIT_VERSION = 3; // bump when portrait images change (busts the browser cache)
 
 /**
  * Oblique projection: ground stays 1:1, world height becomes a vertical screen offset.
