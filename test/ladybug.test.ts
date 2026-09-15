@@ -10,8 +10,8 @@ import * as THREE from 'three';
 import { World } from '../src/game/world';
 import { Enemy, Player, Projectile, fxGust, type GameCtx } from '../src/game/entities';
 import { Wildlife } from '../src/game/wildlife';
-import { buildSoldier, gustRange, isLadybug } from '../src/game/models';
-import { RNG, MAX_HP, FACING_VEC, SHEAR } from '../src/game/constants';
+import { buildSoldier, gustRange, isLadybug, poseLadybug } from '../src/game/models';
+import { RNG, MAX_HP, FACING_VEC, SHEAR, inArc } from '../src/game/constants';
 
 let failures = 0;
 const check = (name: string, cond: boolean, extra = '') => {
@@ -105,8 +105,55 @@ check('the ground tell is measured in tiles of world, not in beetle lengths',
   const coverL = size(bugModel.elytronL!, true), coverR = size(bugModel.elytronR!, true);
   check('the two covers meet along the midline', Math.abs(coverL.min.x) < 0.02 && Math.abs(coverR.max.x) < 0.02,
     `L.min.x=${coverL.min.x.toFixed(3)} R.max.x=${coverR.max.x.toFixed(3)}`);
-  const hind = size(bugModel.hindwingL!, true).union(size(bugModel.hindwingR!, true));
-  check('the hindwings fold away inside the shut shell', coverL.union(coverR).containsBox(hind));
+  // (where the hindwings fold away is checked properly below, against the curved cover)
+}
+
+// the translucent flight wings: pale membranes hinged at the thorax under the pronotum. Folded,
+// they vanish beneath the shell and the belly — checked the way the camera sees it, vertex by
+// vertex against the curved cover, not just the bounding box (a flat sheet can hide inside the box
+// and still poke out of the side). For the charge they sweep wide out to the sides and beat: a low
+// fan, not a wall stood on edge.
+{
+  const bug = buildSoldier('ladybug');
+  bug.root.remove(bug.gustArc!);
+  bug.root.scale.set(1, 1, 1); // author space: the cover numbers below are in beetle lengths
+  const membrane = bug.hindwingL!.children[0] as THREE.Mesh;
+  const wmat = membrane.material as THREE.MeshToonMaterial;
+  check('the wing membranes are pale, see-through sheets',
+    wmat.transparent && wmat.opacity > 0.45 && wmat.opacity < 0.7 && wmat.depthWrite === false && wmat.side === THREE.DoubleSide,
+    `opacity=${wmat.opacity} depthWrite=${wmat.depthWrite} side=${wmat.side}`);
+  // how deep a point sits inside the cover: < 0 means inside the shell dome, the belly or the
+  // pronotum (their ellipsoids, in author space)
+  const cover = (p: THREE.Vector3) => {
+    const f = (cx: number, cy: number, cz: number, hx: number, hy: number, hz: number) =>
+      ((p.x - cx) / hx) ** 2 + ((p.y - cy) / hy) ** 2 + ((p.z - cz) / hz) ** 2 - 1;
+    return Math.min(f(0, 0.6, -0.22, 0.56, 0.42, 0.62), f(0, 0.52, -0.02, 0.53, 0.26, 0.7), f(0, 0.8, 0.44, 0.43, 0.22, 0.26));
+  };
+  let n = 0, out = 0, worst = 0;
+  for (const side of [bug.hindwingL!, bug.hindwingR!]) {
+    side.updateWorldMatrix(true, true);
+    for (const child of side.children) {
+      const mesh = child as THREE.Mesh;
+      const pos = mesh.geometry.getAttribute('position');
+      const v = new THREE.Vector3();
+      for (let i = 0; i < pos.count; i++) {
+        const d = cover(v.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld));
+        n++;
+        if (d > 0) { out++; worst = Math.max(worst, d); }
+      }
+    }
+  }
+  check('the folded wings vanish under the shell and belly', out / n < 0.02 && worst < 0.05,
+    `${out}/${n} vertices outside the cover, deepest ${worst.toFixed(4)}`);
+  // the charge: the same wings swept fully open, posed exactly the way poseLadybug poses them —
+  // measured against the SHUT shell, since that is what they fan out of
+  const shell = size(bug.elytronL!).union(size(bug.elytronR!));
+  poseLadybug(bug, 1, 0, 0, 0);
+  const wings = size(bug.hindwingL!, true).union(size(bug.hindwingR!, true));
+  check('the spread wings fan out wide past the shell', wings.max.x > shell.max.x + 0.2 && wings.min.x < shell.min.x - 0.2,
+    `wings ±${wings.max.x.toFixed(2)} vs shell ±${shell.max.x.toFixed(2)}`);
+  check('...and stay low — a fan, not a wall', wings.max.y < shell.max.y,
+    `wing top ${wings.max.y.toFixed(2)} vs shell top ${shell.max.y.toFixed(2)}`);
 }
 
 // The oversized one: the same beetle at the size it was first drawn, kept for the special encounter.
@@ -171,6 +218,50 @@ check('the ground tell is measured in tiles of world, not in beetle lengths',
   for (let i = 0; i < Math.round(0.6 / DT); i++) bug.update(DT);
   check('a gust thrown the other way leaves her standing', Math.abs(player.pos.z - pz0) < 0.05 && player.hp === MAX_HP && hits.length === 0,
     `moved ${Math.abs(player.pos.z - pz0).toFixed(2)} tiles, hp ${player.hp}, ${hits.length} hit(s)`);
+}
+
+// A sword blow mid-charge: the beetle has braced for the clap, so a plain swing only nudges it
+// and does not cancel the charge — the clap comes anyway. Only the charged spin breaks it off.
+{
+  const { ctx, player, hits } = makeCtx(44.5, 41.5);
+  const bug = new Enemy(ctx, 'ladybug', 44.5, 39.1);
+  bug.facing = 0; // due south, at the player
+  ctx.enemies.push(bug);
+  bug.state = 'windup'; bug.stateT = 0.5; // shell partway open
+  const pz0 = player.pos.z;
+  bug.hurt(1, player.pos.x, player.pos.z); // a plain swing lands on the charging shell
+  check('a plain swing does not cancel the charge', bug.state === 'windup' && bug.stateT > 0.4,
+    `state=${bug.state} t=${bug.stateT.toFixed(2)}`);
+  check('...and the braced beetle takes a lighter shove', Math.hypot(bug.knock.x, bug.knock.z) < 4 && bug.knockT < 0.22,
+    `shove ${Math.hypot(bug.knock.x, bug.knock.z).toFixed(1)} for ${bug.knockT.toFixed(2)}s (a loose beetle takes 6.5 for 0.22s)`);
+  // let the charge finish, the clap land, and her throw play out
+  for (let i = 0; i < Math.round(1.5 / DT); i++) {
+    bug.update(DT); player.update(DT, NO_INPUT);
+  }
+  check('the clap comes anyway, on the charge that was never cancelled',
+    hits.length === 1 && player.hp === MAX_HP - bug.st.dmg && player.pos.z > pz0 + 0.5,
+    `hp ${player.hp} of ${MAX_HP}, ${hits.length} hit(s), moved ${(player.pos.z - pz0).toFixed(2)} tiles`);
+}
+
+// The charge stance, measured head-on against a loose beetle — and the one blow that still breaks
+// the charge off: the charged spin.
+{
+  const { ctx, player } = makeCtx(44.5, 41.5);
+  const braced = new Enemy(ctx, 'ladybug', 44.5, 39.1);
+  braced.state = 'windup'; braced.stateT = 0.5;
+  const loose = new Enemy(ctx, 'ladybug', 46.5, 39.1);
+  ctx.enemies.push(braced, loose);
+  braced.hurt(1, player.pos.x, player.pos.z);
+  loose.hurt(1, player.pos.x, player.pos.z);
+  const kb = Math.hypot(braced.knock.x, braced.knock.z), kl = Math.hypot(loose.knock.x, loose.knock.z);
+  check('a charging beetle takes less than half the shove a loose one does',
+    kb > 0 && kl > 6 && kl < 7 && kb < kl / 2, `charging ${kb.toFixed(1)} vs loose ${kl.toFixed(1)}`);
+  check('...and it is back on its feet sooner', braced.knockT < loose.knockT,
+    `${braced.knockT.toFixed(2)}s vs ${loose.knockT.toFixed(2)}s`);
+  check('...and its charge is still going', braced.state === 'windup' && loose.state === 'chase',
+    `braced=${braced.state} loose=${loose.state}`);
+  braced.hurt(1, player.pos.x, player.pos.z, true); // the charged spin
+  check('the charged spin does break the charge off', braced.state === 'chase', `state=${braced.state}`);
 }
 
 // Everything in the cone goes, not just the heroine: soldiers are blown off their feet, and an arrow
@@ -301,14 +392,52 @@ function runWildlife(seconds: number, x: number, z: number, viewR = 26) {
   const { ctx } = runWildlife(40, 44.5, 38.5);
   const bugs = ctx.enemies.filter((e) => e.kind === 'ladybug');
   const bug = bugs[0];
-  check('a ladybug is a soft target: three swings and it is done', gapCheck(bug) && bug.st.dmg === 1,
+  // The number is asserted, not just printed: the beetle must take exactly four 1-damage swings,
+  // so a quiet revert of its HP fails the check instead of reading as a different number
+  check('a ladybug is a soft target: four swings and it is done', swingsToKill(bug) === 4 && bug.st.hp === 4 && bug.st.dmg === 1,
     `${bug.st.hp} hp, gust does ${bug.st.dmg}`);
 }
-function gapCheck(bug: Enemy) {
-  // three hits of a normal swing kill it
-  let dead = false;
-  for (let i = 0; i < 3 && !dead; i++) dead = bug.hurt(1, bug.pos.x, bug.pos.z - 1);
-  return dead;
+/** how many plain-swing hits it takes to kill (0 = it survives the whole trial) */
+function swingsToKill(bug: Enemy, trial = 12): number {
+  let hits = 0;
+  while (hits < trial && bug.alive) { bug.hurt(1, bug.pos.x, bug.pos.z - 1); hits++; }
+  return bug.alive ? 0 : hits;
+}
+
+// What the soft-target number means in the actual game: full sword swings run through the
+// player's real state machine and the game's own reach/arc check — not direct hurt() calls.
+// One full swing must hit the beetle exactly once, for 1 damage, so a 4 hp ladybug falls on
+// the fourth swing (this is the thing that used to read as three in a stale build).
+{
+  const { ctx, player } = makeCtx(44.5, 44.5);
+  player.facing = 0; // due south, at the beetle
+  const bug = new Enemy(ctx, 'ladybug', 44.5, 45.8); // 1.3 tiles ahead: inside the sweep
+  ctx.enemies.push(bug);
+  let swings = 0, hits = 0, inSwing = 0, wasAttacking = false;
+  for (let i = 0; i < 300 && bug.alive; i++) {
+    const press = player.state === 'idle'; // tap the sword each frame she is free to swing
+    player.update(DT, { moveX: 0, moveZ: 0, down: () => false, justPressed: () => press } as never);
+    if (player.attacking) {
+      if (!wasAttacking) { swings++; inSwing = 0; }
+      const sw = player.getSweep();
+      if (sw && bug.alive) {
+        const dx = bug.pos.x - player.pos.x, dz = bug.pos.z - player.pos.z;
+        const d = Math.hypot(dx, dz);
+        // the same reach and arc check the game applies (game.ts: resolveSword)
+        if (d <= sw.r + bug.radius && (d <= 0.45 || inArc(Math.atan2(dx, dz), sw.from, sw.to, 0.3))) {
+          if (!sw.hit.has(bug)) {
+            sw.hit.add(bug);
+            inSwing++; hits++;
+            bug.hurt(sw.dmg, player.pos.x, player.pos.z, sw.heavy);
+          }
+        }
+      }
+    }
+    wasAttacking = player.attacking;
+  }
+  check('one full swing hits the beetle exactly once, for 1 damage', swings === hits && hits === bug.st.hp,
+    `${swings} swings, ${hits} hits, ${bug.st.hp} hp`);
+  check('...so a 4 hp ladybug falls on the fourth swing, not the third', !bug.alive && swings === 4, `${swings} swings`);
 }
 
 // The queen is the special encounter: one at a time, rare, and never part of the crowd. Given long
@@ -323,11 +452,15 @@ function gapCheck(bug: Enemy) {
   check('...but never two of her at once', queenMax <= 1, `${queenMax} at once`);
   check('...and the ordinary beetles do not stop coming', spawned.filter((s) => !queens.includes(s)).length >= 3,
     `${spawned.length - queens.length} commons`);
-  const queen = ctx.enemies.find((e) => e.kind === 'ladybug_queen');
-  check('the queen is the tough one of the family', !!queen && !gapCheck(queen) && queen.st.hp > 3, `${queen?.st.hp} hp, dmg ${queen?.st.dmg}`);
+  // the encounter's own queen may already have wandered off the active region and been let go by
+  // then (the spawner's business, with full HP intact) — the toughness is about the species, so
+  // measure it on a live one, a fresh one if the other has gone
+  let queen = ctx.enemies.find((e) => e.kind === 'ladybug_queen' && e.alive);
+  if (!queen) { queen = new Enemy(ctx, 'ladybug_queen', 44.5, 39.1); ctx.enemies.push(queen); }
+  check('the queen is the tough one of the family', swingsToKill(queen) === 12 && queen.st.hp === 12, `${queen.st.hp} hp, dmg ${queen.st.dmg}`);
   check('...and her clap does twice what a common beetle\'s does',
-    (queen?.st.dmg ?? 0) === 2 && ctx.enemies.filter((e) => e.kind === 'ladybug').every((e) => e.st.dmg === 1),
-    `queen ${queen?.st.dmg}, commons ${[...new Set(ctx.enemies.filter((e) => e.kind === 'ladybug').map((e) => e.st.dmg))].join(',')}`);
+    queen.st.dmg === 2 && ctx.enemies.filter((e) => e.kind === 'ladybug').every((e) => e.st.dmg === 1),
+    `queen ${queen.st.dmg}, commons ${[...new Set(ctx.enemies.filter((e) => e.kind === 'ladybug').map((e) => e.st.dmg))].join(',')}`);
   check('...while the commons keep the population at its usual size', wildlife.bugs.length <= 6, `${wildlife.bugs.length} bugs`);
 }
 
