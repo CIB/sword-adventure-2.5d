@@ -385,8 +385,13 @@ const GUST_PUSH = 13;
 // ---- spitflower tuning ------------------------------------------------------
 /** seconds the mouth glows and the petals open before a spit leaves it (the whole telegraph) */
 const SPIT_WINDUP = 0.7;
-/** how fast the flower's head turns to follow the heroine, radians/second */
-const SPIT_TURN = 4.0;
+/**
+ * How fast the flower's stalk hauls itself around at the base, radians/second. Deliberately heavy:
+ * the turn is the stalk's whole body swinging, not a turret spinning, so it lags her visibly.
+ */
+const SPIT_TURN = 2.4;
+/** how far the head may correct on its neck either side of where the stalk points, radians */
+const HEAD_OFF_MAX = 0.45;
 
 /** how far a guard on a tight post (bridge, camp) may drift from its own spot, in tiles */
 const TIGHT_LEASH = 2.2;
@@ -423,11 +428,17 @@ export class Enemy {
   moblinGuardHits = 0;
   moblinGuardBroken = 0;
   /**
-   * Spitflower only: the fixed yaw the stalk sprouted at (the root never turns) and the head's own
-   * continuous angle, which swings around to follow the heroine independently of the 4-way facing.
+   * Spitflower only: the fixed yaw the stalk sprouted at (the root never turns), the stalk's own
+   * continuous angle as it hauls itself around at the base, and the head's small correction on its
+   * neck. The mouth points along `aimYaw + headOff` — the stalk does the turning, the head only
+   * fine-tunes. `bend` is how hard the stalk is currently curved, `turnSpeed` how fast it swung
+   * this frame (both feed the bend animation).
    */
   plantedYaw = 0;
-  headYaw = 0;
+  aimYaw = 0;
+  headOff = 0;
+  bend = 0.16;
+  turnSpeed = 0;
   readonly st: Stats;
   readonly HW = 0.3;
   readonly HH = 0.25;
@@ -447,7 +458,10 @@ export class Enemy {
     // a beetle is mostly shell: even the soldier-sized one presents a rounder, broader target than a
     // soldier, and the queen the broadest of all
     if (isLadybug(kind)) this.radius = kind === 'ladybug_queen' ? 0.55 : 0.45;
-    if (isSpitflower(kind)) this.plantedYaw = this.headYaw = game.rand() * Math.PI * 2;
+    if (isSpitflower(kind)) {
+      this.plantedYaw = game.rand() * Math.PI * 2;
+      this.aimYaw = normAngle(this.plantedYaw);
+    }
     this.facing = randomFacing(game.rand());
     this.pickPatrolDir();
     game.scene.add(this.model.root);
@@ -530,13 +544,28 @@ export class Enemy {
   }
 
   /**
-   * Turn the flower's head toward the heroine, at most `rate` radians/second — the stalk stays put
-   * while the head swings around on its neck. Used everywhere a walking enemy would turn its body.
+   * Aim the flower at the heroine the way a plant would: the stalk hauls itself around at the base
+   * (at most `rate` radians/second — heavy, laggy, the whole plant swinging), and the head only
+   * adds a quick small correction on its neck. The stalk also bends harder while it is working —
+   * whipping around after her curves it, arriving straightens it back out. Used everywhere a
+   * walking enemy would turn its body.
    */
-  private headTrack(dt: number, dx: number, dz: number, rate = SPIT_TURN) {
-    const d = normAngle(Math.atan2(dx, dz) - this.headYaw);
+  private aimTrack(dt: number, dx: number, dz: number, rate = SPIT_TURN) {
+    const target = Math.atan2(dx, dz);
+    const d = normAngle(target - this.aimYaw);
     const step = rate * dt;
-    this.headYaw = Math.abs(d) <= step ? Math.atan2(dx, dz) : this.headYaw + Math.sign(d) * step;
+    const applied = Math.abs(d) <= step ? d : Math.sign(d) * step;
+    this.aimYaw = normAngle(this.aimYaw + applied);
+    this.turnSpeed = Math.abs(applied) / Math.max(dt, 1e-4);
+    const want = clamp(normAngle(target - this.aimYaw), -HEAD_OFF_MAX, HEAD_OFF_MAX);
+    const od = want - this.headOff;
+    const ostep = 6 * dt;
+    this.headOff += Math.abs(od) <= ostep ? od : Math.sign(od) * ostep;
+    const lunge = this.state === 'windup' ? 0.1 : this.state === 'attack' ? 0.18 : 0;
+    const bendTarget = 0.16 + lunge
+      + Math.min(1, this.turnSpeed / SPIT_TURN) * 0.22
+      + Math.min(1, Math.abs(d) / 1.2) * 0.1;
+    this.bend += (bendTarget - this.bend) * (1 - Math.exp(-dt * 5));
   }
 
   private walk(dx: number, dz: number, speed: number, dt: number): boolean {
@@ -575,6 +604,7 @@ export class Enemy {
     const g = this.game, p = g.player, st = this.st;
     this.age += dt;
     this.cooldown = Math.max(0, this.cooldown - dt);
+    if (this.isRooted) this.turnSpeed = 0; // aimTrack sets it while the stalk works, so a locked-on stalk reads still
     if (this.flashT > 0) { this.flashT -= dt; if (this.flashT <= 0) setEmissive(this.model.materials, false); }
 
     if (this.knockT > 0) {
@@ -607,7 +637,7 @@ export class Enemy {
       case 'patrol': {
         if (this.isRooted) {
           // planted: sway on its stalk, idly watching her go by, until she is close enough to spit at
-          this.headTrack(dt, dx, dz, SPIT_TURN * 0.4);
+          this.aimTrack(dt, dx, dz, SPIT_TURN * 0.4);
           if (!p.dead && this.canSee(dist, dx, dz)) this.becomeAlert();
           break;
         }
@@ -675,7 +705,7 @@ export class Enemy {
       }
       case 'idle': {
         if (this.isRooted) {
-          this.headTrack(dt, dx, dz, SPIT_TURN * 0.4);
+          this.aimTrack(dt, dx, dz, SPIT_TURN * 0.4);
           if (!p.dead && this.canSee(dist, dx, dz)) this.becomeAlert();
           break;
         }
@@ -685,7 +715,7 @@ export class Enemy {
         break;
       }
       case 'alert': {
-        if (this.isRooted) this.headTrack(dt, dx, dz);
+        if (this.isRooted) this.aimTrack(dt, dx, dz);
         else this.faceToward(dx, dz);
         this.stateT -= dt;
         if (this.stateT <= 0) this.state = this.melee ? 'chase' : 'ranged';
@@ -712,7 +742,7 @@ export class Enemy {
         if (this.isRooted) {
           // a turret: no footwork, just the head tracking her — and a spit brewing whenever she is
           // in range and the mouth is off cooldown
-          this.headTrack(dt, dx, dz);
+          this.aimTrack(dt, dx, dz);
           if (this.cooldown <= 0 && dist < st.range && dist > 1.2) {
             this.state = 'windup';
             this.stateT = SPIT_WINDUP;
@@ -755,7 +785,7 @@ export class Enemy {
         const committed = isLadybug(this.kind) && this.stateT < LADYBUG_CHARGE * 0.45;
         // the flower tracks her through most of the wind-up, then locks on: the last stretch is
         // committed, so the head visibly stops following her and a sidestep dodges the spit
-        if (this.isRooted) { if (this.stateT > SPIT_WINDUP * 0.35) this.headTrack(dt, dx, dz); }
+        if (this.isRooted) { if (this.stateT > SPIT_WINDUP * 0.35) this.aimTrack(dt, dx, dz); }
         else if (this.kind !== 'archer' && !committed) this.faceToward(dx, dz);
         if (this.stateT <= 0) {
           this.state = 'attack'; this.stateT = 0; this.attackHit = false; this.fired = false; this.yawPrev = this.yawCur = -1.7;
@@ -838,17 +868,18 @@ export class Enemy {
         this.gust();
       }
     } else if (isSpitflower(this.kind)) {
-      // the spit: one energy ball out of the open mouth, going where the head points — which is
-      // where she was standing when it locked on, not where she is now
+      // the spit: one energy ball out of the open mouth, going where the mouth points — the
+      // stalk's aim plus the head's small correction, frozen where they locked on
       if (!this.fired && this.stateT > 0.1) {
         this.fired = true;
-        const hx = Math.sin(this.headYaw), hz = Math.cos(this.headYaw);
+        const a = this.aimYaw + this.headOff;
+        const hx = Math.sin(a), hz = Math.cos(a);
         const mx = this.pos.x + hx * 0.6, mz = this.pos.z + hz * 0.6;
         g.spawnProjectile('energy', mx, mz, hx, hz, st.dmg);
         g.audio.flowerSpit();
-        g.spawnEffect(fxSpit(mx, mz, this.headYaw).at(mx, mz));
+        g.spawnEffect(fxSpit(mx, mz, a).at(mx, mz));
       } else if (this.fired) {
-        this.headTrack(dt, dx, dz); // the head swings back onto her once the spit has left
+        this.aimTrack(dt, dx, dz); // the stalk hauls itself back onto her once the spit has left
       }
     } else {
       if (!this.fired) {
@@ -1126,23 +1157,30 @@ export class Enemy {
   }
 
   /**
-   * The spitflower's whole performance: the stalk bends at the base toward whatever the head is
-   * watching (plus a breath of breeze so it never stands dead still), the head swings on its neck
-   * after the heroine, and the petals work with the mouth — cupped at rest, yawning open as the
-   * glow swells for a spit, flung wide as it leaves.
+   * The spitflower's whole performance: the stalk swings around at the base and curves toward her
+   * (plus a breath of breeze so it never stands dead still), the head only ever corrects a little
+   * on its neck, and the petals work with the mouth — cupped at rest, yawning open as the glow
+   * swells for a spit, flung wide as it leaves.
    */
   private animateFlower() {
     const m = this.model, t = this.age, s = this.state;
-    // the stalk leans toward the head's gaze (local to the planted yaw), swaying in the breeze
-    const l = normAngle(this.headYaw - this.plantedYaw);
-    const lean = 0.1 + (s === 'windup' ? 0.07 : s === 'attack' ? 0.14 : 0);
+    // the turn travels up the plant: the lower stalk yaws at the base and leans, the upper joint
+    // bends further in the same direction, and shivers while the stalk whips around
     m.body.rotation.set(
-      Math.cos(l) * lean + Math.sin(t * 1.7) * 0.028,
-      0,
-      -Math.sin(l) * lean + Math.cos(t * 1.3) * 0.028,
+      this.bend * 0.45 + Math.sin(t * 1.7) * 0.028,
+      normAngle(this.aimYaw - this.plantedYaw),
+      Math.cos(t * 1.3) * 0.014,
     );
-    // the head rides the neck: yaw after her, tipping back to aim up and lunging into the spit
-    m.head.rotation.y = normAngle(this.headYaw - this.plantedYaw);
+    if (m.stalkTop) {
+      const strain = Math.min(1, this.turnSpeed / SPIT_TURN);
+      m.stalkTop.rotation.set(
+        this.bend * 0.55 + Math.sin(t * 9) * 0.05 * strain + Math.sin(t * 1.7 + 1) * 0.014,
+        0, 0,
+      );
+    }
+    // the head rides the stalk: a small correction on the neck, tipping back for the wind-up and
+    // lunging into the spit
+    m.head.rotation.y = this.headOff;
     m.head.rotation.x = s === 'attack' ? 0.16 : s === 'windup' ? -0.1 : Math.sin(t * 1.1) * 0.03;
     // petals + mouth glow, from the state of the spit
     let open = 0.25 + Math.sin(t * 1.4) * 0.05;

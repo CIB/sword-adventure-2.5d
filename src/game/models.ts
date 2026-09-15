@@ -113,6 +113,13 @@ export interface Humanoid {
   petals?: THREE.Group[];
   mouth?: THREE.Mesh;
   mouthGlow?: THREE.Mesh;
+  /**
+   * Spitflower only: the upper-stalk joint, hinged halfway up so the stalk curves instead of
+   * tilting like a stick. The lower stalk (`body`) yaws the whole assembly around at the base and
+   * leans, and this joint bends further in the same direction — the turn visibly travels up the
+   * plant rather than spinning on the neck.
+   */
+  stalkTop?: THREE.Group;
   materials: THREE.MeshToonMaterial[];
 }
 
@@ -636,14 +643,16 @@ export const SPITFLOWER_PETALS = 7;
 
 /**
  * A spitflower — the forest's own turret: a big blossom on a long flexible stalk, rooted where it
- * sprouted. The stalk (`body`) bends at the base toward whatever the head is watching, and the head
- * itself turns a full circle on its neck to follow the heroine, so the two together read as one
- * living, flexible plant rather than a soldier with a flower hat.
+ * sprouted. It aims the way a plant would: the stalk hauls itself around at the base and bends
+ * toward her, and the head only adds a small correction on its neck — there is deliberately no
+ * free-spinning neck joint for it to turret on.
  *
- * The head is a sunflower-like face: a yellow disc ringed by petals, with a dark mouth in the middle
- * that glows green while a spit is charging. The petals are real hinges (`petals`): cupped forward
- * around the mouth at rest, flung back for the spit. The side buds ride the arm slots and the two
- * big ground leaves ride the leg slots, so the Humanoid rig stays intact.
+ * The stalk is two segments: the lower stalk (`body`) yaws the assembly around and leans, and the
+ * upper joint (`stalkTop`) bends further in the same direction, so the turn visibly curves up the
+ * plant. The head is a sunflower-like face: a yellow disc ringed by petals, with a dark mouth in
+ * the middle that glows green while a spit is charging. The petals are real hinges (`petals`):
+ * cupped forward around the mouth at rest, flung back for the spit. The side buds ride the arm
+ * slots and the two big ground leaves ride the leg slots, so the Humanoid rig stays intact.
  */
 export function buildSpitflower(): Humanoid {
   const stalkMat = toon('#3f9a3d');
@@ -659,18 +668,27 @@ export function buildSpitflower(): Humanoid {
 
   const root = new THREE.Group();
   root.add(blobShadow(0.42));
+  // yaw first, then tilt in the yawed frame: rotation.y swings the stalk around, rotation.x leans
+  // it toward wherever it faces
   const body = new THREE.Group();
+  body.rotation.order = 'YXZ';
   root.add(body);
 
-  // the mound it sits in, and the long stalk rising out of it
+  // the mound it sits in, and the lower stalk rising out of it
   body.add(part(UNIT_SPHERE, soilMat, [0, 0.04, 0], [0.5, 0.16, 0.44]));
-  body.add(part(UNIT_CYL, stalkMat, [0, 0.62, 0], [0.22, 1.15, 0.22]));
-  // a pair of thorns on the stalk, and one small leaf halfway up
-  body.add(part(UNIT_CONE, leafDark, [0.13, 0.78, 0], [0.09, 0.16, 0.09]).rotateZ(-1.1));
-  body.add(part(UNIT_CONE, leafDark, [-0.13, 0.95, 0.02], [0.09, 0.16, 0.09]).rotateZ(1.1));
-  const midLeaf = part(UNIT_BOX, leafMat, [0.2, 1.0, 0], [0.34, 0.05, 0.16]);
+  body.add(part(UNIT_CYL, stalkMat, [0, 0.4, 0], [0.24, 0.7, 0.24]));
+  // a pair of thorns on the lower stalk
+  body.add(part(UNIT_CONE, leafDark, [0.13, 0.42, 0], [0.09, 0.16, 0.09]).rotateZ(-1.1));
+  body.add(part(UNIT_CONE, leafDark, [-0.13, 0.58, 0.02], [0.09, 0.16, 0.09]).rotateZ(1.1));
+
+  // the upper stalk, hinged halfway up so the whole thing curves
+  const stalkTop = new THREE.Group();
+  stalkTop.position.set(0, 0.72, 0);
+  body.add(stalkTop);
+  stalkTop.add(part(UNIT_CYL, stalkMat, [0, 0.26, 0], [0.18, 0.6, 0.18]));
+  const midLeaf = part(UNIT_BOX, leafMat, [0.2, 0.28, 0], [0.34, 0.05, 0.16]);
   midLeaf.rotation.z = 0.5;
-  body.add(midLeaf);
+  stalkTop.add(midLeaf);
 
   // the two big ground leaves (leg slots): broad, drooping, rustling in the animation
   const leaf = (side: 1 | -1) => {
@@ -698,15 +716,16 @@ export function buildSpitflower(): Humanoid {
     arm.add(hand);
     return { arm, hand };
   };
-  const { arm: armR, hand: handR } = bud(-1, 0.98);
-  const { arm: armL, hand: handL } = bud(1, 0.82);
+  const { arm: armR, hand: handR } = bud(-1, 0.56);
+  const { arm: armL, hand: handL } = bud(1, 0.42);
   body.add(armR, armL);
 
-  // the head: neck + sepal cup + yellow face + dark mouth, ringed by hinged petals
+  // the head: neck + sepal cup + yellow face + dark mouth, ringed by hinged petals.
+  // It rides the upper stalk (0.72 + 0.52 = SPITFLOWER_HEAD_H above the ground when straight).
   const head = new THREE.Group();
-  head.position.set(0, SPITFLOWER_HEAD_H, 0);
+  head.position.set(0, SPITFLOWER_HEAD_H - 0.72, 0);
   head.rotation.order = 'YXZ';
-  body.add(head);
+  stalkTop.add(head);
   head.add(part(UNIT_CYL, stalkMat, [0, -0.1, 0], [0.18, 0.3, 0.18]));
   head.add(part(UNIT_SPHERE, sepalMat, [0, 0, -0.06], [0.54, 0.48, 0.44]));
   head.add(part(UNIT_SPHERE, faceMat, [0, 0, 0.2], [0.44, 0.4, 0.18]));
@@ -728,7 +747,7 @@ export function buildSpitflower(): Humanoid {
     petals.push(hinge);
   }
 
-  return { root, body, head, armR, armL, handR, handL, legR, legL, petals, mouth, mouthGlow, materials: collectMaterials(root) };
+  return { root, body, head, armR, armL, handR, handL, legR, legL, petals, mouth, mouthGlow, stalkTop, materials: collectMaterials(root) };
 }
 
 // ---------------------------------------------------------------- props

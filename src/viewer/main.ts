@@ -193,12 +193,14 @@ function animate(dt: number) {
   if (!m.petals) m.body.position.y = Math.abs(swing) * 0.04;
   if (m.ponytail) m.ponytail.rotation.x = swing * 0.2 + 0.15;
   if (!m.petals) m.armL.rotation.x = swing * 0.3;
-  // the spitflower: sway the stalk, turn the head in a slow circle, breathe the petals open and
-  // shut so the mouth and the glow inside it can actually be looked at here
+  // the spitflower: haul the stalk around in a slow circle with the upper joint bending further
+  // (the turn curves up the plant — the head only corrects a little), and breathe the petals open
+  // and shut so the mouth and the glow inside it can actually be looked at here
   if (m.petals) {
     const t = animT * 0.11;
-    m.body.rotation.set(Math.sin(t * 1.7) * 0.06 + 0.08, 0, Math.cos(t * 1.3) * 0.06);
-    m.head.rotation.y = t % (Math.PI * 2);
+    m.body.rotation.set(0.14 + Math.sin(t * 1.7) * 0.04, t % (Math.PI * 2), 0);
+    if (m.stalkTop) m.stalkTop.rotation.set(0.2 + Math.sin(t * 1.7 + 1) * 0.05, 0, 0);
+    m.head.rotation.y = Math.sin(t * 2.3) * 0.3;
     const open = 0.5 + 0.5 * Math.sin(animT * 0.03);
     for (const hinge of m.petals) {
       const petal = hinge.children[0] as THREE.Mesh;
