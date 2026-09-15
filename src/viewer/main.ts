@@ -176,6 +176,7 @@ function applyFacing() {
  */
 const LADYBUG_CYCLE = 4.4;
 const FLAP_HZ = 11.5;
+const smooth01 = (p: number) => p * p * (3 - 2 * p);
 function animateLadybug(lb: Ladybug, dt: number) {
   if (!animCb.checked) { poseLadybug(lb, 0, 0, 0, animT); return; }
   animT += dt;
@@ -189,7 +190,6 @@ function animateLadybug(lb: Ladybug, dt: number) {
   const step = c < 1.4 || c > 3.8 ? Math.sin(animT * 7) : 0;
   poseLadybug(lb, open, beat, step, animT);
 }
-const smooth01 = (p: number) => p * p * (3 - 2 * p);
 
 function animate(dt: number) {
   if (!current?.humanoid) {
