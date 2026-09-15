@@ -689,16 +689,23 @@ export function buildCropGeo(crop: 'turnip' | 'cabbage', stage: number): THREE.B
   return mergeGeometries(parts)!;
 }
 
-/** A tin watering can, held by the handle (origin at the grip). */
+/**
+ * The farmhand's watering can — ported from #20 visuals (steel + brass band).
+ * Stubby body with brass base band, spout with rose, bow handle. Holds from hand
+ * so pour is just tipping forward.
+ */
 export function buildWateringCan(): THREE.Group {
+  const steel = toon('#a8b4c0'), steelD = toon('#6f7c88'), brass = toon('#c9a24a');
   const g = new THREE.Group();
-  const tin = toon('#8fa0a8'), tinD = toon('#5c6a72');
-  g.add(part(UNIT_CYL, tin, [0, -0.2, 0], [0.22, 0.22, 0.22]));          // body
-  g.add(part(UNIT_CYL, tinD, [0, -0.09, 0], [0.24, 0.03, 0.24]));        // rim
-  g.add(part(UNIT_BOX, tinD, [0, 0, 0], [0.04, 0.2, 0.04]));            // handle upright (the grip)
-  g.add(part(UNIT_BOX, tinD, [0, 0.08, 0], [0.16, 0.03, 0.04]));
-  g.add(part(UNIT_CYL, tin, [0, -0.14, 0.16], [0.04, 0.26, 0.04]).rotateX(0.9)); // spout (points forward, +z)
-  g.add(part(UNIT_CYL, tinD, [0, -0.05, 0.26], [0.09, 0.03, 0.09]));    // rose
+  g.add(part(UNIT_CYL, steel, [0, -0.17, 0.0], [0.3, 0.3, 0.3]));        // body
+  g.add(part(UNIT_CYL, steelD, [0, -0.03, 0.0], [0.26, 0.06, 0.26]));    // lid
+  g.add(part(UNIT_CYL, brass, [0, -0.31, 0.0], [0.31, 0.04, 0.31]));     // base band
+  const spout = part(UNIT_CYL, steel, [0, -0.14, 0.2], [0.07, 0.34, 0.07]);
+  spout.rotation.x = 0.8;
+  g.add(spout);
+  g.add(part(UNIT_CYL, steelD, [0, -0.05, 0.34], [0.11, 0.05, 0.11]));   // rose
+  g.add(part(UNIT_BOX, steelD, [0, 0.05, 0.0], [0.05, 0.22, 0.05]));     // handle bow
+  g.add(part(UNIT_BOX, steelD, [0, 0.14, 0.0], [0.18, 0.04, 0.05]));
   return g;
 }
 

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { FACING_ANGLE, FACING_VEC, MAX_HP, inArc, lerp, normAngle, facingFrom, facingDelta, randomFacing, FACING_HALF_STEP, type Facing } from './constants';
+import { FACING_ANGLE, FACING_VEC, MAX_HP, clamp, inArc, lerp, normAngle, facingFrom, facingDelta, randomFacing, FACING_HALF_STEP, type Facing } from './constants';
 import type { AudioEngine } from './audio';
 import type { Input } from './input';
 import { ATTACK_KEYS, SHIELD_KEYS } from './input';
@@ -1135,14 +1135,18 @@ export class Farmer extends Npc {
         break;
       }
       case 'water': {
-        const t = f.t, a = ACTIONS.water;
-        carry();
+        // ported from #20 visuals — steel/brass can comes up, tips, pours till bed soaked (visuals only)
+        const a = ACTIONS.water;
         this.can.visible = true;
-        // lift the can forward and tip it; hold the pour, then right it again
-        const lift = smoothstep(0, a.marks[0].t, t) * (1 - smoothstep(a.dur - 0.35, a.dur, t));
-        m.armL.rotation.set(-0.95 * lift, 0.25 * lift, -0.15);
-        this.can.rotation.x = 1.6 * smoothstep(a.marks[0].t - 0.1, a.marks[0].t + 0.15, t) * (1 - smoothstep(a.dur - 0.45, a.dur - 0.2, t));
-        m.body.rotation.x = 0.18 * lift;
+        this.hoe.rotation.x = 0;
+        const p = a.dur > 0 ? Math.min(1, f.t / a.dur) : 1;
+        const up = smooth(Math.min(1, p / 0.6));
+        const tip = clamp((p - 0.58) / 0.12, 0, 1) * (1 - clamp((p - 0.9) / 0.1, 0, 1));
+        m.armL.rotation.set(-0.6 - 0.9 * up, -0.35 * up, 0.1);
+        m.armR.rotation.set(0.5, 0, 0.4);
+        this.can.rotation.x = 1.0 * tip;
+        m.body.rotation.x = 0.14 * up;
+        m.head.rotation.x = 0.1 * up;
         break;
       }
       case 'harvest': {
