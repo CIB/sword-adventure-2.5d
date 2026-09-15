@@ -1422,7 +1422,12 @@ export function fxWater(spout: THREE.Object3D, tx: number, tz: number, surfaceY:
           return nd;
         })();
         d.born = t; d.x = v.x; d.y = v.y; d.z = v.z;
-        d.vx = (rand() - 0.5) * 0.5; d.vz = (rand() - 0.5) * 0.5;
+        // push the stream forward toward the plot — old code was near-vertical and puddled at his feet
+        const txc = tx + 0.5, tzc = tz + 0.5;
+        const fdx = txc - v.x, fdz = tzc - v.z;
+        const base = 1.4; // tuned so a 0.9m drop lands ~0.7 tiles forward
+        d.vx = fdx * base + (rand() - 0.5) * 0.5;
+        d.vz = fdz * base + (rand() - 0.5) * 0.5;
         seq++;
       }
     }
