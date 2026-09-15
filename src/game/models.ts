@@ -475,15 +475,34 @@ export function buildSoldier(kind: EnemyKind): Humanoid {
 // Body proportions, all in local units (root sits on the ground; the beetle faces +z).
 const SHELL_HW = 1.12, SHELL_H = 0.84, SHELL_LEN = 1.24;  // scale of a 0.5-radius quarter-dome
 const SHELL_DROP = 0.42;                                   // dome height: where the shell's rim sits
+const SHELL_CZ = -0.16;                                    // where the dome's centre sits behind the hinge
 const HINGE_Y = 1.02, HINGE_Z = -0.06;                     // the dorsal midline the wing covers hinge on
 const HIP_Y = 0.46;                                        // leg pivot height
-/** four spots per wing cover, in the dome's own (unit-sphere) space — mirrored for the other half */
+/** the shell as the ellipsoid it is, in the wing cover's own space (centre at (0, -SHELL_DROP, SHELL_CZ)) */
+const SHELL_RX = SHELL_HW / 2, SHELL_RY = SHELL_H / 2, SHELL_RZ = SHELL_LEN / 2;
+/** four spots per wing cover, as directions out from the dome's centre — mirrored for the other half */
 const SHELL_SPOTS: [number, number, number][] = [
   [0.288, 0.192, 0.288], [0.271, 0.355, -0.052], [0.420, 0.126, -0.105], [0.218, 0.218, -0.327],
 ];
+/**
+ * Each spot is a low lens (a squashed hemisphere) set into the shell: its base is sunk SPOT_SINK below
+ * the surface — a little more than the dome curves away under a spot this wide, so the lens's open rim
+ * never shows — and its crown stands (SPOT_RISE / 2 - SPOT_SINK) proud of it, next to nothing.
+ */
+const SPOT_SINK = 0.06, SPOT_RISE = 0.19;
 /** left (+x) and right (-x) quarters of a sphere: top half, split down the y-z plane */
 const SHELL_DOME_L = new THREE.SphereGeometry(0.5, 12, 6, Math.PI / 2, Math.PI, 0, Math.PI / 2);
 const SHELL_DOME_R = new THREE.SphereGeometry(0.5, 12, 6, -Math.PI / 2, Math.PI, 0, Math.PI / 2);
+/**
+ * The suture: a narrow band of the same sphere, hugging each half's edge along the midline. A sphere's
+ * bands run around its equator, so this one is built with the poles turned onto ±x — then it runs from
+ * the front rim over the crown to the back rim, and, drawn a hair larger than the dome, it follows the
+ * shell's curve instead of floating off the ends of it the way a straight bar did. Same segment count
+ * as the dome, so the two polygonal arcs stay a constant hair apart.
+ */
+const RIDGE_W = 0.12; // radians of sphere per half: ~0.067 units of beetle, the same seam the old bar drew
+const SHELL_RIDGE_L = new THREE.SphereGeometry(0.5, 12, 1, -Math.PI / 2, Math.PI, Math.PI / 2 - RIDGE_W, RIDGE_W).rotateZ(-Math.PI / 2);
+const SHELL_RIDGE_R = new THREE.SphereGeometry(0.5, 12, 1, -Math.PI / 2, Math.PI, Math.PI / 2, RIDGE_W).rotateZ(-Math.PI / 2);
 
 /**
  * A ladybug — the giant one of the beetle world, which is to say a ladybird the size of a soldier:
@@ -510,7 +529,7 @@ export function buildLadybug(kind: LadybugKind = 'ladybug'): Humanoid {
   const spotMat = toon('#1a1418');
   const bodyMat = toon('#2b2329');
   const legMat = toon('#3a3036');
-  const wingMat = new THREE.MeshToonMaterial({ color: '#8e7f8c', transparent: true, opacity: 0.45, side: THREE.DoubleSide, depthWrite: false });
+  const wingMat = new THREE.MeshToonMaterial({ color: '#d9d2e4', transparent: true, opacity: 0.5, side: THREE.DoubleSide, depthWrite: false });
   const eyeMat = toon('#f8f4e8');
   const pupilMat = toon('#141018');
 
@@ -543,30 +562,58 @@ export function buildLadybug(kind: LadybugKind = 'ladybug'): Humanoid {
   body.add(part(UNIT_BOX, eyeMat, [-0.27, 0.87, 0.62], [0.13, 0.11, 0.12]));
   body.add(part(UNIT_BOX, eyeMat, [0.27, 0.87, 0.62], [0.13, 0.11, 0.12]));
 
+  const up = new THREE.Vector3(0, 1, 0), nrm = new THREE.Vector3();
   const shellHalf = (side: 1 | -1) => {
     const g = new THREE.Group();
     g.position.set(0, HINGE_Y, HINGE_Z);
     const dome = new THREE.Mesh(side > 0 ? SHELL_DOME_L : SHELL_DOME_R, shellMat);
     dome.scale.set(SHELL_HW, SHELL_H, SHELL_LEN);
-    dome.position.set(0, -SHELL_DROP, -0.16);
+    dome.position.set(0, -SHELL_DROP, SHELL_CZ);
     g.add(dome);
-    const spot = queen ? 0.3 : 0.26; // the big one carries the same four spots, a shade fatter
-    for (const [sx, sy, sz] of SHELL_SPOTS) dome.add(part(UNIT_SPHERE, spotMat, [sx * side, sy, sz], [spot, spot, spot]));
-    // a low ridge along the dorsal midline, so the closed shell still reads as two wing covers
-    g.add(part(UNIT_BOX, shellDark, [0.03 * side, 0, -0.16], [0.07, 0.06, SHELL_LEN * 0.9]));
+    // the spots: low black lenses laid on the shell, each turned to face out along the surface normal
+    // where it sits and sunk a hair, so its rim meets the curve of the dome instead of standing proud of
+    // it — spheres here bulged out of the silhouette, and hung off the edge once the covers were open
+    const spot = queen ? 0.32 : 0.3; // the big one carries the same four spots, a shade fatter
+    for (const [dx, dy, dz] of SHELL_SPOTS) {
+      const len = Math.hypot(dx, dy, dz);
+      const nx = side * dx / len, ny = dy / len, nz = dz / len;          // out from the dome's centre...
+      nrm.set(nx / SHELL_RX, ny / SHELL_RY, nz / SHELL_RZ).normalize();  // ...and the ellipsoid's normal there
+      const lens = part(UNIT_HEMI, spotMat, [
+        SHELL_RX * nx - nrm.x * SPOT_SINK,
+        SHELL_RY * ny - nrm.y * SPOT_SINK - SHELL_DROP,
+        SHELL_RZ * nz - nrm.z * SPOT_SINK + SHELL_CZ,
+      ], [spot, SPOT_RISE, spot]);
+      lens.quaternion.setFromUnitVectors(up, nrm); // UNIT_HEMI domes up +y
+      g.add(lens);
+    }
+    // the suture: a dark band hugging this half's edge along the midline, so the shut shell still reads
+    // as two wing covers. It is a sliver of the same sphere, so it follows the dome over the crown and
+    // down to the rims front and back.
+    const ridge = new THREE.Mesh(side > 0 ? SHELL_RIDGE_L : SHELL_RIDGE_R, shellDark);
+    ridge.scale.set(SHELL_HW * 1.02, SHELL_H * 1.02, SHELL_LEN * 1.02);
+    ridge.position.copy(dome.position);
+    g.add(ridge);
     return g;
   };
   const elytronL = shellHalf(1), elytronR = shellHalf(-1);
   body.add(elytronL, elytronR);
 
-  // hindwings: folded flat under the shell, beating hard for the wing-clap
+  // hindwings: two pale, half-clear ovals folded flat under the shell, beating hard for the wing-clap.
+  // They lie low over the abdomen, where the dome is still wide enough to hold them — a square-cornered
+  // wing this size would have its corners out through the shell — with a rib along each (the one
+  // opaque thing about them) so they still read once they are out and blurring
+  const ribMat = toon('#9a8fa4');
   const hindwing = (side: 1 | -1) => {
     const g = new THREE.Group();
-    g.position.set(0.05 * side, HINGE_Y - 0.14, HINGE_Z - 0.05);
-    const wing = part(UNIT_BOX, wingMat, [0.22 * side, -0.02, -0.14], [0.36, 0.02, 0.62]);
-    wing.rotation.z = 0.1 * side;
-    wing.rotation.y = -0.22 * side;
+    g.position.set(0.05 * side, HINGE_Y - 0.22, HINGE_Z - 0.05);
+    const wing = part(UNIT_CIRCLE, wingMat, [0.18 * side, -0.02, -0.09], [0.44, 1, 0.78]);
+    wing.rotation.z = 0.05 * side;
+    wing.rotation.y = -0.16 * side;
     g.add(wing);
+    const rib = part(UNIT_BOX, ribMat, [0.18 * side, -0.01, -0.09], [0.03, 0.025, 0.68]);
+    rib.rotation.z = 0.05 * side;
+    rib.rotation.y = -0.16 * side;
+    g.add(rib);
     return g;
   };
   const hindwingL = hindwing(1), hindwingR = hindwing(-1);
