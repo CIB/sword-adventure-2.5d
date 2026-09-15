@@ -97,7 +97,7 @@ export class Game implements GameCtx {
   hud: Hud;
   player: Player;
   enemies: Enemy[] = [];
-  /** the world's wild creatures (ladybugs in the green country around the player) */
+  /** the world's wild creatures (ladybugs in the green country, spitflowers in the green woods) */
   wildlife!: Wildlife;
   projectiles: Projectile[] = [];
   pickups: Pickup[] = [];
@@ -395,7 +395,7 @@ export class Game implements GameCtx {
   // ------------------------------------------------------------------ GameCtx
   rand() { return this.rng.next(); }
 
-  spawnProjectile(kind: 'arrow' | 'javelin' | 'moblin_spear', x: number, z: number, dx: number, dz: number, dmg: number) {
+  spawnProjectile(kind: 'arrow' | 'javelin' | 'moblin_spear' | 'energy', x: number, z: number, dx: number, dz: number, dmg: number) {
     this.projectiles.push(new Projectile(this, kind, x, z, { x: dx, z: dz }, dmg));
   }
 
@@ -770,7 +770,7 @@ export class Game implements GameCtx {
           e.knock = { x: (dx / d) * 4.5, z: (dz / d) * 4.5 };
           e.knockT = 0.2;
         }
-        if (dist < 0.6) {
+        if (dist < 0.6 && !e.isRooted) {
           const push = 0.6 - dist;
           const nx = dist > 1e-4 ? dx / d : 1, nz = dist > 1e-4 ? dz / d : 0;
           this.world.moveBox(e.pos, nx * push, nz * push, e.HW, e.HH);
@@ -788,8 +788,9 @@ export class Game implements GameCtx {
       const d = Math.hypot(dx, dz);
       if (d > 0.7 || d < 1e-4) continue;
       const push = (0.7 - d) / 2;
-      this.world.moveBox(a.pos, (-dx / d) * push, (-dz / d) * push, a.HW, a.HH);
-      this.world.moveBox(b.pos, (dx / d) * push, (dz / d) * push, b.HW, b.HH);
+      // rooted plants hold their ground: the other one takes the whole shove
+      if (!a.isRooted) this.world.moveBox(a.pos, (-dx / d) * push * (b.isRooted ? 2 : 1), (-dz / d) * push * (b.isRooted ? 2 : 1), a.HW, a.HH);
+      if (!b.isRooted) this.world.moveBox(b.pos, (dx / d) * push * (a.isRooted ? 2 : 1), (dz / d) * push * (a.isRooted ? 2 : 1), b.HW, b.HH);
     }
   }
 

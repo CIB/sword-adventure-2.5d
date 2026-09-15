@@ -6,7 +6,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import {
   buildHeroine, buildSoldier, buildVillager, buildDog, VILLAGER_LOOKS, buildTrees, buildBush, buildBerryBush, buildRock, buildStump,
-  buildFence, buildHouse, buildProp, buildHeart, buildRupee, buildArrow, buildJavelinProjectile, buildMoblinSpearProjectile,
+  buildFence, buildHouse, buildProp, buildHeart, buildRupee, buildArrow, buildJavelinProjectile, buildMoblinSpearProjectile, buildEnergyBall,
   buildFernGeo, buildTallGrassGeo, buildBriarGeo, buildLilyGeo, buildBoulderGeo, buildCropGeo, buildWateringCan, vegObject, LADYBUG_KINDS, type Humanoid,
 } from '../game/models';
 import type { PropKind, HouseSpec, EnemyKind } from '../game/world';
@@ -28,7 +28,7 @@ const catalog: Cat[] = [
   { name: 'Heroine', items: [{ name: 'Aria', build: () => hum(buildHeroine()) }] },
   { name: 'Fallen Knights', items: (['sword', 'spear', 'javelin', 'archer'] as EnemyKind[]).map((k) => ({ name: k[0].toUpperCase() + k.slice(1) + ' knight', build: () => hum(buildSoldier(k)) })) },
   { name: 'Moblins', items: (['moblin', 'moblin_spear'] as EnemyKind[]).map((k) => ({ name: k === 'moblin' ? 'Sword moblin (shield)' : 'Spear moblin (thrower)', build: () => hum(buildSoldier(k)) })) },
-  { name: 'Beasts', items: LADYBUG_KINDS.map((k) => ({ name: k === 'ladybug' ? 'Ladybug (soldier-sized)' : 'Ladybug queen (oversized)', build: () => hum(buildSoldier(k)) })) },
+  { name: 'Beasts', items: [...LADYBUG_KINDS.map((k) => ({ name: k === 'ladybug' ? 'Ladybug (soldier-sized)' : 'Ladybug queen (oversized)', build: () => hum(buildSoldier(k)) })), { name: 'Spitflower (forest turret)', build: () => hum(buildSoldier('spitflower')) }] },
   // the size question in one picture: a soldier, the ordinary beetle, and the oversized queen
   { name: 'Size check', items: [{ name: 'Knight · ladybug · queen', build: () => {
     const line = new THREE.Group();
@@ -64,7 +64,7 @@ const catalog: Cat[] = [
   { name: 'Props', items: PROPS.map((k) => ({ name: k[0].toUpperCase() + k.slice(1), build: () => ({ obj: buildProp({ kind: k, x: 0, z: 0 }), footprint: k === 'tower' || k === 'windmill' ? 6 : k === 'statue' ? 3 : k === 'tent' || k === 'stall' ? 4 : k === 'deadtree' ? 2.5 : 2 }) })) },
   { name: 'Pickups & projectiles', items: [
     { name: 'Heart', build: () => ({ obj: buildHeart() }) }, { name: 'Rupee (green)', build: () => ({ obj: buildRupee(false) }) }, { name: 'Rupee (blue)', build: () => ({ obj: buildRupee(true) }) },
-    { name: 'Arrow', build: () => ({ obj: buildArrow() }) }, { name: 'Javelin', build: () => ({ obj: buildJavelinProjectile() }) }, { name: 'Moblin spear', build: () => ({ obj: buildMoblinSpearProjectile() }) },
+    { name: 'Arrow', build: () => ({ obj: buildArrow() }) }, { name: 'Javelin', build: () => ({ obj: buildJavelinProjectile() }) }, { name: 'Moblin spear', build: () => ({ obj: buildMoblinSpearProjectile() }) }, { name: 'Energy ball', build: () => ({ obj: buildEnergyBall() }) },
   ] },
   { name: 'Bridges', items: [{ name: 'All bridges (world)', build: () => { const g = new THREE.Group(); for (const o of world.createBridgeMeshes()) g.add(o); const b = world.bridges[0]; g.position.set(-(b.x0 + b.x1 + 1) / 2, 0, -(b.z0 + b.z1 + 1) / 2); const w = new THREE.Group(); w.add(g); return { obj: w, footprint: 12 }; } }] },
 ];
@@ -188,10 +188,29 @@ function animate(dt: number) {
   if (!animCb.checked) { m.legL.rotation.x = m.legR.rotation.x = 0; m.body.position.y = 0; return; }
   animT += dt * 9;
   const swing = Math.sin(animT);
-  m.legL.rotation.x = swing * 0.7; m.legR.rotation.x = -swing * 0.7;
-  m.body.position.y = Math.abs(swing) * 0.04;
+  // (the spitflower's "legs" are ground leaves — they rustle in its own block below, they never stride)
+  if (!m.petals) { m.legL.rotation.x = swing * 0.7; m.legR.rotation.x = -swing * 0.7; }
+  if (!m.petals) m.body.position.y = Math.abs(swing) * 0.04;
   if (m.ponytail) m.ponytail.rotation.x = swing * 0.2 + 0.15;
-  m.armL.rotation.x = swing * 0.3;
+  if (!m.petals) m.armL.rotation.x = swing * 0.3;
+  // the spitflower: sway the stalk, turn the head in a slow circle, breathe the petals open and
+  // shut so the mouth and the glow inside it can actually be looked at here
+  if (m.petals) {
+    const t = animT * 0.11;
+    m.body.rotation.set(Math.sin(t * 1.7) * 0.06 + 0.08, 0, Math.cos(t * 1.3) * 0.06);
+    m.head.rotation.y = t % (Math.PI * 2);
+    const open = 0.5 + 0.5 * Math.sin(animT * 0.03);
+    for (const hinge of m.petals) {
+      const petal = hinge.children[0] as THREE.Mesh;
+      petal.rotation.y = -0.5 + open * 0.95;
+      petal.position.x = 0.34 + open * 0.12;
+    }
+    if (m.mouthGlow) {
+      const r = 0.12 + open * 0.2;
+      m.mouthGlow.scale.set(r, r, r);
+    }
+    return;
+  }
   // the ladybugs: breathe their wing covers open and shut (with the hindwings beating under them)
   // so the shell and the wings beneath it can actually be looked at here
   if (m.elytronL && m.elytronR) {

@@ -105,6 +105,14 @@ export interface Humanoid {
    * floor is a promise about tiles of *world*, so it must not shrink along with the beetle.
    */
   gustArcUnit?: number;
+  /**
+   * Spitflower only: the petal hinges around the mouth (one group per petal, rotated about Z so
+   * local +x points radially outward), the dark mouth the energy balls leave through, and the glow
+   * burning inside it while the flower charges a spit.
+   */
+  petals?: THREE.Group[];
+  mouth?: THREE.Mesh;
+  mouthGlow?: THREE.Mesh;
   materials: THREE.MeshToonMaterial[];
 }
 
@@ -209,7 +217,7 @@ export function buildHeroine(): Humanoid {
   return { root, body, head, armR, armL, handR, handL, legR, legL, weapon, shield, ponytail, materials };
 }
 
-export const SOLDIER_COLORS: Record<EnemyKind, string> = { sword: '#3c9c44', spear: '#3858c8', javelin: '#c83838', archer: '#7848b8', moblin: '#3a6fbf', moblin_spear: '#4a84d6', ladybug: '#d43a2a', ladybug_queen: '#a8281c' };
+export const SOLDIER_COLORS: Record<EnemyKind, string> = { sword: '#3c9c44', spear: '#3858c8', javelin: '#c83838', archer: '#7848b8', moblin: '#3a6fbf', moblin_spear: '#4a84d6', ladybug: '#d43a2a', ladybug_queen: '#a8281c', spitflower: '#3f9a3d' };
 
 // ---------------------------------------------------------------- the beetles
 /**
@@ -221,6 +229,9 @@ export const SOLDIER_COLORS: Record<EnemyKind, string> = { sword: '#3c9c44', spe
 export const LADYBUG_KINDS = ['ladybug', 'ladybug_queen'] as const;
 export type LadybugKind = (typeof LADYBUG_KINDS)[number];
 export const isLadybug = (k: EnemyKind): k is LadybugKind => k === 'ladybug' || k === 'ladybug_queen';
+
+/** The spitflower: a rooted turret-plant. It never walks — the stalk bends and the head turns. */
+export const isSpitflower = (k: EnemyKind): k is 'spitflower' => k === 'spitflower';
 
 /**
  * How a beetle is sized: the authored model (see buildLadybug) is one scale, and each kind is that
@@ -388,6 +399,7 @@ function buildMoblin(kind: 'moblin' | 'moblin_spear'): Humanoid {
 
 export function buildSoldier(kind: EnemyKind): Humanoid {
   if (isLadybug(kind)) return buildLadybug(kind);
+  if (isSpitflower(kind)) return buildSpitflower();
   if (kind === 'moblin' || kind === 'moblin_spear') return buildMoblin(kind);
   const m = {
     steel: toon('#a3adc0'), steelD: toon('#6b7382'), tunic: toon(SOLDIER_COLORS[kind]), visor: toon('#15151c'),
@@ -614,6 +626,109 @@ export function buildLadybug(kind: LadybugKind = 'ladybug'): Humanoid {
   // queen is left at the size she was drawn, a stride longer than the heroine
   root.scale.set(size.plan, size.y, size.plan);
   return { root, body, head, armR, armL, handR, handL, legR, legL, elytronL, elytronR, hindwingL, hindwingR, gustArc, gustArcUnit: range / size.plan, materials: collectMaterials(root) };
+}
+
+// ---------------------------------------------------------------- the spitflower
+/** Height of the flower head above the ground (the stalk is long so the head clears the ferns). */
+export const SPITFLOWER_HEAD_H = 1.24;
+/** How many petals ring the mouth. */
+export const SPITFLOWER_PETALS = 7;
+
+/**
+ * A spitflower — the forest's own turret: a big blossom on a long flexible stalk, rooted where it
+ * sprouted. The stalk (`body`) bends at the base toward whatever the head is watching, and the head
+ * itself turns a full circle on its neck to follow the heroine, so the two together read as one
+ * living, flexible plant rather than a soldier with a flower hat.
+ *
+ * The head is a sunflower-like face: a yellow disc ringed by petals, with a dark mouth in the middle
+ * that glows green while a spit is charging. The petals are real hinges (`petals`): cupped forward
+ * around the mouth at rest, flung back for the spit. The side buds ride the arm slots and the two
+ * big ground leaves ride the leg slots, so the Humanoid rig stays intact.
+ */
+export function buildSpitflower(): Humanoid {
+  const stalkMat = toon('#3f9a3d');
+  const leafMat = toon('#4cb040');
+  const leafDark = toon('#2f7a2f');
+  const sepalMat = toon('#2e7a34');
+  const faceMat = toon('#f2c14e');
+  const petalMat = toon('#e14a6a');
+  const petalLight = toon('#f2788f');
+  const mouthMat = toon('#2a1420');
+  const soilMat = toon('#6b4a2c');
+  const glowMat = new THREE.MeshBasicMaterial({ color: '#b8ff4a' });
+
+  const root = new THREE.Group();
+  root.add(blobShadow(0.42));
+  const body = new THREE.Group();
+  root.add(body);
+
+  // the mound it sits in, and the long stalk rising out of it
+  body.add(part(UNIT_SPHERE, soilMat, [0, 0.04, 0], [0.5, 0.16, 0.44]));
+  body.add(part(UNIT_CYL, stalkMat, [0, 0.62, 0], [0.22, 1.15, 0.22]));
+  // a pair of thorns on the stalk, and one small leaf halfway up
+  body.add(part(UNIT_CONE, leafDark, [0.13, 0.78, 0], [0.09, 0.16, 0.09]).rotateZ(-1.1));
+  body.add(part(UNIT_CONE, leafDark, [-0.13, 0.95, 0.02], [0.09, 0.16, 0.09]).rotateZ(1.1));
+  const midLeaf = part(UNIT_BOX, leafMat, [0.2, 1.0, 0], [0.34, 0.05, 0.16]);
+  midLeaf.rotation.z = 0.5;
+  body.add(midLeaf);
+
+  // the two big ground leaves (leg slots): broad, drooping, rustling in the animation
+  const leaf = (side: 1 | -1) => {
+    const g = new THREE.Group();
+    g.position.set(0.1 * side, 0.3, 0);
+    const blade = part(UNIT_BOX, side > 0 ? leafMat : leafDark, [0.3 * side, 0, 0], [0.6, 0.06, 0.26]);
+    blade.rotation.z = -0.28 * side; // tip drooping toward the ground
+    g.add(blade);
+    g.add(part(UNIT_BOX, leafDark, [0.3 * side, 0.03, 0], [0.5, 0.02, 0.05]).rotateZ(-0.28 * side)); // centre rib
+    return g;
+  };
+  const legL = leaf(1), legR = leaf(-1);
+  root.add(legL, legR);
+
+  // side buds (arm slots): two closed buds on short stems, bobbing gently
+  const bud = (side: 1 | -1, y: number) => {
+    const arm = new THREE.Group();
+    arm.position.set(0.12 * side, y, 0);
+    arm.rotation.order = 'YXZ';
+    arm.add(part(UNIT_CYL, stalkMat, [0.08 * side, 0, 0], [0.06, 0.2, 0.06]).rotateZ(1.2 * side));
+    arm.add(part(UNIT_SPHERE, sepalMat, [0.18 * side, 0.06, 0], [0.16, 0.2, 0.16]));
+    arm.add(part(UNIT_SPHERE, petalMat, [0.18 * side, 0.16, 0], [0.1, 0.1, 0.1]));
+    const hand = new THREE.Group();
+    hand.position.set(0.18 * side, 0.16, 0);
+    arm.add(hand);
+    return { arm, hand };
+  };
+  const { arm: armR, hand: handR } = bud(-1, 0.98);
+  const { arm: armL, hand: handL } = bud(1, 0.82);
+  body.add(armR, armL);
+
+  // the head: neck + sepal cup + yellow face + dark mouth, ringed by hinged petals
+  const head = new THREE.Group();
+  head.position.set(0, SPITFLOWER_HEAD_H, 0);
+  head.rotation.order = 'YXZ';
+  body.add(head);
+  head.add(part(UNIT_CYL, stalkMat, [0, -0.1, 0], [0.18, 0.3, 0.18]));
+  head.add(part(UNIT_SPHERE, sepalMat, [0, 0, -0.06], [0.54, 0.48, 0.44]));
+  head.add(part(UNIT_SPHERE, faceMat, [0, 0, 0.2], [0.44, 0.4, 0.18]));
+  const mouth = part(UNIT_CYL, mouthMat, [0, 0, 0.32], [0.26, 0.1, 0.26]);
+  mouth.rotation.x = Math.PI / 2;
+  head.add(mouth);
+  const mouthGlow = part(UNIT_SPHERE, glowMat, [0, 0, 0.31], [0.14, 0.14, 0.14]);
+  head.add(mouthGlow);
+  const petals: THREE.Group[] = [];
+  for (let i = 0; i < SPITFLOWER_PETALS; i++) {
+    const a = (i / SPITFLOWER_PETALS) * Math.PI * 2;
+    const hinge = new THREE.Group();
+    hinge.position.set(0, 0, 0.1);
+    hinge.rotation.z = a; // local +x points radially outward from the mouth
+    const petal = part(UNIT_SPHERE, i % 2 ? petalLight : petalMat, [0.38, 0, 0], [0.36, 0.2, 0.1]);
+    petal.rotation.y = -0.3; // cupped loosely forward at rest (the enemy animation works them)
+    hinge.add(petal);
+    head.add(hinge);
+    petals.push(hinge);
+  }
+
+  return { root, body, head, armR, armL, handR, handL, legR, legL, petals, mouth, mouthGlow, materials: collectMaterials(root) };
 }
 
 // ---------------------------------------------------------------- props
@@ -1671,6 +1786,18 @@ export function buildJavelinProjectile(): THREE.Group {
   const tip = part(UNIT_CONE, toon('#dfe6f4'), [0, 0, 0.5], [0.1, 0.16, 0.05]);
   tip.rotation.x = Math.PI / 2;
   g.add(tip);
+  return g;
+}
+
+/**
+ * A spitflower's energy ball: a hot yellow-green core in a translucent crackling shell. Pure
+ * MeshBasicMaterial, so it reads as glowing against the toon world (the projectile update pulses
+ * it as it flies).
+ */
+export function buildEnergyBall(): THREE.Group {
+  const g = new THREE.Group();
+  g.add(part(UNIT_SPHERE, new THREE.MeshBasicMaterial({ color: '#d8ff6a' }), [0, 0, 0], [0.24, 0.24, 0.24]));
+  g.add(part(UNIT_SPHERE, new THREE.MeshBasicMaterial({ color: '#7ae02a', transparent: true, opacity: 0.45, depthWrite: false }), [0, 0, 0], [0.38, 0.38, 0.38]));
   return g;
 }
 
