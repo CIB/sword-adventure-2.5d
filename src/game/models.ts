@@ -100,6 +100,15 @@ export interface Humanoid {
   /** beetles only: the faint cone on the ground in front of it, shown while it charges the gust */
   gustArc?: THREE.Mesh;
   /**
+   * Spitflowers only: the stalk, base to tip, as a chain of nested segments (bend each a little and
+   * the whole stalk curves), the petals around the head (each hinged at the disc so they can flare),
+   * and the dark mouth in the middle of the disc that glows as a shot charges. The flower's `body`
+   * is the yaw pivot the stalk grows out of — turn it and the head comes round to face you.
+   */
+  stalk?: THREE.Group[];
+  petals?: THREE.Group[];
+  mouth?: THREE.Mesh;
+  /**
    * Beetles only: the local scale `gustArc` carries at full reach. The beetle's root is scaled to
    * size the body (see LADYBUG_SIZE), and the tell has to be divided by that again — the cone on the
    * floor is a promise about tiles of *world*, so it must not shrink along with the beetle.
@@ -209,7 +218,15 @@ export function buildHeroine(): Humanoid {
   return { root, body, head, armR, armL, handR, handL, legR, legL, weapon, shield, ponytail, materials };
 }
 
-export const SOLDIER_COLORS: Record<EnemyKind, string> = { sword: '#3c9c44', spear: '#3858c8', javelin: '#c83838', archer: '#7848b8', moblin: '#3a6fbf', moblin_spear: '#4a84d6', ladybug: '#d43a2a', ladybug_queen: '#a8281c' };
+export const SOLDIER_COLORS: Record<EnemyKind, string> = { sword: '#3c9c44', spear: '#3858c8', javelin: '#c83838', archer: '#7848b8', moblin: '#3a6fbf', moblin_spear: '#4a84d6', ladybug: '#d43a2a', ladybug_queen: '#a8281c', spitflower: '#e84a8a' };
+
+// ---------------------------------------------------------------- the spitflower
+/** the one enemy in the game that is a plant: rooted where it grew, it cannot walk, chase or be shoved */
+export const isRooted = (k: EnemyKind): boolean => k === 'spitflower';
+/** how many segments the stalk is chained from, and how long each is (local units, root on the ground) */
+export const FLOWER_SEGMENTS = 5, FLOWER_SEG_LEN = 0.3;
+/** where the mouth sits above the ground when the stalk stands straight — the energy ball leaves from here */
+export const FLOWER_MOUTH_H = FLOWER_SEGMENTS * FLOWER_SEG_LEN + 0.12;
 
 // ---------------------------------------------------------------- the beetles
 /**
@@ -388,6 +405,7 @@ function buildMoblin(kind: 'moblin' | 'moblin_spear'): Humanoid {
 
 export function buildSoldier(kind: EnemyKind): Humanoid {
   if (isLadybug(kind)) return buildLadybug(kind);
+  if (kind === 'spitflower') return buildSpitflower();
   if (kind === 'moblin' || kind === 'moblin_spear') return buildMoblin(kind);
   const m = {
     steel: toon('#a3adc0'), steelD: toon('#6b7382'), tunic: toon(SOLDIER_COLORS[kind]), visor: toon('#15151c'),
@@ -614,6 +632,99 @@ export function buildLadybug(kind: LadybugKind = 'ladybug'): Humanoid {
   // queen is left at the size she was drawn, a stride longer than the heroine
   root.scale.set(size.plan, size.y, size.plan);
   return { root, body, head, armR, armL, handR, handL, legR, legL, elytronL, elytronR, hindwingL, hindwingR, gustArc, gustArcUnit: range / size.plan, materials: collectMaterials(root) };
+}
+
+// ---------------------------------------------------------------- the spitflower
+/**
+ * A spitflower: a big flower head on a long, flexible stalk, grown up out of a rosette of leaves on
+ * the forest floor. It is rooted — nothing about it walks — so the whole enemy is the stalk and the
+ * head: the stalk is a chain of nested segments (`stalk`), and bending each one a few degrees curves
+ * the whole thing like a reed, and the head sits on the tip. The `body` slot is the yaw pivot the
+ * stalk grows from: turning it swings the stalk and head round to face the player, which is how the
+ * flower "turns its head". The head itself (`head`) only pitches, nodding down at whoever is close.
+ *
+ * The face of the flower is a yellow disc with a dark mouth in the middle (`mouth`, which glows as a
+ * shot charges) and a ring of petals around it, each hinged at the disc (`petals`) so they can flare
+ * back as it rears up to spit. The flower faces +z of the pivot, so pitching the head by +x looks down.
+ */
+export function buildSpitflower(): Humanoid {
+  const stalkMat = toon('#4f9a3a');
+  const leafMat = toon('#3d8a2f'); leafMat.side = THREE.DoubleSide;
+  const bulbMat = toon('#6d8f2c');
+  const petalMat = toon('#e84a8a'); petalMat.side = THREE.DoubleSide;
+  const petalInner = toon('#f286b4'); petalInner.side = THREE.DoubleSide;
+  const discMat = toon('#f2c94c');
+  const mouthMat = toon('#3a1030');
+  mouthMat.emissive.set('#c6f74a'); mouthMat.emissiveIntensity = 0;
+  const sepalMat = toon('#2f6f26');
+
+  const root = new THREE.Group();
+  root.add(blobShadow(0.5));
+
+  // the rosette it grows from: a fat bulb with a ring of broad leaves lying out over the ground
+  root.add(part(UNIT_SPHERE, bulbMat, [0, 0.14, 0], [0.5, 0.3, 0.5]));
+  for (let i = 0; i < 7; i++) {
+    const a = (i / 7) * Math.PI * 2 + 0.3;
+    const leaf = part(UNIT_SPHERE, leafMat, [Math.sin(a) * 0.36, 0.08, Math.cos(a) * 0.36], [0.26, 0.06, 0.58]);
+    leaf.rotation.y = a;
+    leaf.rotation.x = -0.18; // tips lifting a little off the ground
+    root.add(leaf);
+  }
+
+  // the stalk: a yaw pivot, then a chain of segments each hung off the tip of the one before
+  const body = new THREE.Group();
+  body.position.y = 0.18;
+  root.add(body);
+  const stalk: THREE.Group[] = [];
+  let parent: THREE.Group = body;
+  for (let i = 0; i < FLOWER_SEGMENTS; i++) {
+    const seg = new THREE.Group();
+    seg.position.y = i === 0 ? 0 : FLOWER_SEG_LEN;
+    const r = 0.075 - i * 0.008;
+    seg.add(part(UNIT_CYL, stalkMat, [0, FLOWER_SEG_LEN / 2, 0], [r * 2, FLOWER_SEG_LEN + 0.02, r * 2]));
+    seg.add(part(UNIT_SPHERE, stalkMat, [0, FLOWER_SEG_LEN, 0], [r * 2.1, r * 2.1, r * 2.1])); // the knuckle between segments
+    // a little leaf off every other joint, alternating sides
+    if (i % 2 === 1) {
+      const lf = part(UNIT_SPHERE, leafMat, [(i % 4 === 1 ? 1 : -1) * 0.17, 0.05, 0], [0.34, 0.04, 0.14]);
+      lf.rotation.z = (i % 4 === 1 ? 1 : -1) * 0.35;
+      seg.add(lf);
+    }
+    parent.add(seg);
+    stalk.push(seg);
+    parent = seg;
+  }
+
+  // the head, on the tip of the last segment: sepals behind, the disc, the mouth, the petals around
+  const head = new THREE.Group();
+  head.position.y = FLOWER_SEG_LEN;
+  parent.add(head);
+  head.add(part(UNIT_SPHERE, sepalMat, [0, 0, -0.08], [0.54, 0.54, 0.2]));
+  head.add(part(UNIT_CYL, discMat, [0, 0, 0.02], [0.5, 0.1, 0.5]).rotateX(Math.PI / 2));
+  const mouth = part(UNIT_SPHERE, mouthMat, [0, 0, 0.07], [0.24, 0.24, 0.16]);
+  head.add(mouth);
+  // a ring of teeth-like nubs around the mouth, so the disc reads as something that spits
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2;
+    head.add(part(UNIT_BOX, discMat, [Math.cos(a) * 0.14, Math.sin(a) * 0.14, 0.12], [0.05, 0.05, 0.05]));
+  }
+  const petals: THREE.Group[] = [];
+  const N = 9;
+  for (let i = 0; i < N; i++) {
+    const hinge = new THREE.Group();
+    hinge.rotation.order = 'ZYX'; // place it round the ring last, so a pitch about x tilts it radially
+    hinge.rotation.z = (i / N) * Math.PI * 2;
+    hinge.position.z = -0.01;
+    const petal = part(UNIT_SPHERE, i % 3 === 0 ? petalInner : petalMat, [0, 0.46, 0], [0.3, 0.6, 0.05]);
+    hinge.add(petal);
+    head.add(hinge);
+    petals.push(hinge);
+  }
+
+  // this thing has no limbs; the humanoid slots the animation expects are just empty groups
+  const dummy = () => new THREE.Group();
+  const armL = dummy(), armR = dummy(), handL = dummy(), handR = dummy(), legL = dummy(), legR = dummy();
+  root.add(armL, armR, legL, legR);
+  return { root, body, head, armR, armL, handR, handL, legR, legL, stalk, petals, mouth, materials: collectMaterials(root) };
 }
 
 // ---------------------------------------------------------------- props
@@ -1647,6 +1758,23 @@ export function buildHeart(): THREE.Group {
 export function buildRupee(blue: boolean): THREE.Group {
   const g = new THREE.Group();
   g.add(part(UNIT_OCTA, toon(blue ? '#3a7cf0' : '#3ad03a'), [0, 0, 0], [0.3, 0.52, 0.3]));
+  return g;
+}
+
+/**
+ * A spitflower's energy ball: a glowing lime core with a paler shell round it and a soft halo. Plain
+ * unlit materials on purpose — it should look like it gives off light rather than catch it.
+ */
+export function buildEnergyBall(): THREE.Group {
+  const g = new THREE.Group();
+  g.add(part(UNIT_SPHERE, new THREE.MeshBasicMaterial({ color: '#f4ffc0' }), [0, 0, 0], [0.16, 0.16, 0.16]));
+  g.add(part(UNIT_SPHERE, new THREE.MeshBasicMaterial({ color: '#b8f03a', transparent: true, opacity: 0.75, depthWrite: false }), [0, 0, 0], [0.3, 0.3, 0.3]));
+  const halo = part(UNIT_SPHERE, new THREE.MeshBasicMaterial({ color: '#7fd824', transparent: true, opacity: 0.22, depthWrite: false }), [0, 0, 0], [0.5, 0.5, 0.5]);
+  halo.name = 'halo';
+  g.add(halo);
+  // a couple of trailing motes behind it, so the direction of flight reads at a glance
+  g.add(part(UNIT_OCTA, new THREE.MeshBasicMaterial({ color: '#d4ff6a', transparent: true, opacity: 0.6, depthWrite: false }), [0, 0.04, -0.28], [0.1, 0.1, 0.1]));
+  g.add(part(UNIT_OCTA, new THREE.MeshBasicMaterial({ color: '#d4ff6a', transparent: true, opacity: 0.35, depthWrite: false }), [0, -0.03, -0.44], [0.07, 0.07, 0.07]));
   return g;
 }
 

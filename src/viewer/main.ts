@@ -28,7 +28,10 @@ const catalog: Cat[] = [
   { name: 'Heroine', items: [{ name: 'Aria', build: () => hum(buildHeroine()) }] },
   { name: 'Fallen Knights', items: (['sword', 'spear', 'javelin', 'archer'] as EnemyKind[]).map((k) => ({ name: k[0].toUpperCase() + k.slice(1) + ' knight', build: () => hum(buildSoldier(k)) })) },
   { name: 'Moblins', items: (['moblin', 'moblin_spear'] as EnemyKind[]).map((k) => ({ name: k === 'moblin' ? 'Sword moblin (shield)' : 'Spear moblin (thrower)', build: () => hum(buildSoldier(k)) })) },
-  { name: 'Beasts', items: LADYBUG_KINDS.map((k) => ({ name: k === 'ladybug' ? 'Ladybug (soldier-sized)' : 'Ladybug queen (oversized)', build: () => hum(buildSoldier(k)) })) },
+  { name: 'Beasts', items: [
+    ...LADYBUG_KINDS.map((k) => ({ name: k === 'ladybug' ? 'Ladybug (soldier-sized)' : 'Ladybug queen (oversized)', build: () => hum(buildSoldier(k)) })),
+    { name: 'Spitflower (rooted)', build: () => hum(buildSoldier('spitflower')) },
+  ] },
   // the size question in one picture: a soldier, the ordinary beetle, and the oversized queen
   { name: 'Size check', items: [{ name: 'Knight · ladybug · queen', build: () => {
     const line = new THREE.Group();
@@ -192,6 +195,18 @@ function animate(dt: number) {
   m.body.position.y = Math.abs(swing) * 0.04;
   if (m.ponytail) m.ponytail.rotation.x = swing * 0.2 + 0.15;
   m.armL.rotation.x = swing * 0.3;
+  // the spitflower: sway the stalk, turn the head slowly about, flare the petals and glow the mouth
+  if (m.stalk && m.petals) {
+    m.body.rotation.y = Math.sin(animT * 0.08) * 1.2;
+    const c = 0.5 + 0.5 * Math.sin(animT * 0.3);
+    const n = m.stalk.length;
+    m.stalk.forEach((seg, i) => { const w = (i + 1) / n; seg.rotation.x = -0.16 * c * w; seg.rotation.z = Math.sin(animT * 0.15 + i * 0.6) * 0.05 * w; });
+    m.head.rotation.x = 0.45 + 0.35 * c;
+    m.petals.forEach((pt, i) => { pt.rotation.x = -0.15 - 0.6 * c + Math.sin(animT * 0.2 + i) * 0.04; });
+    if (m.mouth) (m.mouth.material as THREE.MeshToonMaterial).emissiveIntensity = c * 1.6;
+    m.legL.rotation.x = m.legR.rotation.x = 0; m.body.position.y = 0;
+    return;
+  }
   // the ladybugs: breathe their wing covers open and shut (with the hindwings beating under them)
   // so the shell and the wings beneath it can actually be looked at here
   if (m.elytronL && m.elytronR) {

@@ -174,6 +174,11 @@ export class AudioEngine {
     this.noise(0.32, 0.14, 'bandpass', 2600, { f1: 700, q: 0.7 });
     this.tone('sine', 95, 0.22, 0.28, { f1: 42 });
   }
+  // ---- the spitflower
+  /** the mouth charging: a rising, wobbling whine that swells over the whole glow */
+  spitCharge(dur: number) { this.tone('sine', 320, dur, 0.09, { f1: 980, attack: dur * 0.6 }); this.tone('triangle', 160, dur, 0.05, { f1: 490, attack: dur * 0.6 }); }
+  /** the spit: a wet pop and the ball whistling off */
+  spit() { const t = this.ctx?.currentTime ?? 0; this.noise(0.08, 0.22, 'bandpass', 700, { q: 1.4 }); this.tone('square', 1100, 0.18, 0.09, { f1: 500, when: t + 0.02 }); this.tone('sine', 1700, 0.25, 0.05, { f1: 700, when: t + 0.02 }); }
   lowHp() { this.tone('square', 1046, 0.06, 0.07); }
   // ---- the farm
   /** the hoe biting into soil: a dull thud with a little grit */

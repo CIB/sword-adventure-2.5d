@@ -9,7 +9,7 @@ import { ACTIONS, type VillageState, type CropKind } from './village';
 import {
   buildArrow, buildHeart, buildHeroine, buildJavelinProjectile, buildMoblinSpearProjectile, buildRupee, buildSoldier, part, toon,
   UNIT_BOX, UNIT_OCTA, UNIT_SPHERE, type Humanoid, buildVillager, buildDog, buildWateringCan, VILLAGER_LOOKS,
-  GUST_HALF_ARC, gustRange, isLadybug,
+  GUST_HALF_ARC, gustRange, isLadybug, isRooted, buildEnergyBall, FLOWER_MOUTH_H, FLOWER_SEGMENTS,
 } from './models';
 
 export interface GameCtx {
@@ -20,12 +20,14 @@ export interface GameCtx {
   enemies: Enemy[];
   projectiles: Projectile[];
   rand(): number;
-  spawnProjectile(kind: 'arrow' | 'javelin' | 'moblin_spear', x: number, z: number, dx: number, dz: number, dmg: number): void;
+  spawnProjectile(kind: ProjectileKind, x: number, z: number, dx: number, dz: number, dmg: number): void;
   spawnEffect(e: Effect): void;
   tryHitPlayer(dmg: number, sx: number, sz: number, opts?: { projectile?: boolean }): 'hit' | 'blocked' | 'immune';
   /** true while a dialogue box is open (player + NPCs freeze) */
   talking: boolean;
 }
+
+export type ProjectileKind = 'arrow' | 'javelin' | 'moblin_spear' | 'energy';
 
 const angleTo = (dx: number, dz: number) => Math.atan2(dx, dz);
 const easeOut = (p: number) => 1 - (1 - p) * (1 - p);
@@ -367,7 +369,19 @@ const STATS: Record<EnemyKind, Stats> = {
   // the queen: the oversized beetle, and the only one of the two that fights like a small set-piece —
   // more shell to crack, a longer wind-up and a much longer, harder clap of wind
   ladybug_queen: { hp: 6, speed: 1.15, chase: 2.2, dmg: 2, sight: 8, range: 3.9, attackDur: 0.5, recover: 1.15, cooldown: 3.8 },
+  // The spitflower: rooted to the forest floor (speed and chase are moot — it never takes a step),
+  // it turns its head after the heroine and spits an energy ball at her from a long way off. Soft
+  // to cut down once you reach it; the trick is getting there through the shots.
+  spitflower: { hp: 3, speed: 0, chase: 0, dmg: 1, sight: 9, range: 8, attackDur: 0.3, recover: 0.7, cooldown: 2.4 },
 };
+
+// ---- spitflower tuning ----------------------------------------------------
+/** seconds the mouth glows and the petals flare before the shot leaves (the whole telegraph) */
+const FLOWER_CHARGE = 0.8;
+/** how fast the stalk swings its head round after the heroine, radians per second */
+const FLOWER_TURN = 3.2;
+/** the head keeps tracking through this much of the charge, then commits to where it's pointed */
+const FLOWER_COMMIT = 0.35;
 
 // ---- ladybug tuning -------------------------------------------------------
 /** seconds the shell takes to creak open before the clap (the whole telegraph of the attack) */
@@ -408,6 +422,10 @@ export class Enemy {
   /** how long to hold a freshly picked patrol heading after bumping into something */
   blockT = 0;
   fired = false;
+  /** spitflower: the continuous yaw of the stalk (a flower turns smoothly, not in 45° steps) */
+  headYaw = 0;
+  /** spitflower: 0..1 how far the current charge has come (drives the mouth glow and the flare) */
+  chargeP = 0;
   // Moblin shield guard (sword variant) — LA Switch remake: big shield blocks while raised, breaks after 3 hits
   moblinGuardHits = 0;
   moblinGuardBroken = 0;
@@ -431,6 +449,9 @@ export class Enemy {
     // soldier, and the queen the broadest of all
     if (isLadybug(kind)) this.radius = kind === 'ladybug_queen' ? 0.55 : 0.45;
     this.facing = randomFacing(game.rand());
+    this.headYaw = FACING_ANGLE[this.facing];
+    // a plant does not patrol: it stands where it grew and watches
+    if (this.rooted) { this.state = 'idle'; this.stateT = 1e9; }
     this.pickPatrolDir();
     game.scene.add(this.model.root);
     this.sync();
@@ -442,6 +463,8 @@ export class Enemy {
   follow: Vec2 | null = null;
 
   get melee() { return this.kind === 'sword' || this.kind === 'spear' || this.kind === 'moblin' || isLadybug(this.kind); }
+  /** rooted to the ground: never walks, cannot be knocked or shoved (the spitflower) */
+  get rooted() { return isRooted(this.kind); }
   get isMoblin() { return this.kind === 'moblin' || this.kind === 'moblin_spear'; }
 
   /**
@@ -526,6 +549,7 @@ export class Enemy {
 
   private canSee(dist: number, dx: number, dz: number): boolean {
     if (dist > this.st.sight) return false;
+    if (this.rooted) return true; // a flower has no back to sneak up on
     if (dist < 2.5) return true;
     const f = FACING_VEC[this.facing];
     return (f[0] * dx + f[1] * dz) / dist > -0.15;
@@ -547,7 +571,7 @@ export class Enemy {
 
     if (this.knockT > 0) {
       this.knockT -= dt;
-      g.world.moveBox(this.pos, this.knock.x * dt, this.knock.z * dt, this.HW, this.HH);
+      if (!this.rooted) g.world.moveBox(this.pos, this.knock.x * dt, this.knock.z * dt, this.HW, this.HH);
       const f = Math.max(0, 1 - dt * 6);
       this.knock.x *= f; this.knock.z *= f;
       this.animate(false);
@@ -568,6 +592,8 @@ export class Enemy {
     const dx = p.pos.x - this.pos.x, dz = p.pos.z - this.pos.z;
     const dist = Math.hypot(dx, dz) || 0.001;
     let moving = false;
+
+    if (this.rooted) { this.updateRooted(dt, dx, dz, dist); this.animate(false); this.sync(); return; }
 
     switch (this.state) {
       case 'patrol': {
@@ -720,6 +746,87 @@ export class Enemy {
     this.sync();
   }
 
+  /**
+   * The spitflower's whole life: it stands where it grew. Idle, it sways and looks about; once the
+   * heroine is in sight it swings its head round after her and, whenever she is in range and the
+   * mouth has recovered, charges up and spits an energy ball at her. The head keeps following her
+   * for the first part of the charge and then commits, so a sidestep late in the glow is the answer.
+   */
+  private updateRooted(dt: number, dx: number, dz: number, dist: number) {
+    const g = this.game, p = g.player, st = this.st;
+    const seen = !p.dead && dist <= st.sight;
+    switch (this.state) {
+      case 'idle': case 'patrol': {
+        this.state = 'idle';
+        this.chargeP = 0;
+        // looking idly about: a slow wander of the head around wherever it last looked
+        this.headYaw += Math.sin(this.age * 0.7) * 0.25 * dt;
+        if (seen) this.becomeAlert();
+        break;
+      }
+      case 'alert': {
+        this.turnHead(dx, dz, dt, 1.6);
+        this.stateT -= dt;
+        if (this.stateT <= 0) this.state = 'ranged';
+        break;
+      }
+      case 'chase': case 'ranged': {
+        this.state = 'ranged';
+        this.chargeP = 0;
+        if (p.dead || dist > st.sight + 3) { this.state = 'idle'; break; }
+        this.turnHead(dx, dz, dt);
+        if (this.cooldown <= 0 && dist <= st.range && dist > 0.9 && this.headOn(dx, dz) < 0.35) {
+          this.state = 'windup'; this.stateT = FLOWER_CHARGE;
+          g.audio.spitCharge(FLOWER_CHARGE);
+        }
+        break;
+      }
+      case 'windup': {
+        this.stateT -= dt;
+        this.chargeP = clamp(1 - this.stateT / FLOWER_CHARGE, 0, 1);
+        if (this.stateT > FLOWER_CHARGE * FLOWER_COMMIT) this.turnHead(dx, dz, dt);
+        if (this.stateT <= 0) { this.state = 'attack'; this.stateT = 0; this.fired = false; }
+        break;
+      }
+      case 'attack': {
+        this.stateT += dt;
+        this.chargeP = 1;
+        if (!this.fired && this.stateT > 0.04) { this.fired = true; this.spit(); }
+        if (this.stateT >= st.attackDur) { this.state = 'recover'; this.stateT = st.recover; this.cooldown = st.cooldown; }
+        break;
+      }
+      case 'recover': {
+        this.stateT -= dt;
+        this.chargeP = clamp(this.stateT / st.recover, 0, 1) * 0.4;
+        if (this.stateT <= 0) this.state = 'ranged';
+        break;
+      }
+    }
+  }
+
+  /** swing the head toward a direction at the flower's turning speed (the 8-way facing follows along) */
+  private turnHead(dx: number, dz: number, dt: number, speedMul = 1) {
+    const want = Math.atan2(dx, dz);
+    const d = normAngle(want - this.headYaw);
+    const step = FLOWER_TURN * speedMul * dt;
+    this.headYaw = normAngle(this.headYaw + clamp(d, -step, step));
+    this.facing = facingFrom(Math.sin(this.headYaw), Math.cos(this.headYaw));
+  }
+
+  /** how far off the head is from pointing straight at a direction, radians */
+  private headOn(dx: number, dz: number): number {
+    return Math.abs(normAngle(Math.atan2(dx, dz) - this.headYaw));
+  }
+
+  /** the spit: one energy ball, out of the mouth, along wherever the head is pointed */
+  private spit() {
+    const g = this.game;
+    const ux = Math.sin(this.headYaw), uz = Math.cos(this.headYaw);
+    g.audio.spit();
+    g.spawnProjectile('energy', this.pos.x + ux * 0.45, this.pos.z + uz * 0.45, ux, uz, this.st.dmg);
+    g.spawnEffect(fxSpark(this.pos.x + ux * 0.45, FLOWER_MOUTH_H, this.pos.z + uz * 0.45, 0.6).at(this.pos.x, this.pos.z));
+  }
+
   private doAttack(dt: number, dx: number, dz: number, dist: number) {
     const g = this.game, st = this.st, p = g.player;
     const fa = FACING_ANGLE[this.facing];
@@ -811,7 +918,7 @@ export class Enemy {
     // other soldiers (and the odd fellow beetle) are blown off their feet just the same, but the wind
     // only hurts the heroine: a beetle that could kill a knight would rewrite the world's guard posts
     for (const e of g.enemies) {
-      if (e === this || !e.alive || e.knockT > 0 || !this.inGust(e.pos.x, e.pos.z, a)) continue;
+      if (e === this || !e.alive || e.rooted || e.knockT > 0 || !this.inGust(e.pos.x, e.pos.z, a)) continue;
       let ex = e.pos.x - this.pos.x, ez = e.pos.z - this.pos.z;
       const ed = Math.hypot(ex, ez) || 1;
       ex /= ed; ez /= ed;
@@ -880,8 +987,8 @@ export class Enemy {
     let dx = this.pos.x - sx, dz = this.pos.z - sz;
     const d = Math.hypot(dx, dz) || 1;
     dx /= d; dz /= d;
-    this.knock = { x: dx * 6.5, z: dz * 6.5 };
-    this.knockT = 0.22;
+    this.knock = this.rooted ? { x: 0, z: 0 } : { x: dx * 6.5, z: dz * 6.5 };
+    this.knockT = this.rooted ? 0.12 : 0.22;
     this.flashT = 0.15;
     setEmissive(this.model.materials, true);
     if (this.model.weapon) this.model.weapon.visible = true;
@@ -891,6 +998,7 @@ export class Enemy {
       return true;
     }
     this.state = this.melee ? 'chase' : 'ranged';
+    if (this.rooted) { this.chargeP = 0; this.turnHead(sx - this.pos.x, sz - this.pos.z, 1e9); } // a struck flower whips round to face the blade
     this.cooldown = Math.max(this.cooldown, 0.5);
     return false;
   }
@@ -902,6 +1010,7 @@ export class Enemy {
     m.legR.rotation.x = -swing * 0.7;
     m.body.position.y = moving ? Math.abs(Math.sin(this.animT)) * 0.03 : 0;
     const k = this.kind, s = this.state;
+    if (this.rooted) { this.animateFlower(); return; }
     if (isLadybug(k)) {
       // The charge is the whole read on this enemy: the wing covers yawn open over a full second
       // while the hindwings shiver underneath, then clap hard for the gust, then fold shut again.
@@ -1043,9 +1152,49 @@ export class Enemy {
     }
   }
 
+  /**
+   * The spitflower: the stalk sways in its own slow wind, leans back and bows its head as it charges,
+   * then whips forward for the spit. The petals flare open with the charge and the mouth glows.
+   */
+  private animateFlower() {
+    const m = this.model, s = this.state;
+    const t = this.age;
+    // the yaw pivot is the stalk's base: turn it and the whole stalk (and head) comes round
+    m.body.rotation.y = this.headYaw;
+    const c = this.chargeP;
+    // rear back through the charge, snap forward for the spit, settle over the recovery
+    let lean = -0.16 * c;
+    if (s === 'attack') lean = 0.28 * (1 - clamp(this.stateT / this.st.attackDur, 0, 1)) - 0.05;
+    const hurt = this.knockT > 0 ? Math.sin(this.knockT * 60) * 0.12 : 0;
+    const segs = m.stalk ?? [];
+    const n = segs.length || FLOWER_SEGMENTS;
+    for (let i = 0; i < segs.length; i++) {
+      const w = (i + 1) / n; // the tip bends most, the base barely
+      const sway = Math.sin(t * 1.3 + i * 0.6) * 0.045 + Math.sin(t * 0.5 + i * 0.9) * 0.03;
+      const tremble = s === 'windup' ? Math.sin(t * 40 + i) * 0.015 * c : 0;
+      // bending about local x pitches the stalk forward/back along the way the head is looking
+      segs[i].rotation.x = lean * w * 0.9 + tremble + hurt * w;
+      segs[i].rotation.z = sway * w + hurt * 0.4 * w;
+    }
+    // the head nods down toward the target as it charges and bobs up after the spit
+    m.head.rotation.x = 0.45 + 0.35 * c - (s === 'attack' ? 0.25 : 0) - lean * 1.2;
+    // petals flare back with the charge
+    const flare = -0.15 - 0.6 * c + (s === 'attack' ? -0.2 : 0);
+    const petals = m.petals ?? [];
+    for (let i = 0; i < petals.length; i++) petals[i].rotation.x = flare + Math.sin(t * 2 + i) * 0.04;
+    // the mouth glows brighter and swells as the shot builds up
+    if (m.mouth) {
+      const mat = m.mouth.material as THREE.MeshToonMaterial;
+      if (this.flashT <= 0) mat.emissiveIntensity = c * 1.6;
+      const sw = 1 + c * 0.5;
+      m.mouth.scale.set(0.24 * sw, 0.24 * sw, 0.16 * (1 + c));
+    }
+  }
+
   private sync() {
     this.model.root.position.set(this.pos.x, this.game.world.surfaceAt(this.pos.x, this.pos.z), this.pos.z);
-    this.model.root.rotation.y = FACING_ANGLE[this.facing];
+    // a flower turns on its stalk (see animateFlower), not on its roots
+    this.model.root.rotation.y = this.rooted ? 0 : FACING_ANGLE[this.facing];
   }
 
   dispose() {
@@ -1338,18 +1487,21 @@ export class Projectile {
   alive = true;
   life = 0;
   speed: number;
-  constructor(private game: GameCtx, public kind: 'arrow' | 'javelin' | 'moblin_spear', x: number, z: number, public dir: Vec2, public dmg: number) {
+  constructor(private game: GameCtx, public kind: ProjectileKind, x: number, z: number, public dir: Vec2, public dmg: number) {
     this.pos = { x, z };
     if (kind === 'arrow') this.mesh = buildArrow();
     else if (kind === 'moblin_spear') this.mesh = buildMoblinSpearProjectile();
+    else if (kind === 'energy') this.mesh = buildEnergyBall();
     else this.mesh = buildJavelinProjectile();
-    this.speed = kind === 'arrow' ? 9.5 : kind === 'moblin_spear' ? 7.2 : 6.5;
+    this.speed = kind === 'arrow' ? 9.5 : kind === 'moblin_spear' ? 7.2 : kind === 'energy' ? 5.6 : 6.5;
     this.mesh.rotation.y = Math.atan2(dir.x, dir.z);
     if (kind === 'javelin' || kind === 'moblin_spear') this.mesh.rotation.x = -0.25;
     game.scene.add(this.mesh);
     this.sync();
   }
   private y = 0;
+  /** the energy ball can be cut out of the air; arrows and spears cannot */
+  get cuttable() { return this.kind === 'energy'; }
   private sync() { this.mesh.position.set(this.pos.x, this.y, this.pos.z); }
   update(dt: number) {
     if (!this.alive) return;
@@ -1357,8 +1509,26 @@ export class Projectile {
     this.life += dt;
     this.pos.x += this.dir.x * this.speed * dt;
     this.pos.z += this.dir.z * this.speed * dt;
-    this.sync();
     const w = this.game.world;
+    if (this.kind === 'energy') {
+      // spat from the flower's mouth, it swoops down to chest height and hugs the ground from there —
+      // it is a ball of light, so it rides over slopes rather than burying itself in them
+      const drop = clamp(this.life / 0.45, 0, 1);
+      this.y = w.surfaceAt(this.pos.x, this.pos.z) + lerp(FLOWER_MOUTH_H, 0.6, easeOut(drop)) + Math.sin(this.life * 9) * 0.04;
+      this.mesh.rotation.y = Math.atan2(this.dir.x, this.dir.z);
+      this.mesh.rotation.z += dt * 6;
+      const halo = this.mesh.getObjectByName('halo');
+      if (halo) { const hs = 0.5 + Math.sin(this.life * 22) * 0.06; halo.scale.set(hs, hs, hs); }
+      this.sync();
+      if (this.life > 2.6 || w.blocksProjectile(this.pos.x, this.pos.z)) { this.burst(); return; }
+      const p = this.game.player;
+      if (!p.dead && Math.hypot(p.pos.x - this.pos.x, p.pos.z - this.pos.z) < 0.5) {
+        const res = this.game.tryHitPlayer(this.dmg, this.pos.x - this.dir.x, this.pos.z - this.dir.z, { projectile: true });
+        if (res !== 'immune') this.burst();
+      }
+      return;
+    }
+    this.sync();
     const ground = w.heightAt(this.pos.x, this.pos.z);
     if (this.life > 3 || w.blocksProjectile(this.pos.x, this.pos.z) || ground > this.y - 0.1 || ground < this.y - 1.4) {
       this.game.spawnEffect(fxSpark(this.pos.x, this.y - ground - 0.1, this.pos.z, 0.5).at(this.pos.x, this.pos.z));
@@ -1373,6 +1543,12 @@ export class Projectile {
         this.destroy();
       }
     }
+  }
+  /** the energy ball popping: a green flash where it was, then gone */
+  burst() {
+    const ground = this.game.world.surfaceAt(this.pos.x, this.pos.z);
+    this.game.spawnEffect(fxEnergyBurst(this.pos.x, this.y - ground, this.pos.z).at(this.pos.x, this.pos.z));
+    this.destroy();
   }
   destroy() { this.alive = false; this.game.scene.remove(this.mesh); }
 }
@@ -1442,6 +1618,28 @@ export function fxSpark(x: number, y: number, z: number, size = 1): Effect {
   });
   e.group.add(core);
   for (let i = 0; i < 4; i++) { const m = part(UNIT_BOX, whiteMat, [x, y, z], [0.08, 0.08, 0.08]); e.group.add(m); bits.push({ m, a: (i / 4) * Math.PI * 2 + 0.4 }); }
+  return e;
+}
+
+const energyMat = new THREE.MeshBasicMaterial({ color: 0xc8ff5a, transparent: true, opacity: 0.8, depthWrite: false });
+
+/** a spitflower's energy ball bursting: a swelling, fading green flash with motes flung out of it */
+export function fxEnergyBurst(x: number, y: number, z: number): Effect {
+  const core = part(UNIT_SPHERE, energyMat.clone(), [x, y, z], [0.3, 0.3, 0.3]);
+  const bits: { m: THREE.Mesh; a: number; b: number }[] = [];
+  const e = new Effect(0.32, (p) => {
+    const s = 0.3 + p * 0.7;
+    core.scale.set(s, s, s);
+    (core.material as THREE.MeshBasicMaterial).opacity = 0.8 * (1 - p);
+    for (const b of bits) {
+      const r = easeOut(p) * 0.8;
+      b.m.position.set(x + Math.cos(b.a) * r, y + b.b * r - p * p * 0.5, z + Math.sin(b.a) * r);
+      const bs = (1 - p) * 0.09;
+      b.m.scale.set(bs, bs, bs);
+    }
+  });
+  e.group.add(core);
+  for (let i = 0; i < 6; i++) { const m = part(UNIT_OCTA, energyMat, [x, y, z], [0.08, 0.08, 0.08]); e.group.add(m); bits.push({ m, a: (i / 6) * Math.PI * 2 + 0.2, b: 0.3 + (i % 3) * 0.25 }); }
   return e;
 }
 

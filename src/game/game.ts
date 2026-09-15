@@ -8,7 +8,7 @@ import { World, type Vec2, type TileObj } from './world';
 import { Wildlife } from './wildlife';
 import { AudioEngine } from './audio';
 import { Input, PAUSE_KEYS, MUTE_KEYS, ATTACK_KEYS, TALK_KEYS, ROTATE_CCW_KEYS, ROTATE_CW_KEYS, FULLSCREEN_KEYS, HELP_KEYS, MAP_KEYS, rotateView } from './input';
-import { Player, Enemy, Npc, Farmer, Projectile, Pickup, Effect, fxSpark, fxPuff, fxLeaves, fxSeeds, fxWater, fxSoil, fxHarvest, type GameCtx } from './entities';
+import { Player, Enemy, Npc, Farmer, Projectile, Pickup, Effect, fxSpark, fxPuff, fxLeaves, fxSeeds, fxWater, fxSoil, fxHarvest, type GameCtx, type ProjectileKind } from './entities';
 import { NPC_TALK, newQuestState, type Conversation, type QuestState, type TalkCtx } from './dialogue';
 import {
   buildTrees, buildBush, buildBerryBush, buildStump, buildRock, buildFence, buildHouse, buildProp, getGroundGradientMap, buildVillager, buildDog, VILLAGER_LOOKS,
@@ -395,7 +395,7 @@ export class Game implements GameCtx {
   // ------------------------------------------------------------------ GameCtx
   rand() { return this.rng.next(); }
 
-  spawnProjectile(kind: 'arrow' | 'javelin' | 'moblin_spear', x: number, z: number, dx: number, dz: number, dmg: number) {
+  spawnProjectile(kind: ProjectileKind, x: number, z: number, dx: number, dz: number, dmg: number) {
     this.projectiles.push(new Projectile(this, kind, x, z, { x: dx, z: dz }, dmg));
   }
 
@@ -704,6 +704,17 @@ export class Game implements GameCtx {
       this.spawnEffect(fxSpark(e.pos.x, 0.8, e.pos.z).at(e.pos.x, e.pos.z));
       if (e.hurt(sw.dmg, p.x, p.z)) this.onEnemyDied(e);
     }
+    // a spitflower's energy ball can be cut out of the air (arrows and spears are too quick and too thin)
+    for (const pr of this.projectiles) {
+      if (!pr.alive || !pr.cuttable || sw.hit.has(pr)) continue;
+      const dx = pr.pos.x - p.x, dz = pr.pos.z - p.z;
+      const d = Math.hypot(dx, dz);
+      if (d > sw.r + 0.3) continue;
+      if (d > 0.45 && !inArc(Math.atan2(dx, dz), sw.from, sw.to, 0.35)) continue;
+      sw.hit.add(pr);
+      this.audio.hit();
+      pr.burst();
+    }
     for (const b of this.bushes) {
       if (!b.alive) continue;
       const dx = b.tx + 0.5 - p.x, dz = b.tz + 0.5 - p.z;
@@ -770,7 +781,7 @@ export class Game implements GameCtx {
           e.knock = { x: (dx / d) * 4.5, z: (dz / d) * 4.5 };
           e.knockT = 0.2;
         }
-        if (dist < 0.6) {
+        if (dist < 0.6 && !e.rooted) {
           const push = 0.6 - dist;
           const nx = dist > 1e-4 ? dx / d : 1, nz = dist > 1e-4 ? dz / d : 0;
           this.world.moveBox(e.pos, nx * push, nz * push, e.HW, e.HH);
@@ -788,8 +799,9 @@ export class Game implements GameCtx {
       const d = Math.hypot(dx, dz);
       if (d > 0.7 || d < 1e-4) continue;
       const push = (0.7 - d) / 2;
-      this.world.moveBox(a.pos, (-dx / d) * push, (-dz / d) * push, a.HW, a.HH);
-      this.world.moveBox(b.pos, (dx / d) * push, (dz / d) * push, b.HW, b.HH);
+      // a rooted one does not budge: whoever bumped into it takes the whole step back
+      if (!a.rooted) this.world.moveBox(a.pos, (-dx / d) * push * (b.rooted ? 2 : 1), (-dz / d) * push * (b.rooted ? 2 : 1), a.HW, a.HH);
+      if (!b.rooted) this.world.moveBox(b.pos, (dx / d) * push * (a.rooted ? 2 : 1), (dz / d) * push * (a.rooted ? 2 : 1), b.HW, b.HH);
     }
   }
 

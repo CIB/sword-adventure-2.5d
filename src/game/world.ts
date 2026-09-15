@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { getGradientMap as getGradientMapRef } from './models';
 import { MAP_W, MAP_H, TEX_PX, Tile, RNG, hash2, LEVEL_H, MAX_WALK_SLOPE, WATER_DEPTH, BRIDGE_H } from './constants';
 
-export type EnemyKind = 'sword' | 'spear' | 'javelin' | 'archer' | 'moblin' | 'moblin_spear' | 'ladybug' | 'ladybug_queen';
+export type EnemyKind = 'sword' | 'spear' | 'javelin' | 'archer' | 'moblin' | 'moblin_spear' | 'ladybug' | 'ladybug_queen' | 'spitflower';
 export interface TreeSpec { x: number; z: number; scale: number; y?: number; kind?: 'oak' | 'pine' | 'autumn' | 'birch' | 'blossom' }
 export interface TileObj { tx: number; tz: number; v?: number }
 export interface HouseSpec { x: number; z: number; w: number; d: number; roof?: string; wall?: string; door?: 'S' | 'E' | 'W'; sign?: 'shop' | 'inn' | 'none' }
@@ -1146,6 +1146,14 @@ export class World {
     const green = w.meadow + w.lake * 0.95 + w.farm * 0.9
       + w.marsh * 0.45 + w.moor * 0.3 + w.mesa * 0.2 + w.highland * 0.1;
     return green * World.lushGround(this.tile(Math.floor(x), Math.floor(z)));
+  }
+
+  /**
+   * Is this tile properly in the woods? True on the mossy forest floor that only forms under a dense
+   * stand of trees (see the tree pass in the generator). The spitflowers grow here and nowhere else.
+   */
+  forested(tx: number, tz: number): boolean {
+    return this.tile(tx, tz) === Tile.ForestFloor;
   }
 
   /** How much green cover a ground type carries — the other half of `lushness`. */
