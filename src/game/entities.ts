@@ -366,7 +366,7 @@ const STATS: Record<EnemyKind, Stats> = {
   ladybug: { hp: 3, speed: 1.3, chase: 2.5, dmg: 1, sight: 7, range: 2.6, attackDur: 0.42, recover: 0.95, cooldown: 3.4 },
   // the queen: the oversized beetle, and the only one of the two that fights like a small set-piece —
   // more shell to crack, a longer wind-up and a much longer, harder clap of wind
-  ladybug_queen: { hp: 6, speed: 1.15, chase: 2.2, dmg: 2, sight: 8, range: 3.9, attackDur: 0.5, recover: 1.15, cooldown: 3.8 },
+  ladybug_queen: { hp: 12, speed: 1.15, chase: 2.2, dmg: 2, sight: 8, range: 3.9, attackDur: 0.5, recover: 1.15, cooldown: 3.8 },
 };
 
 // ---- ladybug tuning -------------------------------------------------------

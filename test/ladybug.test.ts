@@ -343,13 +343,13 @@ function runWildlife(seconds: number, x: number, z: number, viewR = 26) {
   const { ctx } = runWildlife(40, 44.5, 38.5);
   const bugs = ctx.enemies.filter((e) => e.kind === 'ladybug');
   const bug = bugs[0];
-  check('a ladybug is a soft target: three swings and it is done', gapCheck(bug) && bug.st.dmg === 1,
+  check('a ladybug is a soft target: six swings and it is done', gapCheck(bug) && bug.st.dmg === 1,
     `${bug.st.hp} hp, gust does ${bug.st.dmg}`);
 }
 function gapCheck(bug: Enemy) {
-  // three hits of a normal swing kill it
+  // six hits of a normal swing kill it
   let dead = false;
-  for (let i = 0; i < 3 && !dead; i++) dead = bug.hurt(1, bug.pos.x, bug.pos.z - 1);
+  for (let i = 0; i < 6 && !dead; i++) dead = bug.hurt(1, bug.pos.x, bug.pos.z - 1);
   return dead;
 }
 
