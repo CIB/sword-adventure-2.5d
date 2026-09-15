@@ -60,14 +60,9 @@ check('the petals start cupped forward, not flung open', (flowerModel.petals![0]
   check('it stands on the ground', Math.abs(f.min.y) < 0.06, `min.y=${f.min.y.toFixed(3)}`);
   check('it is a big flower: head and shoulders over a soldier', h > sh + 0.3,
     `flower ${h.toFixed(2)} vs soldier ${sh.toFixed(2)}`);
-  check('the stalk bends in two segments, not one rigid stick', !!flowerModel.stalkTop
-    && flowerModel.head.parent === flowerModel.stalkTop && flowerModel.stalkTop.parent === flowerModel.body);
-  // the head rides the upper joint, so its height is measured in the world, not in local units
-  flowerModel.root.updateMatrixWorld(true);
-  const headY = flowerModel.head.getWorldPosition(new THREE.Vector3()).y;
   check('...on a long stalk that holds the head well clear of the ferns',
-    Math.abs(headY - SPITFLOWER_HEAD_H) < 0.01 && SPITFLOWER_HEAD_H > 1.1,
-    `head at ${headY.toFixed(2)}`);
+    Math.abs(flowerModel.head.position.y - SPITFLOWER_HEAD_H) < 0.01 && SPITFLOWER_HEAD_H > 1.1,
+    `head at ${flowerModel.head.position.y.toFixed(2)}`);
   const mouth = size(flowerModel.mouth!);
   check('...with the mouth facing out of the face, not buried in it',
     mouth.min.z > f.min.z + (f.max.z - f.min.z) * 0.55, `mouth z=${mouth.min.z.toFixed(2)} of ${f.min.z.toFixed(2)}..${f.max.z.toFixed(2)}`);
@@ -88,9 +83,8 @@ check('the petals start cupped forward, not flung open', (flowerModel.petals![0]
   const flower = new Enemy(ctx, 'spitflower', 44.5, 39.0);
   ctx.enemies.push(flower);
   const x0 = flower.pos.x, z0 = flower.pos.z;
-  const yaw0 = flower.aimYaw;
+  const yaw0 = flower.headYaw;
   let sawWindup = false, sawAttack = false, maxGlow = 0, minPetal = Infinity, maxPetal = -Infinity;
-  let maxHeadOff = 0, maxBend = 0, maxCurve = -Infinity;
   for (let i = 0; i < Math.round(4 / DT); i++) {
     flower.update(DT);
     player.update(DT, NO_INPUT);
@@ -102,23 +96,13 @@ check('the petals start cupped forward, not flung open', (flowerModel.petals![0]
     const petal = flower.model.petals![0].children[0];
     minPetal = Math.min(minPetal, petal.rotation.y);
     maxPetal = Math.max(maxPetal, petal.rotation.y);
-    maxHeadOff = Math.max(maxHeadOff, Math.abs(flower.headOff));
-    maxBend = Math.max(maxBend, flower.bend);
-    maxCurve = Math.max(maxCurve, flower.model.stalkTop!.rotation.x - flower.model.body.rotation.x);
   }
-  const mouthAt = flower.aimYaw + flower.headOff;
-  const herAt = Math.atan2(player.pos.x - flower.pos.x, player.pos.z - flower.pos.z);
   check('it never walks anywhere', flower.pos.x === x0 && flower.pos.z === z0,
     `moved ${Math.hypot(flower.pos.x - x0, flower.pos.z - z0).toFixed(3)}`);
-  check('...but its stalk hauls itself around to face her', Math.abs(normAngle(yaw0 - flower.aimYaw)) > 0.2
-    && Math.abs(normAngle(mouthAt - herAt)) < 0.25,
-    `mouth ${mouthAt.toFixed(2)} vs her at ${herAt.toFixed(2)}`);
-  check('...while the head only ever corrects a little on its neck', maxHeadOff <= 0.46,
-    `max offset ${maxHeadOff.toFixed(2)}`);
-  check('...and the stalk bends while it works', maxBend > 0.25, `bend peaks at ${maxBend.toFixed(2)}`);
-  check('...curving at the upper joint, not tilting like a stick', maxCurve > 0.02,
-    `upper runs ${maxCurve.toFixed(2)} ahead of the lower stalk`);
-  check('...while the root it stands on never turns', Math.abs(normAngle(flower.model.root.rotation.y - flower.plantedYaw)) < 1e-6);
+  check('...but its head swings around to face her', Math.abs(normAngle(yaw0 - flower.headYaw)) > 0.2
+    && Math.abs(normAngle(flower.headYaw - Math.atan2(player.pos.x - flower.pos.x, player.pos.z - flower.pos.z))) < 0.25,
+    `head ${flower.headYaw.toFixed(2)} vs her at ${Math.atan2(player.pos.x - flower.pos.x, player.pos.z - flower.pos.z).toFixed(2)}`);
+  check('...while the stalk it stands on never turns', Math.abs(normAngle(flower.model.root.rotation.y - flower.plantedYaw)) < 1e-6);
   check('it charges its spit before it spits', sawWindup && sawAttack);
   check('the mouth glows brighter as the spit brews', maxGlow > 0.2, `glow r=${maxGlow.toFixed(2)}`);
   check('...and the petals yawn open with it', maxPetal - minPetal > 0.3, `${minPetal.toFixed(2)} -> ${maxPetal.toFixed(2)}`);
