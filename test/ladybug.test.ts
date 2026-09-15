@@ -182,6 +182,15 @@ function untilGust(s: ReturnType<typeof staged>, seconds: number, shield = false
   };
 }
 
+// ---- wildlife, not one of the Fallen Knights
+{
+  const h = harness();
+  const bug = new Enemy(h.ctx, 'ladybug', colony.homes[0].x, colony.homes[0].z);
+  const knight = new Enemy(h.ctx, 'sword', colony.homes[0].x + 1, colony.homes[0].z);
+  check('a beetle is wildlife, and every soldier is not', bug.isWildlife && !knight.isWildlife);
+  bug.dispose(); knight.dispose();
+}
+
 // ---- the special attack: spread, beat, blow her away, no damage
 {
   const s = staged(3);

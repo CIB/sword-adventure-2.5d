@@ -478,6 +478,12 @@ export class Enemy {
   get isMoblin() { return this.kind === 'moblin' || this.kind === 'moblin_spear'; }
   /** the giant ladybug: no weapon, just the wings (and a gust that hurts nobody) */
   get isLadybug() { return this.kind === 'ladybug'; }
+  /**
+   * Wildlife, not one of the Fallen Knights. The elder's tally and the helmet counter on the HUD
+   * count the Queen's guard she wants thinned — a beetle is nobody's quest, and with twenty-odd of
+   * them in the meadows against a goal of five it would be the whole quest if it counted.
+   */
+  get isWildlife() { return this.isLadybug; }
 
   /**
    * The tile this guard stands watch on, taken from its own world record: a replacement inherits

@@ -729,8 +729,9 @@ export class Game implements GameCtx {
   }
 
   private onEnemyDied(e: Enemy) {
-    this.player.kills++;
-    this.quests.kills++;
+    // Only the Fallen Knights are tallied: killing wildlife is not a knight sent back to rest, and
+    // it must not finish the elder's quest or pad the helmet counter on the HUD.
+    if (!e.isWildlife) { this.player.kills++; this.quests.kills++; }
     this.audio.enemyDie();
     this.spawnEffect(fxPuff(e.pos.x, e.pos.z).at(e.pos.x, e.pos.z));
     this.dropLoot(e.pos.x, e.pos.z, 0.35, 0.4);
