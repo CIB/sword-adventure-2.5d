@@ -9,7 +9,7 @@ import { ACTIONS, type VillageState, type CropKind } from './village';
 import {
   buildArrow, buildHeart, buildHeroine, buildJavelinProjectile, buildMoblinSpearProjectile, buildRupee, buildSoldier, part, toon,
   UNIT_BOX, UNIT_OCTA, UNIT_SPHERE, type Humanoid, buildVillager, buildDog, buildWateringCan, VILLAGER_LOOKS,
-  GUST_HALF_ARC, gustRange, isLadybug,
+  GUST_HALF_ARC, gustRange, isLadybug, poseLadybug,
 } from './models';
 
 export interface GameCtx {
@@ -372,8 +372,8 @@ const STATS: Record<EnemyKind, Stats> = {
 // ---- ladybug tuning -------------------------------------------------------
 /** seconds the shell takes to creak open before the clap (the whole telegraph of the attack) */
 const LADYBUG_CHARGE = 1.1;
-/** how far the wing covers swing open, radians */
-const LADYBUG_OPEN = 1.25;
+/** wingbeats per second while the gust is beating (the clap lands on the downbeats) */
+const LADYBUG_FLAP_HZ = 11.5;
 /** the shove a point-blank gust puts on the heroine (falls off with distance), tiles/second */
 const GUST_PUSH = 13;
 /** a beetle in its charge has braced for the clap: how hard a sword blow pushes it back, and for
@@ -393,6 +393,10 @@ export class Enemy {
   stateT = 1;
   dir: Vec2 = { x: 0, z: 1 };
   cooldown = 0;
+  /** ladybug: how far its wings are open, 0 = folded away under the cases, 1 = spread and beating */
+  wingOpen = 0;
+  /** ladybug: a slow clock that never stops — the beetle's antennae and breathing run off it */
+  private bugT = 0;
   knockT = 0;
   knock: Vec2 = { x: 0, z: 0 };
   flashT = 0;
@@ -554,7 +558,7 @@ export class Enemy {
       g.world.moveBox(this.pos, this.knock.x * dt, this.knock.z * dt, this.HW, this.HH);
       const f = Math.max(0, 1 - dt * 6);
       this.knock.x *= f; this.knock.z *= f;
-      this.animate(false);
+      this.animate(false, dt);
       this.sync();
       return;
     }
@@ -563,7 +567,7 @@ export class Enemy {
     if (this.kind === 'moblin' && this.moblinGuardBroken > 0) {
       this.moblinGuardBroken = Math.max(0, this.moblinGuardBroken - dt);
       if (this.moblinGuardBroken <= 0) this.moblinGuardHits = 0;
-      this.animate(false);
+      this.animate(false, dt);
       this.sync();
       // can still be alerted / start chasing again once stun ends, but while dazed hold still
       if (this.moblinGuardBroken > 0) return;
@@ -720,7 +724,7 @@ export class Enemy {
         break;
       }
     }
-    this.animate(moving);
+    this.animate(moving, dt);
     this.sync();
   }
 
@@ -906,71 +910,15 @@ export class Enemy {
     return false;
   }
 
-  private animate(moving: boolean) {
+  private animate(moving: boolean, dt: number) {
     const m = this.model;
+    if (isLadybug(this.kind)) { this.animateLadybug(m, moving, dt); return; } // a beetle has no arms to swing
     const swing = moving ? Math.sin(this.animT) : 0;
     m.legL.rotation.x = swing * 0.7;
     m.legR.rotation.x = -swing * 0.7;
     m.body.position.y = moving ? Math.abs(Math.sin(this.animT)) * 0.03 : 0;
     const k = this.kind, s = this.state;
-    if (isLadybug(k)) {
-      // The charge is the whole read on this enemy: the wing covers yawn open over a full second
-      // while the hindwings shiver underneath, then clap hard for the gust, then fold shut again.
-      let open = 0.05;              // at rest the shell sits just cracked apart
-      let buzz = 0;                 // how hard the hindwings are beating (0..1)
-      let tremble = 0;
-      let rear = 0;                 // the body tips back as it winds up, and lunges into the clap
-      if (s === 'windup') {
-        const p = clamp(1 - this.stateT / LADYBUG_CHARGE, 0, 1);
-        const e = easeOutCubic(p);
-        open = 0.05 + e * (LADYBUG_OPEN - 0.05);
-        buzz = 0.5 * e;
-        tremble = Math.sin(this.age * 32) * 0.02 * p;
-        rear = -0.17 * e;
-      } else if (s === 'attack') {
-        const p = clamp(this.stateT / this.st.attackDur, 0, 1);
-        open = LADYBUG_OPEN;
-        buzz = 1;
-        tremble = Math.sin(this.age * 58) * 0.03 * (1 - p * 0.6);
-        rear = 0.1 * (1 - p);
-      } else if (s === 'recover') {
-        // stateT counts down here: the shell swings shut over the recovery
-        const p = clamp(this.stateT / this.st.recover, 0, 1);
-        open = LADYBUG_OPEN * p;
-        buzz = 0.55 * p;
-        rear = -0.05 * p;
-      }
-      if (this.model.elytronL) this.model.elytronL.rotation.z = open + tremble;
-      if (this.model.elytronR) this.model.elytronR.rotation.z = -open - tremble;
-      // the hindwings lift with the shell and beat together, hard and fast, for the clap
-      const beat = Math.sin(this.age * 46) * 0.5 * buzz;
-      const lift = open * 0.55 + beat;
-      if (this.model.hindwingL) this.model.hindwingL.rotation.z = lift;
-      if (this.model.hindwingR) this.model.hindwingR.rotation.z = -lift;
-      // six legs scuttling, and the shell riding up and down over them
-      m.legL.rotation.x = swing * 0.22;
-      m.legR.rotation.x = -swing * 0.22;
-      m.body.position.y = (moving ? Math.abs(Math.sin(this.animT)) * 0.05 : 0) + 0.06 * Math.max(0, -rear * 6);
-      m.body.rotation.set(rear, Math.sin(this.animT) * 0.06 * (moving ? 1 : 0), moving ? Math.sin(this.animT) * 0.05 : 0);
-      // head down into the wind, antennae sweeping back out of it
-      m.head.rotation.x = s === 'attack' ? 0.22 : s === 'windup' ? -0.12 : 0;
-      const wave = Math.sin(this.age * 2.6) * 0.16;
-      m.armL.rotation.set(-0.5 + wave - buzz * 0.5, 0, -0.5);
-      m.armR.rotation.set(-0.5 - wave - buzz * 0.5, 0, 0.5);
-      // the ground tell, drawn only while it is winding up
-      const arc = this.model.gustArc;
-      if (arc) {
-        const charging = s === 'windup';
-        arc.visible = charging;
-        if (charging) {
-          const p = clamp(1 - this.stateT / LADYBUG_CHARGE, 0, 1);
-          const r = 0.4 + 0.6 * easeOutCubic(p);
-          const u = this.model.gustArcUnit ?? gustRange(this.kind); // local scale of a full-reach cone
-          arc.scale.set(u * r, 1, u * r);
-          (arc.material as THREE.MeshBasicMaterial).opacity = 0.28 * p;
-        }
-      }
-    } else if (k === 'moblin') {
+    if (k === 'moblin') {
       // LA sword+shield brute — big shield blocks while patrolling/chasing, drops when dazed
       if (this.moblinGuardBroken > 0) {
         // dazed after shield break — wobbles, shield droops, sword hangs
@@ -1051,6 +999,43 @@ export class Enemy {
       if (s === 'windup') m.armR.rotation.set(-Math.PI / 2 + 0.2, -0.3, 0);
       else if (s === 'attack') m.armR.rotation.set(-Math.PI / 2 + 0.7, -0.9, 0);
       else m.armR.rotation.set(-Math.PI / 2 + 0.5, -0.5, 0);
+    }
+  }
+
+  /**
+   * The beetle's whole body language, from where its AI has got to: six legs scuttling, antennae
+   * tasting the air, and the wings — folded flat under their cases until it commits to the gust,
+   * then cracking open through the charge (the tell), beating hard for the blast, and folding away
+   * again while it catches its breath. The pose itself lives with the model (`poseLadybug`), so
+   * the model viewer shows exactly this.
+   *
+   * `wingOpen` is eased toward whatever its state asks for, so a sword blow that interrupts the
+   * charge still folds the wings away smoothly instead of snapping them shut.
+   */
+  private animateLadybug(m: Humanoid, moving: boolean, dt: number) {
+    const s = this.state, st = this.st;
+    this.bugT += dt;
+    let target = 0;
+    if (s === 'windup') target = smooth(1 - Math.max(0, this.stateT) / LADYBUG_CHARGE); // spreading
+    else if (s === 'attack') target = 1;                                                // beating
+    else if (s === 'recover') target = 1 - smooth(Math.min(1, (1 - Math.max(0, this.stateT) / st.recover) / 0.65));
+    this.wingOpen += (target - this.wingOpen) * Math.min(1, dt * (target > this.wingOpen ? 8 : 5));
+    const open = clamp(this.wingOpen, 0, 1);
+    const beat = s === 'attack' ? this.stateT * LADYBUG_FLAP_HZ * Math.PI * 2 : 0;
+    const step = moving ? Math.sin(this.animT) : Math.sin(this.bugT * 1.7) * 0.07;
+    poseLadybug(m, open, beat, step, this.bugT);
+    // the ground tell, drawn only while it is winding up
+    const arc = m.gustArc;
+    if (arc) {
+      const charging = s === 'windup';
+      arc.visible = charging;
+      if (charging) {
+        const p = clamp(1 - this.stateT / LADYBUG_CHARGE, 0, 1);
+        const r = 0.4 + 0.6 * easeOutCubic(p);
+        const u = m.gustArcUnit ?? gustRange(this.kind); // local scale of a full-reach cone
+        arc.scale.set(u * r, 1, u * r);
+        (arc.material as THREE.MeshBasicMaterial).opacity = 0.28 * p;
+      }
     }
   }
 

@@ -7,7 +7,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import {
   buildHeroine, buildSoldier, buildVillager, buildDog, VILLAGER_LOOKS, buildTrees, buildBush, buildBerryBush, buildRock, buildStump,
   buildFence, buildHouse, buildProp, buildHeart, buildRupee, buildArrow, buildJavelinProjectile, buildMoblinSpearProjectile,
-  buildFernGeo, buildTallGrassGeo, buildBriarGeo, buildLilyGeo, buildBoulderGeo, buildCropGeo, buildWateringCan, vegObject, LADYBUG_KINDS, type Humanoid,
+  buildFernGeo, buildTallGrassGeo, buildBriarGeo, buildLilyGeo, buildBoulderGeo, buildCropGeo, buildWateringCan, vegObject, LADYBUG_KINDS, poseLadybug, type Humanoid,
 } from '../game/models';
 import type { PropKind, HouseSpec, EnemyKind } from '../game/world';
 import { World } from '../game/world';
@@ -176,6 +176,26 @@ function applyFacing() {
   current.obj.rotation.y = FACING_ANGLE[facing]; // same convention as entities.ts (root.rotation.y = facingAngle)
 }
 
+// the ladybug's loop in the viewer: the same pose the game drives (poseLadybug), played as one
+// readable cycle — a stroll, the long wing-spread charge, the beat that makes the gust, and folding
+// away again — so the special attack can be inspected from any angle
+const LADYBUG_CYCLE = 4.4, LADYBUG_VIEW_FLAP_HZ = 11.5;
+let bugT = 0;
+function animateLadybug(m: Humanoid, dt: number) {
+  if (!animCb.checked) { poseLadybug(m, 0, 0, 0, bugT); return; }
+  bugT += dt;
+  const c = bugT % LADYBUG_CYCLE;
+  // 0.0-1.4 stroll, 1.4-2.5 spread the wings (the charge), 2.5-3.0 beat, 3.0-3.8 fold, then rest
+  const open = c < 1.4 ? 0
+    : c < 2.5 ? smooth01((c - 1.4) / 1.1)
+      : c < 3.0 ? 1
+        : 1 - smooth01(Math.min(1, (c - 3.0) / 0.7));
+  const beat = c >= 2.5 && c < 3.0 ? (c - 2.5) * LADYBUG_VIEW_FLAP_HZ * Math.PI * 2 : 0;
+  const step = c < 1.4 || c > 3.8 ? Math.sin(bugT * 7) : 0;
+  poseLadybug(m, open, beat, step, bugT);
+}
+const smooth01 = (p: number) => p * p * (3 - 2 * p);
+
 function animate(dt: number) {
   if (!current?.humanoid) {
     if (current) {
@@ -185,6 +205,7 @@ function animate(dt: number) {
     return;
   }
   const m = current.humanoid;
+  if (m.elytronL && m.elytronR && m.hindwingL && m.hindwingR) { animateLadybug(m, dt); return; } // a beetle runs its own pose
   if (!animCb.checked) { m.legL.rotation.x = m.legR.rotation.x = 0; m.body.position.y = 0; return; }
   animT += dt * 9;
   const swing = Math.sin(animT);
@@ -192,16 +213,6 @@ function animate(dt: number) {
   m.body.position.y = Math.abs(swing) * 0.04;
   if (m.ponytail) m.ponytail.rotation.x = swing * 0.2 + 0.15;
   m.armL.rotation.x = swing * 0.3;
-  // the ladybugs: breathe their wing covers open and shut (with the hindwings beating under them)
-  // so the shell and the wings beneath it can actually be looked at here
-  if (m.elytronL && m.elytronR) {
-    const open = 0.05 + (0.5 + 0.5 * Math.sin(animT * 0.25)) * 1.2;
-    m.elytronL.rotation.z = open;
-    m.elytronR.rotation.z = -open;
-    const beat = open * 0.55 + Math.sin(animT * 1.4) * 0.45;
-    if (m.hindwingL) m.hindwingL.rotation.z = beat;
-    if (m.hindwingR) m.hindwingR.rotation.z = -beat;
-  }
 }
 
 // ------------------------------------------------------------------ UI

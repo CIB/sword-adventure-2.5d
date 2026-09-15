@@ -10,7 +10,7 @@ import * as THREE from 'three';
 import { World } from '../src/game/world';
 import { Enemy, Player, Projectile, fxGust, type GameCtx } from '../src/game/entities';
 import { Wildlife } from '../src/game/wildlife';
-import { buildSoldier, gustRange, isLadybug } from '../src/game/models';
+import { buildSoldier, gustRange, isLadybug, poseLadybug } from '../src/game/models';
 import { RNG, MAX_HP, FACING_VEC, SHEAR, inArc } from '../src/game/constants';
 
 let failures = 0;
@@ -105,28 +105,55 @@ check('the ground tell is measured in tiles of world, not in beetle lengths',
   const coverL = size(bugModel.elytronL!, true), coverR = size(bugModel.elytronR!, true);
   check('the two covers meet along the midline', Math.abs(coverL.min.x) < 0.02 && Math.abs(coverR.max.x) < 0.02,
     `L.min.x=${coverL.min.x.toFixed(3)} R.max.x=${coverR.max.x.toFixed(3)}`);
-  const hind = size(bugModel.hindwingL!, true).union(size(bugModel.hindwingR!, true));
-  check('the hindwings fold away inside the shut shell', coverL.union(coverR).containsBox(hind));
+  // (where the hindwings fold away is checked properly below, against the curved cover)
 }
 
-// the translucent flight wings: pale membranes under the shell — hidden beneath it at rest (the
-// footprint check above), fanned up clear over the shell's line for the charge. Posed here exactly
-// the way the enemy animation poses them at full charge (open * 0.55 + beat).
+// the translucent flight wings: pale membranes hinged at the thorax under the pronotum. Folded,
+// they vanish beneath the shell and the belly — checked the way the camera sees it, vertex by
+// vertex against the curved cover, not just the bounding box (a flat sheet can hide inside the box
+// and still poke out of the side). For the charge they sweep wide out to the sides and beat: a low
+// fan, not a wall stood on edge.
 {
   const bug = buildSoldier('ladybug');
   bug.root.remove(bug.gustArc!);
+  bug.root.scale.set(1, 1, 1); // author space: the cover numbers below are in beetle lengths
   const membrane = bug.hindwingL!.children[0] as THREE.Mesh;
   const wmat = membrane.material as THREE.MeshToonMaterial;
   check('the wing membranes are pale, see-through sheets',
     wmat.transparent && wmat.opacity > 0.45 && wmat.opacity < 0.7 && wmat.depthWrite === false && wmat.side === THREE.DoubleSide,
     `opacity=${wmat.opacity} depthWrite=${wmat.depthWrite} side=${wmat.side}`);
-  const shutTop = size(bug.elytronL!).max.y;
-  const lift = 1.25 * 0.55 + 0.25; // the full-charge lift from the enemy animation (open * 0.55 + beat)
-  bug.hindwingL!.rotation.z = lift;
-  bug.hindwingR!.rotation.z = -lift;
-  const spread = size(bug.hindwingL!, true);
-  check('the spread wings fan up clear over the closed shell', spread.max.y > shutTop + 0.12,
-    `wing top ${spread.max.y.toFixed(2)} vs shell top ${shutTop.toFixed(2)}`);
+  // how deep a point sits inside the cover: < 0 means inside the shell dome, the belly or the
+  // pronotum (their ellipsoids, in author space)
+  const cover = (p: THREE.Vector3) => {
+    const f = (cx: number, cy: number, cz: number, hx: number, hy: number, hz: number) =>
+      ((p.x - cx) / hx) ** 2 + ((p.y - cy) / hy) ** 2 + ((p.z - cz) / hz) ** 2 - 1;
+    return Math.min(f(0, 0.6, -0.22, 0.56, 0.42, 0.62), f(0, 0.52, -0.02, 0.53, 0.26, 0.7), f(0, 0.8, 0.44, 0.43, 0.22, 0.26));
+  };
+  let n = 0, out = 0, worst = 0;
+  for (const side of [bug.hindwingL!, bug.hindwingR!]) {
+    side.updateWorldMatrix(true, true);
+    for (const child of side.children) {
+      const mesh = child as THREE.Mesh;
+      const pos = mesh.geometry.getAttribute('position');
+      const v = new THREE.Vector3();
+      for (let i = 0; i < pos.count; i++) {
+        const d = cover(v.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld));
+        n++;
+        if (d > 0) { out++; worst = Math.max(worst, d); }
+      }
+    }
+  }
+  check('the folded wings vanish under the shell and belly', out / n < 0.02 && worst < 0.05,
+    `${out}/${n} vertices outside the cover, deepest ${worst.toFixed(4)}`);
+  // the charge: the same wings swept fully open, posed exactly the way poseLadybug poses them —
+  // measured against the SHUT shell, since that is what they fan out of
+  const shell = size(bug.elytronL!).union(size(bug.elytronR!));
+  poseLadybug(bug, 1, 0, 0, 0);
+  const wings = size(bug.hindwingL!, true).union(size(bug.hindwingR!, true));
+  check('the spread wings fan out wide past the shell', wings.max.x > shell.max.x + 0.2 && wings.min.x < shell.min.x - 0.2,
+    `wings ±${wings.max.x.toFixed(2)} vs shell ±${shell.max.x.toFixed(2)}`);
+  check('...and stay low — a fan, not a wall', wings.max.y < shell.max.y,
+    `wing top ${wings.max.y.toFixed(2)} vs shell top ${shell.max.y.toFixed(2)}`);
 }
 
 // The oversized one: the same beetle at the size it was first drawn, kept for the special encounter.
