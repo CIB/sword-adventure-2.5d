@@ -7,7 +7,7 @@
 import * as THREE from 'three';
 import { World } from '../src/game/world';
 import { WorldState } from '../src/game/worldstate';
-import { Enemy, Player, type GameCtx } from '../src/game/entities';
+import { Enemy, Player, Projectile, type GameCtx } from '../src/game/entities';
 import { RNG } from '../src/game/constants';
 
 let failures = 0;
@@ -30,6 +30,7 @@ const ctx = {
   rand: () => rng.next(),
   talking: false,
   enemies: [] as Enemy[],
+  projectiles: [] as Projectile[],
   spawnProjectile: noop,
   spawnEffect: noop,
   tryHitPlayer: () => 'immune' as const,

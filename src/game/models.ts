@@ -88,6 +88,23 @@ export interface Humanoid {
   weapon?: THREE.Group;
   shield?: THREE.Group;
   ponytail?: THREE.Group;
+  /**
+   * Beetles only: the two halves of the wing covers, hinged on the dorsal midline, plus the
+   * membranous hindwings that beat underneath them. The enemy animation cracks the shell open for
+   * the charge and claps the hindwings for the gust.
+   */
+  elytronL?: THREE.Group;
+  elytronR?: THREE.Group;
+  hindwingL?: THREE.Group;
+  hindwingR?: THREE.Group;
+  /** beetles only: the faint cone on the ground in front of it, shown while it charges the gust */
+  gustArc?: THREE.Mesh;
+  /**
+   * Beetles only: the local scale `gustArc` carries at full reach. The beetle's root is scaled to
+   * size the body (see LADYBUG_SIZE), and the tell has to be divided by that again — the cone on the
+   * floor is a promise about tiles of *world*, so it must not shrink along with the beetle.
+   */
+  gustArcUnit?: number;
   materials: THREE.MeshToonMaterial[];
 }
 
@@ -192,7 +209,40 @@ export function buildHeroine(): Humanoid {
   return { root, body, head, armR, armL, handR, handL, legR, legL, weapon, shield, ponytail, materials };
 }
 
-export const SOLDIER_COLORS: Record<EnemyKind, string> = { sword: '#3c9c44', spear: '#3858c8', javelin: '#c83838', archer: '#7848b8', moblin: '#3a6fbf', moblin_spear: '#4a84d6' };
+export const SOLDIER_COLORS: Record<EnemyKind, string> = { sword: '#3c9c44', spear: '#3858c8', javelin: '#c83838', archer: '#7848b8', moblin: '#3a6fbf', moblin_spear: '#4a84d6', ladybug: '#d43a2a', ladybug_queen: '#a8281c' };
+
+// ---------------------------------------------------------------- the beetles
+/**
+ * The two ladybugs. A ladybird is a ladybird: `ladybug` is the ordinary one you meet all over the
+ * green country, and it is built to stand next to a soldier without dwarfing him. `ladybug_queen` is
+ * the oversized one — the same beetle, kept at the size the model was first drawn at, for the
+ * special encounter rather than for the crowd.
+ */
+export const LADYBUG_KINDS = ['ladybug', 'ladybug_queen'] as const;
+export type LadybugKind = (typeof LADYBUG_KINDS)[number];
+export const isLadybug = (k: EnemyKind): k is LadybugKind => k === 'ladybug' || k === 'ladybug_queen';
+
+/**
+ * How a beetle is sized: the authored model (see buildLadybug) is one scale, and each kind is that
+ * scale multiplied by `plan` on the ground and `y` in height. The common ladybug comes out of this
+ * the size of a soldier — as wide as one and a little flatter, because that is what a beetle is —
+ * while the queen keeps the whole 1:1 authoring size.
+ */
+export const LADYBUG_SIZE: Record<LadybugKind, { plan: number; y: number }> = {
+  ladybug: { plan: 0.7, y: 0.76 },
+  ladybug_queen: { plan: 1.03, y: 0.94 },
+};
+
+/**
+ * How far a beetle's wing-clap carries, in tiles, and how wide the cone of wind is, in radians.
+ * The model draws its ground preview cone from these, and the enemy AI (entities.ts) uses them for
+ * the blast itself, so the tell on the floor is always exactly the wind you get. The queen's clap is
+ * a longer one — she is the big one and she hits everything in a bigger room.
+ */
+export const COMMON_GUST_RANGE = 2.8;
+export const QUEEN_GUST_RANGE = 4.4;
+export const gustRange = (kind: EnemyKind): number => (kind === 'ladybug_queen' ? QUEEN_GUST_RANGE : COMMON_GUST_RANGE);
+export const GUST_HALF_ARC = 1.1; // ~63° either side of straight ahead
 
 /**
  * Moblin — Link's Awakening inspired pig-like raider (classic Koholint blue).
@@ -337,6 +387,7 @@ function buildMoblin(kind: 'moblin' | 'moblin_spear'): Humanoid {
 }
 
 export function buildSoldier(kind: EnemyKind): Humanoid {
+  if (isLadybug(kind)) return buildLadybug(kind);
   if (kind === 'moblin' || kind === 'moblin_spear') return buildMoblin(kind);
   const m = {
     steel: toon('#a3adc0'), steelD: toon('#6b7382'), tunic: toon(SOLDIER_COLORS[kind]), visor: toon('#15151c'),
@@ -418,6 +469,151 @@ export function buildSoldier(kind: EnemyKind): Humanoid {
 
   root.scale.set(CHAR_SCALE.x * 1.02, CHAR_SCALE.y, CHAR_SCALE.z);
   return { root, body, head, armR, armL, handR, handL, legR, legL, weapon, shield, materials: collectMaterials(root) };
+}
+
+// ---------------------------------------------------------------- the giant ladybug
+// Body proportions, all in local units (root sits on the ground; the beetle faces +z).
+const SHELL_HW = 1.12, SHELL_H = 0.84, SHELL_LEN = 1.24;  // scale of a 0.5-radius quarter-dome
+const SHELL_DROP = 0.42;                                   // dome height: where the shell's rim sits
+const HINGE_Y = 1.02, HINGE_Z = -0.06;                     // the dorsal midline the wing covers hinge on
+const HIP_Y = 0.46;                                        // leg pivot height
+/** four spots per wing cover, in the dome's own (unit-sphere) space — mirrored for the other half */
+const SHELL_SPOTS: [number, number, number][] = [
+  [0.288, 0.192, 0.288], [0.271, 0.355, -0.052], [0.420, 0.126, -0.105], [0.218, 0.218, -0.327],
+];
+/** left (+x) and right (-x) quarters of a sphere: top half, split down the y-z plane */
+const SHELL_DOME_L = new THREE.SphereGeometry(0.5, 12, 6, Math.PI / 2, Math.PI, 0, Math.PI / 2);
+const SHELL_DOME_R = new THREE.SphereGeometry(0.5, 12, 6, -Math.PI / 2, Math.PI, 0, Math.PI / 2);
+
+/**
+ * A ladybug — the giant one of the beetle world, which is to say a ladybird the size of a soldier:
+ * knee-high legs, a round black underbody, and a bright domed shell split down the middle. The two
+ * halves are real, separately hinged wing covers (`elytronL`/`elytronR`), so the enemy can crack them
+ * open for the wing-clap charge and let the membranous hindwings beat underneath
+ * (`hindwingL`/`hindwingR`).
+ *
+ * The beetle is authored once, at the size it was drawn. LADYBUG_SIZE then sizes the two kinds: the
+ * queen keeps practically all of it (a wide, low brute, taller than the heroine is a stride) and the
+ * ordinary `ladybug` is scaled down to a soldier's bulk, so the two read as one species grown to
+ * different ends. Everything that has to stay in *world* units — above all the gust tell lying on the
+ * floor — divides that scale back out.
+ *
+ * Two things here are unusual for a model in this game: the shell material is double-sided (each
+ * half is a hollow quarter-dome, and once the wings are open you look straight into it), and the
+ * beetle carries `gustArc` — the faint cone painted on the ground in front of it that tells the
+ * player exactly where its gust of wind will land.
+ */
+export function buildLadybug(kind: LadybugKind = 'ladybug'): Humanoid {
+  const queen = kind === 'ladybug_queen';
+  const shellMat = toon(queen ? '#b52a1a' : '#d8382a'); shellMat.side = THREE.DoubleSide;
+  const shellDark = toon(queen ? '#7c1a12' : '#9c2418'); shellDark.side = THREE.DoubleSide;
+  const spotMat = toon('#1a1418');
+  const bodyMat = toon('#2b2329');
+  const legMat = toon('#3a3036');
+  const wingMat = new THREE.MeshToonMaterial({ color: '#8e7f8c', transparent: true, opacity: 0.45, side: THREE.DoubleSide, depthWrite: false });
+  const eyeMat = toon('#f8f4e8');
+  const pupilMat = toon('#141018');
+
+  const root = new THREE.Group();
+  root.add(blobShadow(0.72));
+  const body = new THREE.Group();
+  root.add(body);
+
+  // six legs, three a side, splayed out past the shell — the pivot sits on the hip line so a swing
+  // rocks the whole row forward and back the way a beetle scuttles
+  const legs = (side: 1 | -1) => {
+    const g = new THREE.Group();
+    g.position.set(0, HIP_Y, 0);
+    for (let i = -1; i <= 1; i++) {
+      const leg = part(UNIT_BOX, legMat, [0.48 * side, -0.25, i * 0.44], [0.11, 0.5, 0.11]);
+      leg.rotation.z = 0.6 * side;   // out and down: the foot lands a little outside the shell
+      leg.rotation.x = -i * 0.22;    // front pair reaching ahead, back pair trailing
+      g.add(leg);
+    }
+    return g;
+  };
+  const legL = legs(1), legR = legs(-1);
+  root.add(legL, legR);
+
+  // underbody: the dark abdomen you see once the shell is open, and the round belly from the side
+  body.add(part(UNIT_SPHERE, bodyMat, [0, 0.52, -0.02], [1.06, 0.52, 1.4]));
+  body.add(part(UNIT_BOX, bodyMat, [0, 0.44, 0.1], [0.5, 0.3, 0.9]));
+  // pronotum: the black shield between head and shell, with its two little white cheek patches
+  body.add(part(UNIT_HEMI, spotMat, [0, 0.80, 0.44], [0.86, 0.44, 0.52]));
+  body.add(part(UNIT_BOX, eyeMat, [-0.27, 0.87, 0.62], [0.13, 0.11, 0.12]));
+  body.add(part(UNIT_BOX, eyeMat, [0.27, 0.87, 0.62], [0.13, 0.11, 0.12]));
+
+  const shellHalf = (side: 1 | -1) => {
+    const g = new THREE.Group();
+    g.position.set(0, HINGE_Y, HINGE_Z);
+    const dome = new THREE.Mesh(side > 0 ? SHELL_DOME_L : SHELL_DOME_R, shellMat);
+    dome.scale.set(SHELL_HW, SHELL_H, SHELL_LEN);
+    dome.position.set(0, -SHELL_DROP, -0.16);
+    g.add(dome);
+    const spot = queen ? 0.3 : 0.26; // the big one carries the same four spots, a shade fatter
+    for (const [sx, sy, sz] of SHELL_SPOTS) dome.add(part(UNIT_SPHERE, spotMat, [sx * side, sy, sz], [spot, spot, spot]));
+    // a low ridge along the dorsal midline, so the closed shell still reads as two wing covers
+    g.add(part(UNIT_BOX, shellDark, [0.03 * side, 0, -0.16], [0.07, 0.06, SHELL_LEN * 0.9]));
+    return g;
+  };
+  const elytronL = shellHalf(1), elytronR = shellHalf(-1);
+  body.add(elytronL, elytronR);
+
+  // hindwings: folded flat under the shell, beating hard for the wing-clap
+  const hindwing = (side: 1 | -1) => {
+    const g = new THREE.Group();
+    g.position.set(0.05 * side, HINGE_Y - 0.14, HINGE_Z - 0.05);
+    const wing = part(UNIT_BOX, wingMat, [0.22 * side, -0.02, -0.14], [0.36, 0.02, 0.62]);
+    wing.rotation.z = 0.1 * side;
+    wing.rotation.y = -0.22 * side;
+    g.add(wing);
+    return g;
+  };
+  const hindwingL = hindwing(1), hindwingR = hindwing(-1);
+  body.add(hindwingL, hindwingR);
+
+  const head = new THREE.Group();
+  head.position.set(0, 0.7, 0.66);
+  body.add(head);
+  head.add(part(UNIT_SPHERE, bodyMat, [0, 0, 0], [0.46, 0.42, 0.44]));
+  head.add(part(UNIT_SPHERE, eyeMat, [-0.16, 0.05, 0.14], [0.2, 0.2, 0.18]));
+  head.add(part(UNIT_SPHERE, eyeMat, [0.16, 0.05, 0.14], [0.2, 0.2, 0.18]));
+  head.add(part(UNIT_SPHERE, pupilMat, [-0.2, 0.06, 0.2], [0.1, 0.11, 0.09]));
+  head.add(part(UNIT_SPHERE, pupilMat, [0.2, 0.06, 0.2], [0.1, 0.11, 0.09]));
+
+  // antennae ride the arm slots (the enemy animation waves them about from there); their tips sit
+  // in the hand slots, which is all this beetle has for hands
+  const antenna = (side: 1 | -1) => {
+    const arm = new THREE.Group();
+    arm.position.set(0.13 * side, 0.14, 0.06);
+    arm.rotation.order = 'YXZ';
+    arm.rotation.set(-0.5, 0, -0.5 * side);
+    arm.add(part(UNIT_BOX, bodyMat, [0, 0.19, 0], [0.05, 0.42, 0.05]));
+    const hand = new THREE.Group();
+    hand.position.set(0, 0.4, 0);
+    hand.add(part(UNIT_BOX, bodyMat, [0, 0.05, 0], [0.1, 0.12, 0.1]));
+    arm.add(hand);
+    return { arm, hand };
+  };
+  const { arm: armL, hand: handL } = antenna(1);
+  const { arm: armR, hand: handR } = antenna(-1);
+  head.add(armL, armR);
+
+  // the tell: a faint cone on the ground ahead, sized from the real gust the AI throws. The beetle's
+  // own scale is divided back out of it, so the cone the player sees is the cone the wind fills.
+  const range = gustRange(kind);
+  const size = LADYBUG_SIZE[kind];
+  const arcGeo = new THREE.RingGeometry(0.18, 1, 26, 1, -GUST_HALF_ARC - Math.PI / 2, GUST_HALF_ARC * 2).rotateX(-Math.PI / 2);
+  const gustArc = new THREE.Mesh(arcGeo, new THREE.MeshBasicMaterial({ color: '#e2f4ff', transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide }));
+  gustArc.position.y = 0.06;
+  gustArc.scale.set(range / size.plan, 1, range / size.plan);
+  gustArc.visible = false;
+  root.add(gustArc);
+
+  // the ordinary beetle stands about as tall as a soldier's chest and as wide as his shoulders; the
+  // queen is left at the size she was drawn, a stride longer than the heroine
+  root.scale.set(size.plan, size.y, size.plan);
+  return { root, body, head, armR, armL, handR, handL, legR, legL, elytronL, elytronR, hindwingL, hindwingR, gustArc, gustArcUnit: range / size.plan, materials: collectMaterials(root) };
 }
 
 // ---------------------------------------------------------------- props

@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { getGradientMap as getGradientMapRef } from './models';
 import { MAP_W, MAP_H, TEX_PX, Tile, RNG, hash2, LEVEL_H, MAX_WALK_SLOPE, WATER_DEPTH, BRIDGE_H } from './constants';
 
-export type EnemyKind = 'sword' | 'spear' | 'javelin' | 'archer' | 'moblin' | 'moblin_spear';
+export type EnemyKind = 'sword' | 'spear' | 'javelin' | 'archer' | 'moblin' | 'moblin_spear' | 'ladybug' | 'ladybug_queen';
 export interface TreeSpec { x: number; z: number; scale: number; y?: number; kind?: 'oak' | 'pine' | 'autumn' | 'birch' | 'blossom' }
 export interface TileObj { tx: number; tz: number; v?: number }
 export interface HouseSpec { x: number; z: number; w: number; d: number; roof?: string; wall?: string; door?: 'S' | 'E' | 'W'; sign?: 'shop' | 'inn' | 'none' }
@@ -1130,6 +1130,35 @@ export class World {
       if (bw[b] > bwMax) { bwMax = bw[b]; best = b; }
     }
     return best;
+  }
+
+  /**
+   * How lush the ground at a point is, 0..1. The meadow, the pond shore and the farmland are as
+   * green as the world gets; the woods are lush too (all that mossy forest floor); the moor, the
+   * mesa, the highland steppe and the marsh are not. Roads carry a little (they run through the
+   * green), gravel and dry ground almost none.
+   *
+   * This is the field wildlife reads to decide where it belongs — see wildlife.ts, which keeps the
+   * ladybugs in the green parts of the map and out of everywhere else.
+   */
+  lushness(x: number, z: number): number {
+    const w = this.biomeWeights(x, z);
+    const green = w.meadow + w.lake * 0.95 + w.farm * 0.9
+      + w.marsh * 0.45 + w.moor * 0.3 + w.mesa * 0.2 + w.highland * 0.1;
+    return green * World.lushGround(this.tile(Math.floor(x), Math.floor(z)));
+  }
+
+  /** How much green cover a ground type carries — the other half of `lushness`. */
+  private static lushGround(t: Tile): number {
+    switch (t) {
+      case Tile.Grass: case Tile.Flowers: return 1;
+      case Tile.ForestFloor: return 0.95;
+      case Tile.Bed: return 0.8;
+      case Tile.Heather: return 0.45;
+      case Tile.Path: case Tile.Cobble: case Tile.Bridge: return 0.45;
+      case Tile.Mud: case Tile.DryGrass: case Tile.Gravel: return 0.15;
+      default: return 0; // water, cliffs, river bed
+    }
   }
 
   private static hex(h: string): [number, number, number] {
