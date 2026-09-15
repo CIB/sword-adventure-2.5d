@@ -9,6 +9,7 @@ import { ACTIONS, type VillageState, type CropKind } from './village';
 import {
   buildArrow, buildHeart, buildHeroine, buildJavelinProjectile, buildMoblinSpearProjectile, buildRupee, buildSoldier, part, toon,
   UNIT_BOX, UNIT_OCTA, UNIT_SPHERE, type Humanoid, buildVillager, buildDog, buildWateringCan, VILLAGER_LOOKS,
+  GUST_RANGE, GUST_HALF_ARC,
 } from './models';
 
 export interface GameCtx {
@@ -17,6 +18,7 @@ export interface GameCtx {
   audio: AudioEngine;
   player: Player;
   enemies: Enemy[];
+  projectiles: Projectile[];
   rand(): number;
   spawnProjectile(kind: 'arrow' | 'javelin' | 'moblin_spear', x: number, z: number, dx: number, dz: number, dmg: number): void;
   spawnEffect(e: Effect): void;
@@ -218,12 +220,23 @@ export class Player {
     }
   }
 
-  pushBack(sx: number, sz: number, force: number) {
+  pushBack(sx: number, sz: number, force: number, stun = 0.12) {
     let dx = this.pos.x - sx, dz = this.pos.z - sz;
     const d = Math.hypot(dx, dz) || 1;
     dx /= d; dz /= d;
     this.knock.x = dx * force; this.knock.z = dz * force;
-    if (this.state !== 'hurt' && this.state !== 'dead') { this.state = 'hurt'; this.stateT = 0.12; }
+    if (this.state !== 'hurt' && this.state !== 'dead') { this.state = 'hurt'; this.stateT = stun; }
+  }
+
+  /**
+   * A shove that doesn't hurt: a gust of wind, a shoulder from a very large insect. She's thrown
+   * off her feet for `stun` seconds and anything she was charging fizzles, but she takes no damage
+   * and — a shove is not a hit — no invulnerability frames either, so a real blow can follow it.
+   */
+  shove(sx: number, sz: number, force: number, stun = 0.22) {
+    if (this.dead) return;
+    this.holding = false; this.charged = false; this.chargeT = 0;
+    this.pushBack(sx, sz, force, stun);
   }
 
   private animate(moving: boolean, dt: number) {
@@ -346,7 +359,19 @@ const STATS: Record<EnemyKind, Stats> = {
   // Moblins — LA-inspired: sword+shield bruiser with a frontal block + charge, and a spear-thrower
   moblin: { hp: 4, speed: 1.7, chase: 2.7, dmg: 2, sight: 6.8, range: 1.15, attackDur: 0.24, recover: 0.5, cooldown: 1.2 },
   moblin_spear: { hp: 3, speed: 2.0, chase: 2.6, dmg: 1, sight: 8.5, range: 7.0, attackDur: 0.20, recover: 0.6, cooldown: 2.0 },
+  // The giant ladybug: a slow, lumbering beetle that never bites. Its whole attack is a gust of wind
+  // out of its open shell — no damage at all (dmg 0), but it blows the heroine off her feet, so the
+  // range it picks its fight at is the reach of that gust rather than the length of an arm.
+  ladybug: { hp: 3, speed: 1.3, chase: 2.5, dmg: 0, sight: 7, range: 3.0, attackDur: 0.42, recover: 0.95, cooldown: 3.4 },
 };
+
+// ---- giant ladybug tuning -------------------------------------------------
+/** seconds the shell takes to creak open before the clap (the whole telegraph of the attack) */
+const LADYBUG_CHARGE = 1.1;
+/** how far the wing covers swing open, radians */
+const LADYBUG_OPEN = 1.25;
+/** the shove a point-blank gust puts on the heroine (falls off with distance), tiles/second */
+const GUST_PUSH = 13;
 
 /** how far a guard on a tight post (bridge, camp) may drift from its own spot, in tiles */
 const TIGHT_LEASH = 2.2;
@@ -364,6 +389,8 @@ export class Enemy {
   knock: Vec2 = { x: 0, z: 0 };
   flashT = 0;
   animT = 0;
+  /** seconds this soldier has existed — also ticks while standing still (animT only advances with the stride) */
+  age = 0;
   alive = true;
   radius = 0.4;
   attackHit = false;
@@ -396,6 +423,8 @@ export class Enemy {
     this.st = STATS[kind];
     this.hp = this.st.hp;
     this.model = buildSoldier(kind);
+    // a beetle is mostly shell: it presents a wider target than a soldier
+    if (kind === 'ladybug') this.radius = 0.55;
     this.facing = randomFacing(game.rand());
     this.pickPatrolDir();
     game.scene.add(this.model.root);
@@ -407,7 +436,7 @@ export class Enemy {
   /** point to march to (set by the Game every frame while this soldier walks its route in) */
   follow: Vec2 | null = null;
 
-  get melee() { return this.kind === 'sword' || this.kind === 'spear' || this.kind === 'moblin'; }
+  get melee() { return this.kind === 'sword' || this.kind === 'spear' || this.kind === 'moblin' || this.kind === 'ladybug'; }
   get isMoblin() { return this.kind === 'moblin' || this.kind === 'moblin_spear'; }
 
   /**
@@ -507,6 +536,7 @@ export class Enemy {
   update(dt: number) {
     if (!this.alive) return;
     const g = this.game, p = g.player, st = this.st;
+    this.age += dt;
     this.cooldown = Math.max(0, this.cooldown - dt);
     if (this.flashT > 0) { this.flashT -= dt; if (this.flashT <= 0) setEmissive(this.model.materials, false); }
 
@@ -616,7 +646,10 @@ export class Enemy {
           this.state = 'windup';
           if (this.kind === 'sword') this.stateT = 0.22;
           else if (this.kind === 'moblin') this.stateT = 0.32; // pig lifts cleaver overhead like Switch remake wind-up
+          else if (this.kind === 'ladybug') this.stateT = LADYBUG_CHARGE; // the shell has to come all the way open first
           else this.stateT = 0.3;
+          // the beetle's wind-up is the loudest thing about it: the wing covers scrape open
+          if (this.kind === 'ladybug') g.audio.wingCharge(LADYBUG_CHARGE);
           this.faceToward(dx, dz);
           break;
         }
@@ -654,7 +687,11 @@ export class Enemy {
       }
       case 'windup': {
         this.stateT -= dt;
-        if (this.kind !== 'archer') this.faceToward(dx, dz);
+        // Once a ladybug's shell is fully open the gust is going where it was pointed: the last
+        // stretch of the charge stops tracking her, so the cone on the floor stops following her too
+        // and stepping out of it is a real answer to the wind.
+        const committed = this.kind === 'ladybug' && this.stateT < LADYBUG_CHARGE * 0.45;
+        if (this.kind !== 'archer' && !committed) this.faceToward(dx, dz);
         if (this.stateT <= 0) {
           this.state = 'attack'; this.stateT = 0; this.attackHit = false; this.fired = false; this.yawPrev = this.yawCur = -1.7;
           if (this.kind === 'sword' || this.kind === 'moblin') g.audio.swing();
@@ -729,6 +766,12 @@ export class Enemy {
         g.audio.throwJav();
         if (this.model.weapon) this.model.weapon.visible = false;
       }
+    } else if (this.kind === 'ladybug') {
+      // the wing-clap: one gust, thrown a moment into the flap
+      if (!this.fired && this.stateT > 0.07) {
+        this.fired = true;
+        this.gust();
+      }
     } else {
       if (!this.fired) {
         this.fired = true;
@@ -736,6 +779,52 @@ export class Enemy {
         g.audio.arrow();
       }
     }
+  }
+
+  /**
+   * The giant ladybug's whole attack: a clap of its hindwings throws a cone of wind out of its open
+   * shell. Nothing in here touches `tryHitPlayer` — the gust cannot hurt anyone. It empties the cone
+   * in front of it: the heroine is picked up and set back down, other soldiers are blown off their
+   * feet, and arrows in flight are turned around and sent home.
+   */
+  private gust() {
+    const g = this.game;
+    const a = FACING_ANGLE[this.facing];
+    g.audio.gust();
+    g.spawnEffect(fxGust(this.pos.x, this.pos.z, a, GUST_RANGE).at(this.pos.x, this.pos.z));
+    // the heroine — a step closer, a harder shove; a shield braced into the wind takes some of it
+    const p = g.player;
+    if (!p.dead && this.inGust(p.pos.x, p.pos.z, a)) {
+      const d = Math.hypot(p.pos.x - this.pos.x, p.pos.z - this.pos.z);
+      p.shove(this.pos.x, this.pos.z, (GUST_PUSH / (1 + d * 0.4)) * (p.blocking ? 0.6 : 1), 0.24);
+    }
+    // other soldiers (and the odd fellow beetle) are blown off their feet just the same
+    for (const e of g.enemies) {
+      if (e === this || !e.alive || e.knockT > 0 || !this.inGust(e.pos.x, e.pos.z, a)) continue;
+      let ex = e.pos.x - this.pos.x, ez = e.pos.z - this.pos.z;
+      const ed = Math.hypot(ex, ez) || 1;
+      ex /= ed; ez /= ed;
+      e.knock = { x: ex * 9, z: ez * 9 };
+      e.knockT = 0.22;
+    }
+    // arrows and spears in the air get turned around and blown back the way they came
+    for (const pr of g.projectiles ?? []) {
+      if (!pr.alive || !this.inGust(pr.pos.x, pr.pos.z, a)) continue;
+      const px = pr.pos.x - this.pos.x, pz = pr.pos.z - this.pos.z;
+      if (pr.dir.x * px + pr.dir.z * pz >= 0) continue; // already heading away: leave it be
+      pr.dir = { x: -pr.dir.x, z: -pr.dir.z };
+      pr.mesh.rotation.y = Math.atan2(pr.dir.x, pr.dir.z);
+    }
+  }
+
+  /**
+   * Is a point inside the gust's cone? Only what the beetle is facing gets the wind — the padding is
+   * for the bulk of the thing standing there (its own radius, not the shape of the cone).
+   */
+  private inGust(x: number, z: number, a = FACING_ANGLE[this.facing]): boolean {
+    const dx = x - this.pos.x, dz = z - this.pos.z;
+    if (Math.hypot(dx, dz) > GUST_RANGE) return false;
+    return Math.abs(normAngle(Math.atan2(dx, dz) - a)) <= GUST_HALF_ARC + 0.25;
   }
 
   private recoil() {
@@ -802,7 +891,63 @@ export class Enemy {
     m.legR.rotation.x = -swing * 0.7;
     m.body.position.y = moving ? Math.abs(Math.sin(this.animT)) * 0.03 : 0;
     const k = this.kind, s = this.state;
-    if (k === 'moblin') {
+    if (k === 'ladybug') {
+      // The charge is the whole read on this enemy: the wing covers yawn open over a full second
+      // while the hindwings shiver underneath, then clap hard for the gust, then fold shut again.
+      let open = 0.05;              // at rest the shell sits just cracked apart
+      let buzz = 0;                 // how hard the hindwings are beating (0..1)
+      let tremble = 0;
+      let rear = 0;                 // the body tips back as it winds up, and lunges into the clap
+      if (s === 'windup') {
+        const p = clamp(1 - this.stateT / LADYBUG_CHARGE, 0, 1);
+        const e = easeOutCubic(p);
+        open = 0.05 + e * (LADYBUG_OPEN - 0.05);
+        buzz = 0.5 * e;
+        tremble = Math.sin(this.age * 32) * 0.02 * p;
+        rear = -0.17 * e;
+      } else if (s === 'attack') {
+        const p = clamp(this.stateT / this.st.attackDur, 0, 1);
+        open = LADYBUG_OPEN;
+        buzz = 1;
+        tremble = Math.sin(this.age * 58) * 0.03 * (1 - p * 0.6);
+        rear = 0.1 * (1 - p);
+      } else if (s === 'recover') {
+        // stateT counts down here: the shell swings shut over the recovery
+        const p = clamp(this.stateT / this.st.recover, 0, 1);
+        open = LADYBUG_OPEN * p;
+        buzz = 0.55 * p;
+        rear = -0.05 * p;
+      }
+      if (this.model.elytronL) this.model.elytronL.rotation.z = open + tremble;
+      if (this.model.elytronR) this.model.elytronR.rotation.z = -open - tremble;
+      // the hindwings lift with the shell and beat together, hard and fast, for the clap
+      const beat = Math.sin(this.age * 46) * 0.5 * buzz;
+      const lift = open * 0.55 + beat;
+      if (this.model.hindwingL) this.model.hindwingL.rotation.z = lift;
+      if (this.model.hindwingR) this.model.hindwingR.rotation.z = -lift;
+      // six legs scuttling, and the shell riding up and down over them
+      m.legL.rotation.x = swing * 0.22;
+      m.legR.rotation.x = -swing * 0.22;
+      m.body.position.y = (moving ? Math.abs(Math.sin(this.animT)) * 0.05 : 0) + 0.06 * Math.max(0, -rear * 6);
+      m.body.rotation.set(rear, Math.sin(this.animT) * 0.06 * (moving ? 1 : 0), moving ? Math.sin(this.animT) * 0.05 : 0);
+      // head down into the wind, antennae sweeping back out of it
+      m.head.rotation.x = s === 'attack' ? 0.22 : s === 'windup' ? -0.12 : 0;
+      const wave = Math.sin(this.age * 2.6) * 0.16;
+      m.armL.rotation.set(-0.5 + wave - buzz * 0.5, 0, -0.5);
+      m.armR.rotation.set(-0.5 - wave - buzz * 0.5, 0, 0.5);
+      // the ground tell, drawn only while it is winding up
+      const arc = this.model.gustArc;
+      if (arc) {
+        const charging = s === 'windup';
+        arc.visible = charging;
+        if (charging) {
+          const p = clamp(1 - this.stateT / LADYBUG_CHARGE, 0, 1);
+          const r = 0.4 + 0.6 * easeOutCubic(p);
+          arc.scale.set(GUST_RANGE * r, 1, GUST_RANGE * r);
+          (arc.material as THREE.MeshBasicMaterial).opacity = 0.28 * p;
+        }
+      }
+    } else if (k === 'moblin') {
       // LA sword+shield brute — big shield blocks while patrolling/chasing, drops when dazed
       if (this.moblinGuardBroken > 0) {
         // dazed after shield break — wobbles, shield droops, sword hangs
@@ -1349,6 +1494,73 @@ export function fxPuff(x: number, z: number): Effect {
     e.group.add(m);
     parts.push({ m, a: (i / 6) * Math.PI * 2, r: 0.7 + (i % 2) * 0.3 });
   }
+  return e;
+}
+
+const gustMat = new THREE.MeshBasicMaterial({ color: 0xeaf6ff, transparent: true, opacity: 0.4, depthWrite: false, side: THREE.DoubleSide });
+const gustLeafMat = new THREE.MeshBasicMaterial({ color: 0x66c247, transparent: true, opacity: 0.95, depthWrite: false });
+
+/**
+ * The giant ladybug's wing-clap: a cone of wind rolling out of its open shell — a wall of air that
+ * races to the full reach of the gust and fades, streaks tearing along inside it, and torn-up
+ * leaves tumbling low over the ground. `angle` is the direction the beetle faces; everything here
+ * is authored in a "straight ahead = +z" frame and then turned to face that way.
+ */
+export function fxGust(x: number, z: number, angle: number, range: number): Effect {
+  const holder = new THREE.Group();
+  holder.position.set(x, 0, z);
+  holder.rotation.y = angle;
+  const wallGeo = new THREE.CylinderGeometry(1, 1, 1, 20, 1, true, -GUST_HALF_ARC, GUST_HALF_ARC * 2);
+  const walls = [0, 0.12].map((lag) => {
+    const m = new THREE.Mesh(wallGeo, gustMat.clone());
+    m.position.y = 0.55;
+    holder.add(m);
+    return { m, lag, h: 1.1 };
+  });
+  const streaks: { m: THREE.Mesh; a: number; y: number; sp: number }[] = [];
+  for (let i = 0; i < 14; i++) {
+    const a = (-0.85 + (i / 13) * 1.7) * GUST_HALF_ARC;
+    const m = part(UNIT_BOX, gustMat, [0, 0, 0], [0.07, 0.05, 0.85]);
+    m.rotation.y = a;
+    holder.add(m);
+    streaks.push({ m, a, y: 0.25 + (i % 4) * 0.3, sp: 0.8 + (i % 3) * 0.09 });
+  }
+  const leaves: { m: THREE.Mesh; a: number; vy: number; spin: number }[] = [];
+  for (let i = 0; i < 9; i++) {
+    const a = (-0.95 + (i / 8) * 1.9) * GUST_HALF_ARC + (i % 2 ? 0.12 : -0.12);
+    const m = part(UNIT_BOX, i % 3 === 0 ? puffMat : gustLeafMat, [0, 0, 0], [0.13, 0.03, 0.1]);
+    m.rotation.y = a;
+    holder.add(m);
+    leaves.push({ m, a, vy: 1.4 + (i % 3) * 0.7, spin: 6 + (i % 4) * 3 });
+  }
+  const e = new Effect(0.6, (p, t) => {
+    for (const w of walls) {
+      const wp = clamp((t - w.lag) / 0.3, 0, 1);
+      // the wall of air stops dead at the reach the AI actually uses — the tell never lies
+      const r = 0.5 + easeOutCubic(wp) * (range - 0.5);
+      w.m.scale.set(r, w.h * (1 - 0.25 * wp), r);
+      w.m.position.y = (w.h * (1 - 0.25 * wp)) / 2 + 0.08;
+      (w.m.material as THREE.MeshBasicMaterial).opacity = 0.4 * (1 - wp) * (1 - p * 0.35);
+      w.m.visible = wp > 0 && p < 0.95;
+    }
+    for (const s of streaks) {
+      const r = 0.5 + easeOutCubic(p) * (range - 0.5) * s.sp;
+      s.m.position.set(Math.sin(s.a) * r, s.y + p * 0.35, Math.cos(s.a) * r);
+      const sc = (1 - p) * (1 + 0.5 * p);
+      s.m.scale.set(0.07, 0.05, 0.85 * sc);
+      (s.m.material as THREE.MeshBasicMaterial).opacity = 0.45 * (1 - p);
+    }
+    for (const l of leaves) {
+      const r = 0.4 + easeOutCubic(p) * range * 0.8;
+      l.m.position.set(Math.sin(l.a) * r, Math.max(0.05, 0.25 + l.vy * t - 5 * t * t), Math.cos(l.a) * r);
+      l.m.rotation.x += 0.2;
+      l.m.rotation.z += 0.15;
+      l.m.rotation.y += 0.02 * l.spin;
+      const ls = (1 - p * 0.5);
+      l.m.scale.set(0.13 * ls, 0.03, 0.1 * ls);
+    }
+  });
+  e.group.add(holder);
   return e;
 }
 

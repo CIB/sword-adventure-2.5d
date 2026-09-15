@@ -5,6 +5,7 @@ import {
   RNG, inArc, FACING_VEC, clamp,
 } from './constants';
 import { World, type Vec2, type TileObj } from './world';
+import { Wildlife } from './wildlife';
 import { AudioEngine } from './audio';
 import { Input, PAUSE_KEYS, MUTE_KEYS, ATTACK_KEYS, TALK_KEYS, ROTATE_CCW_KEYS, ROTATE_CW_KEYS, FULLSCREEN_KEYS, HELP_KEYS, MAP_KEYS, rotateView } from './input';
 import { Player, Enemy, Npc, Farmer, Projectile, Pickup, Effect, fxSpark, fxPuff, fxLeaves, fxSeeds, fxWater, fxSoil, fxHarvest, type GameCtx } from './entities';
@@ -87,6 +88,8 @@ export class Game implements GameCtx {
   hud: Hud;
   player: Player;
   enemies: Enemy[] = [];
+  /** the world's wild creatures (giant ladybugs in the green country around the player) */
+  wildlife!: Wildlife;
   projectiles: Projectile[] = [];
   pickups: Pickup[] = [];
   effects: Effect[] = [];
@@ -174,6 +177,7 @@ export class Game implements GameCtx {
     const ps = this.world.playerStart;
     this.player = new Player(this, ps.x, ps.z);
     this.player.facing = 4; // north
+    this.wildlife = new Wildlife(this);
     for (const n of this.world.npcs) this.npcs.push(n.id === 'farmer' ? new Farmer(this, n, this.village) : new Npc(this, n));
     this.farmView = new FarmView(this.world, this.village);
     this.scene.add(this.farmView.root);
@@ -328,6 +332,8 @@ export class Game implements GameCtx {
       if (!e.alive || !e.post) continue;
       e.follow = WorldState.targetFor(e.post, e.memberIndex);
     }
+    // ...and keep the green country around her busy with its own inhabitants
+    this.wildlife.update(dt, R);
   }
 
   /**
@@ -550,6 +556,7 @@ export class Game implements GameCtx {
     const ps = this.world.playerStart;
     this.player.reset(ps.x, ps.z);
     this.worldState.reset(); // a fresh run is a fresh world: new guards on every post, nothing carried over
+    this.wildlife.reset();   // ...and green country again, which will restock itself with beetles
     this.village.reset();    // ...and a fresh field for the farmer to start over on
     this.cam = { x: ps.x, z: ps.z - 1 };
     this.deathTimer = 0;

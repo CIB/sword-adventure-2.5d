@@ -165,6 +165,15 @@ export class AudioEngine {
   alert() { const t = this.ctx?.currentTime ?? 0; this.tone('square', 1200, 0.05, 0.09, { when: t }); this.tone('square', 1600, 0.09, 0.09, { when: t + 0.05 }); }
   talk() { const t = this.ctx?.currentTime ?? 0; this.tone('square', 880, 0.05, 0.08, { when: t }); this.tone('square', 1320, 0.07, 0.08, { when: t + 0.05 }); }
   blip() { this.tone('square', 1500 + Math.random() * 300, 0.03, 0.035); }
+  // ---- the giant ladybug
+  /** wing covers scraping open: a dry papery rustle that swells over the whole wind-up */
+  wingCharge(dur: number) { this.noise(dur, 0.07, 'bandpass', 900, { f1: 2400, q: 1.1, attack: dur * 0.55 }); }
+  /** the wing-clap: one hard rush of wind, with a low thump of air behind it */
+  gust() {
+    this.noise(0.5, 0.32, 'lowpass', 1200, { f1: 260, attack: 0.04 });
+    this.noise(0.32, 0.14, 'bandpass', 2600, { f1: 700, q: 0.7 });
+    this.tone('sine', 95, 0.22, 0.28, { f1: 42 });
+  }
   lowHp() { this.tone('square', 1046, 0.06, 0.07); }
   // ---- the farm
   /** the hoe biting into soil: a dull thud with a little grit */

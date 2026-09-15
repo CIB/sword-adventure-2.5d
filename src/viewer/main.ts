@@ -28,6 +28,7 @@ const catalog: Cat[] = [
   { name: 'Heroine', items: [{ name: 'Aria', build: () => hum(buildHeroine()) }] },
   { name: 'Fallen Knights', items: (['sword', 'spear', 'javelin', 'archer'] as EnemyKind[]).map((k) => ({ name: k[0].toUpperCase() + k.slice(1) + ' knight', build: () => hum(buildSoldier(k)) })) },
   { name: 'Moblins', items: (['moblin', 'moblin_spear'] as EnemyKind[]).map((k) => ({ name: k === 'moblin' ? 'Sword moblin (shield)' : 'Spear moblin (thrower)', build: () => hum(buildSoldier(k)) })) },
+  { name: 'Beasts', items: [{ name: 'Giant ladybug', build: () => hum(buildSoldier('ladybug')) }] },
   { name: 'Villagers', items: [...Object.keys(VILLAGER_LOOKS).map((id) => ({ name: id[0].toUpperCase() + id.slice(1), build: () => hum(buildVillager(VILLAGER_LOOKS[id])) })), { name: 'Dog', build: () => hum(buildDog()) }] },
   { name: 'Houses', items: world.houses.map((h, i) => ({ name: `House ${i + 1} (${h.w}×${h.d}${h.sign && h.sign !== 'none' ? ', ' + h.sign : ''})`, build: () => { const spec: HouseSpec = { ...h, x: -h.w / 2, z: -h.d / 2 }; return { obj: buildHouse(spec), footprint: Math.max(h.w, h.d) + 2 }; } })) },
   { name: 'Foliage', items: [
