@@ -192,7 +192,196 @@ export function buildHeroine(): Humanoid {
   return { root, body, head, armR, armL, handR, handL, legR, legL, weapon, shield, ponytail, materials };
 }
 
-export const SOLDIER_COLORS: Record<EnemyKind, string> = { sword: '#3c9c44', spear: '#3858c8', javelin: '#c83838', archer: '#7848b8', moblin: '#3a6fbf', moblin_spear: '#4a84d6' };
+export const SOLDIER_COLORS: Record<EnemyKind, string> = { sword: '#3c9c44', spear: '#3858c8', javelin: '#c83838', archer: '#7848b8', moblin: '#3a6fbf', moblin_spear: '#4a84d6', ladybug: '#d8382a' };
+
+/**
+ * A giant ladybug's rig: the humanoid slots re-mapped onto a beetle, so the same animation code that
+ * walks a soldier walks a bug. `armL`/`armR` are the hinges of the two hard wing cases (elytra),
+ * `legL`/`legR` the left and right leg tripods, `head` the little black head tucked under the
+ * pronotum. The joints the gust attack needs beyond that — the membranous flight wings folded away
+ * under the cases, the six legs, the antennae — hang off this interface.
+ */
+export interface Ladybug extends Humanoid {
+  /** the hard, spotted wing cases; `armL`/`armR` are their hinges along the centre of the back */
+  elytraL: THREE.Group;
+  elytraR: THREE.Group;
+  /** the flight wings under the cases: they spread out and beat hard enough to make a gust */
+  wingL: THREE.Group;
+  wingR: THREE.Group;
+  /** all six legs, in tripod order: front/middle/hind left, then front/middle/hind right */
+  legs: THREE.Group[];
+  antennaL: THREE.Group;
+  antennaR: THREE.Group;
+}
+
+/**
+ * Giant ladybug — a ladybird the size of a soldier, common in the lush meadows. Round red shell with
+ * the seven spots, black pronotum with pale cheeks, six splayed legs and a pair of enormous
+ * membranous wings folded away under the wing cases until it needs them.
+ *
+ * The rig is built closed: cases shut flat over the back, wings tucked underneath. Opening them is
+ * pure rotation on `armL/armR` (the cases hinge up and out) and `wingL/wingR` (the membranes unfold
+ * and beat) — see the beetle's animation in entities.ts.
+ */
+export function buildLadybug(): Ladybug {
+  const shell = toon('#d8382a');     // ladybird red
+  const shellD = toon('#a52318');    // shaded red: the rim along the split, the trailing edge
+  const belly = toon('#3a2620');     // dark underside
+  const black = toon('#241c22');     // head, pronotum, legs
+  const blackD = toon('#151016');
+  const spot = toon('#1d1519');
+  const cream = toon('#f4e8cd');     // the pale cheeks of a seven-spot
+  const eyeW = toon('#f7f3e6');
+  const pupil = toon('#181219');
+  const wingMat = toon('#e2ebf6');   // the membranes: pale and see-through
+  wingMat.transparent = true;
+  wingMat.opacity = 0.55;
+  wingMat.depthWrite = false;
+  wingMat.side = THREE.DoubleSide;
+
+  const root = new THREE.Group();
+  const body = new THREE.Group();
+  root.add(body);
+  const shadow = blobShadow(0.46);
+  shadow.scale.set(0.94, 1, 1.18); // longer than wide: a beetle's shadow
+  shadow.position.z = -0.06;       // centred under the abdomen, not under the head
+  root.add(shadow);
+
+  // ---- six legs on two tripod groups (an insect steps front+hind on one side with the middle of the other)
+  const legs: THREE.Group[] = [];
+  const legL = new THREE.Group(); legL.position.set(0, 0.46, 0);
+  const legR = new THREE.Group(); legR.position.set(0, 0.46, 0);
+  root.add(legL, legR);
+  const makeLeg = (hip: THREE.Group, side: 1 | -1, x: number, z: number, aim: number) => {
+    const leg = new THREE.Group();
+    leg.position.set(x, 0, z);
+    leg.rotation.set(0, aim, side * 0.5); // splayed out to the side, aimed forward or back
+    leg.add(part(UNIT_BOX, black, [side * 0.11, -0.05, 0], [0.24, 0.09, 0.09]));     // femur, out
+    leg.add(part(UNIT_BOX, black, [side * 0.24, -0.21, 0], [0.075, 0.30, 0.075]));    // tibia, down
+    leg.add(part(UNIT_BOX, blackD, [side * 0.25, -0.375, 0.03], [0.09, 0.06, 0.13])); // foot
+    hip.add(leg);
+    legs.push(leg);
+  };
+  makeLeg(legL, 1, 0.26, 0.26, 0.5);
+  makeLeg(legL, 1, 0.30, -0.02, 0);
+  makeLeg(legL, 1, 0.26, -0.30, -0.5);
+  makeLeg(legR, -1, -0.26, 0.26, -0.5);
+  makeLeg(legR, -1, -0.30, -0.02, 0);
+  makeLeg(legR, -1, -0.26, -0.30, 0.5);
+
+  // ---- the abdomen: dark underside, then the two spotted wing cases hinged along the back
+  body.add(part(UNIT_SPHERE, belly, [0, 0.50, -0.10], [0.80, 0.36, 1.16]));
+  body.add(part(UNIT_SPHERE, shellD, [0, 0.60, -0.10], [0.88, 0.20, 1.24])); // the rim the cases close onto
+  // the black pronotum in front of the cases, with the pale corner cheeks of a seven-spot
+  body.add(part(UNIT_SPHERE, black, [0, 0.78, 0.30], [0.66, 0.26, 0.44]));
+  body.add(part(UNIT_SPHERE, cream, [-0.24, 0.80, 0.36], [0.16, 0.14, 0.18]));
+  body.add(part(UNIT_SPHERE, cream, [0.24, 0.80, 0.36], [0.16, 0.14, 0.18]));
+  body.add(part(UNIT_SPHERE, spot, [0, 0.86, 0.10], [0.17, 0.09, 0.17]));    // the spot straddling the split
+
+  // the wing cases ARE the arms of this rig: they hinge up and out along the centre of the back
+  const armL = new THREE.Group(); armL.position.set(0.02, 0.72, -0.10);
+  const armR = new THREE.Group(); armR.position.set(-0.02, 0.72, -0.10);
+  body.add(armL, armR);
+  const makeCase = (hinge: THREE.Group, side: 1 | -1) => {
+    const c = new THREE.Group();
+    c.add(part(UNIT_HEMI, shell, [side * 0.22, 0.02, -0.02], [0.46, 0.42, 1.06]));  // half a dome
+    c.add(part(UNIT_BOX, shellD, [side * 0.015, 0.03, -0.02], [0.035, 0.07, 1.02])); // the split line
+    c.add(part(UNIT_SPHERE, spot, [side * 0.24, 0.30, 0.22], [0.17, 0.07, 0.17]));   // three spots a side
+    c.add(part(UNIT_SPHERE, spot, [side * 0.33, 0.20, -0.12], [0.15, 0.07, 0.15]));
+    c.add(part(UNIT_SPHERE, spot, [side * 0.18, 0.30, -0.40], [0.14, 0.06, 0.14]));
+    hinge.add(c);
+    return c;
+  };
+  const elytraL = makeCase(armL, 1);
+  const elytraR = makeCase(armR, -1);
+
+  // ---- the flight wings: they hinge at the thorax under the pronotum, as a real beetle's do, and
+  // lie folded back flat under the cases until the gust. Longer than the cases, so they fan out well
+  // past the shell when they open.
+  const makeWing = (side: 1 | -1) => {
+    const w = new THREE.Group();
+    w.position.set(side * 0.08, 0.70, 0.22);
+    w.rotation.set(0, side * 0.42, side * -0.42); // tucked down and in, under its case
+    w.add(part(UNIT_SPHERE, wingMat, [side * 0.26, 0, -0.42], [0.48, 0.035, 0.84])); // the membrane
+    w.add(part(UNIT_BOX, cream, [side * 0.06, 0, -0.28], [0.05, 0.03, 0.56]));       // the leading edge
+    body.add(w);
+    return w;
+  };
+  const wingL = makeWing(1);
+  const wingR = makeWing(-1);
+  // the humanoid rig's "hands" are the wingtips: nothing is held, they're anchors at the end of each membrane
+  const handL = new THREE.Group(); handL.position.set(0.46, 0, -0.80); wingL.add(handL);
+  const handR = new THREE.Group(); handR.position.set(-0.46, 0, -0.80); wingR.add(handR);
+
+  // ---- the head: small and black, tucked under the pronotum, with big glossy eyes and clubbed antennae
+  const head = new THREE.Group();
+  head.position.set(0, 0.62, 0.42);
+  body.add(head);
+  head.add(part(UNIT_SPHERE, black, [0, 0, 0.04], [0.44, 0.40, 0.36]));
+  head.add(part(UNIT_SPHERE, cream, [-0.15, 0.04, 0.10], [0.12, 0.14, 0.12]));
+  head.add(part(UNIT_SPHERE, cream, [0.15, 0.04, 0.10], [0.12, 0.14, 0.12]));
+  head.add(part(UNIT_SPHERE, eyeW, [-0.13, 0.07, 0.15], [0.15, 0.15, 0.12]));
+  head.add(part(UNIT_SPHERE, eyeW, [0.13, 0.07, 0.15], [0.15, 0.15, 0.12]));
+  head.add(part(UNIT_SPHERE, pupil, [-0.15, 0.06, 0.20], [0.07, 0.08, 0.05]));
+  head.add(part(UNIT_SPHERE, pupil, [0.15, 0.06, 0.20], [0.07, 0.08, 0.05]));
+  head.add(part(UNIT_BOX, blackD, [-0.06, -0.13, 0.18], [0.07, 0.07, 0.10])); // mandibles
+  head.add(part(UNIT_BOX, blackD, [0.06, -0.13, 0.18], [0.07, 0.07, 0.10]));
+  const makeAntenna = (side: 1 | -1) => {
+    const a = new THREE.Group();
+    a.position.set(side * 0.09, 0.16, 0.14);
+    a.rotation.set(-0.5, side * 0.35, side * 0.3);
+    a.add(part(UNIT_BOX, black, [0, 0.09, 0], [0.035, 0.20, 0.035]));
+    a.add(part(UNIT_SPHERE, blackD, [0, 0.21, 0], [0.08, 0.09, 0.08])); // the club
+    head.add(a);
+    return a;
+  };
+  const antennaL = makeAntenna(1);
+  const antennaR = makeAntenna(-1);
+
+  // a beetle is broader and lower than a man, but about his bulk
+  root.scale.set(CHAR_SCALE.x * 0.95, CHAR_SCALE.y * 1.04, CHAR_SCALE.z * 0.92);
+  return {
+    root, body, head, armR, armL, handR, handL, legR, legL,
+    elytraL, elytraR, wingL, wingR, legs, antennaL, antennaR,
+    materials: collectMaterials(root),
+  };
+}
+
+/**
+ * Pose a giant ladybug's rig. `open` is how far the wings are out (0 = folded away under the cases,
+ * 1 = spread and beating), `beat` the wing-beat phase in radians (it only shows while the wings are
+ * open), `step` the leg gait phase (0 when it stands still) and `t` a slow clock for the antennae and
+ * the breathing. Both the live enemy (entities.ts) and the model viewer drive it, so what the viewer
+ * shows is exactly what the game plays.
+ */
+export function poseLadybug(lb: Ladybug, open: number, beat: number, step: number, t: number) {
+  const o = Math.min(1, Math.max(0, open));
+  // six legs on an alternating tripod gait: front and hind on one side step out with the middle of the other
+  const GAIT = [1, -1, 1, -1, 1, -1];
+  for (let i = 0; i < lb.legs.length; i++) lb.legs[i].rotation.x = GAIT[i % GAIT.length] * step * 0.5;
+  lb.legL.rotation.x = 0; lb.legR.rotation.x = 0;
+  // the shiver of the beat runs through the whole shell
+  const b = Math.sin(beat) * o;
+  lb.body.position.y = Math.sin(t * 2.2) * 0.012 + Math.abs(step) * 0.035 + o * 0.05 + Math.abs(b) * 0.03;
+  lb.body.rotation.x = -o * 0.10 + b * 0.02;
+  // the wing cases hinge up and part along the back, trembling through the last of the spread
+  const tremble = Math.sin(t * 44) * 0.035 * Math.max(0, (o - 0.7) / 0.3);
+  lb.armL.rotation.set(-o * 0.16, -o * 0.14, o * 0.98 + tremble);
+  lb.armR.rotation.set(-o * 0.16, o * 0.14, -(o * 0.98 + tremble));
+  // The flight wings unfold from under the cases and fan out to the sides — from the game's
+  // top-down camera a wing swung out wide reads far better than one stood up on edge — then beat
+  // down into the gust.
+  const fan = o * 1.50 - 0.42;                            // tucked in under the case, then swept wide out
+  const sweep = o * 0.22 + Math.sin(beat * 0.5) * 0.1 * o; // the tips cup up a little as they beat
+  const flap = b * 0.5;                                    // the beat itself, in the wing's dihedral
+  lb.wingL.rotation.set(sweep, -fan, -0.42 + o * 0.74 + flap);
+  lb.wingR.rotation.set(sweep, fan, 0.42 - o * 0.74 - flap);
+  // antennae and head: curious at a stroll, whipped about while the wings come out, staring down the blast
+  const twitch = 2.3 + o * 5.2;
+  lb.antennaL.rotation.x = -0.5 + Math.sin(t * twitch) * 0.14 * (1 + o);
+  lb.antennaR.rotation.x = -0.5 + Math.sin(t * twitch + 1.1) * 0.14 * (1 + o);
+  lb.head.rotation.x = o * 0.14 + step * 0.03;
+}
 
 /**
  * Moblin — Link's Awakening inspired pig-like raider (classic Koholint blue).
@@ -337,6 +526,7 @@ function buildMoblin(kind: 'moblin' | 'moblin_spear'): Humanoid {
 }
 
 export function buildSoldier(kind: EnemyKind): Humanoid {
+  if (kind === 'ladybug') return buildLadybug();
   if (kind === 'moblin' || kind === 'moblin_spear') return buildMoblin(kind);
   const m = {
     steel: toon('#a3adc0'), steelD: toon('#6b7382'), tunic: toon(SOLDIER_COLORS[kind]), visor: toon('#15151c'),

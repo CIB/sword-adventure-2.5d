@@ -137,7 +137,7 @@ export const NPC_TALK: Record<string, Talker> = {
   farmer: () => ({
     name: 'HOLLIS',
     color: '#c8f0a0',
-    pages: ['Turnips, turnips, turnips. The knights don\'t eat them, at least. They don\'t eat anything anymore.', 'The river east of here used to be shallow. Since the Crown went missing it runs high and the old ford drowned. Use the bridges.'],
+    pages: ['Turnips, turnips, turnips. The knights don\'t eat them, at least. They don\'t eat anything anymore.', 'The river east of here used to be shallow. Since the Crown went missing it runs high and the old ford drowned. Use the bridges.', 'The red beetles out in the clover have grown as big as men, but they never eat a leaf - they eat the greenfly. Leave them be.', 'Startle one and it opens its wings: the wind knocks you flat and does no more harm than that. Brace your shield, or step aside while they spread.'],
   }),
 
   innkeeper: () => ({

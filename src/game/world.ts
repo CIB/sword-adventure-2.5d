@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { getGradientMap as getGradientMapRef } from './models';
 import { MAP_W, MAP_H, TEX_PX, Tile, RNG, hash2, LEVEL_H, MAX_WALK_SLOPE, WATER_DEPTH, BRIDGE_H } from './constants';
 
-export type EnemyKind = 'sword' | 'spear' | 'javelin' | 'archer' | 'moblin' | 'moblin_spear';
+export type EnemyKind = 'sword' | 'spear' | 'javelin' | 'archer' | 'moblin' | 'moblin_spear' | 'ladybug';
 export interface TreeSpec { x: number; z: number; scale: number; y?: number; kind?: 'oak' | 'pine' | 'autumn' | 'birch' | 'blossom' }
 export interface TileObj { tx: number; tz: number; v?: number }
 export interface HouseSpec { x: number; z: number; w: number; d: number; roof?: string; wall?: string; door?: 'S' | 'E' | 'W'; sign?: 'shop' | 'inn' | 'none' }
@@ -802,6 +802,18 @@ export class World {
       post('Highland Moblin Roost', [188, 16], 8, 6, 'spread', ['moblin_spear', 'moblin', 'moblin_spear', 'archer'], 'northRoad'),
       post('Moor Moblin Outpost', [188, 72], 10, 7, 'spread', ['moblin', 'moblin_spear', 'moblin', 'archer'], 'crownRoad'),
       post('Marsh Moblin Den', [150, 156], 11, 8, 'spread', ['moblin_spear', 'moblin', 'moblin', 'javelin'], 'drownedRoad'),
+      // Giant ladybugs — the meadows' own wildlife: ladybirds grown to the size of a soldier, red
+      // shells rolling about in the tall grass. They are common wherever the land is lush (the
+      // meadow, lake and farm biomes — the same ground that grows the thickest grass carpet), and
+      // rare to absent in the dry mesa, moor, marsh and highland, so a traveller reads a beetle as
+      // a sign of good green country. A colony guards nothing and holds no road: it simply lives in
+      // its flowery patch, and anything that walks in gets blown out again by the wings.
+      post('Clover Bottom Ladybugs', [50, 84], 10, 8, 'spread', ['ladybug', 'ladybug', 'ladybug', 'ladybug'], 'westRoad', 70),
+      post('Fennel Meadow Colony', [74, 92], 11, 8, 'spread', ['ladybug', 'ladybug', 'ladybug', 'ladybug'], 'westRoad', 70),
+      post('Heron Shore Ladybugs', [30, 78], 9, 7, 'spread', ['ladybug', 'ladybug', 'ladybug'], 'westRoad', 65),
+      post('Lakeside Meadow Colony', [44, 106], 9, 7, 'spread', ['ladybug', 'ladybug', 'ladybug'], 'westRoad', 70),
+      post('Farmstead Ladybugs', [104, 116], 10, 8, 'spread', ['ladybug', 'ladybug', 'ladybug'], 'westRoad', 75),
+      post('East Meadow Ladybugs', [114, 51], 10, 8, 'spread', ['ladybug', 'ladybug', 'ladybug', 'ladybug'], 'crownRoad', 75),
     ];
   }
 

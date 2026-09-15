@@ -7,7 +7,7 @@ import {
 import { World, type Vec2, type TileObj } from './world';
 import { AudioEngine } from './audio';
 import { Input, PAUSE_KEYS, MUTE_KEYS, ATTACK_KEYS, TALK_KEYS, ROTATE_CCW_KEYS, ROTATE_CW_KEYS, FULLSCREEN_KEYS, HELP_KEYS, MAP_KEYS, rotateView } from './input';
-import { Player, Enemy, Npc, Farmer, Projectile, Pickup, Effect, fxSpark, fxPuff, fxLeaves, fxSeeds, fxWater, fxSoil, fxHarvest, type GameCtx } from './entities';
+import { Player, Enemy, Npc, Farmer, Projectile, Pickup, Effect, fxSpark, fxPuff, fxLeaves, fxSeeds, fxWater, fxSoil, fxHarvest, blowLooseProjectiles, type GameCtx } from './entities';
 import { NPC_TALK, newQuestState, type Conversation, type QuestState, type TalkCtx } from './dialogue';
 import {
   buildTrees, buildBush, buildBerryBush, buildStump, buildRock, buildFence, buildHouse, buildProp, getGroundGradientMap, buildVillager, buildDog, VILLAGER_LOOKS,
@@ -402,6 +402,20 @@ export class Game implements GameCtx {
     if (opts?.projectile && !p.attacking && dot > 0.6) { this.audio.block(); return 'blocked'; }
     p.hurt(dmg, sx, sz);
     return 'hit';
+  }
+
+  /** Wind knockback — the giant ladybug's gust. The player owns the rule: see Player.blow. */
+  blowPlayer(sx: number, sz: number, force: number): 'blown' | 'blocked' | 'immune' {
+    return this.player.blow(sx, sz, force);
+  }
+
+  /**
+   * The same gust catching anything already in the air: an arrow or a thrown spear inside the cone is
+   * turned around and batted away downwind, so a beetle can swat a volley out of the sky (and can
+   * send a knight's own arrow back at him).
+   */
+  blowProjectiles(sx: number, sz: number, dx: number, dz: number, range: number, cosSpread: number) {
+    blowLooseProjectiles(this.projectiles, sx, sz, dx, dz, range, cosSpread);
   }
 
   private dropLoot(x: number, z: number, heartP: number, rupeeP: number) {

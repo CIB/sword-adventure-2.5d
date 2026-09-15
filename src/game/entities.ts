@@ -9,6 +9,7 @@ import { ACTIONS, type VillageState, type CropKind } from './village';
 import {
   buildArrow, buildHeart, buildHeroine, buildJavelinProjectile, buildMoblinSpearProjectile, buildRupee, buildSoldier, part, toon,
   UNIT_BOX, UNIT_OCTA, UNIT_SPHERE, type Humanoid, buildVillager, buildDog, buildWateringCan, VILLAGER_LOOKS,
+  poseLadybug, type Ladybug,
 } from './models';
 
 export interface GameCtx {
@@ -21,6 +22,13 @@ export interface GameCtx {
   spawnProjectile(kind: 'arrow' | 'javelin' | 'moblin_spear', x: number, z: number, dx: number, dz: number, dmg: number): void;
   spawnEffect(e: Effect): void;
   tryHitPlayer(dmg: number, sx: number, sz: number, opts?: { projectile?: boolean }): 'hit' | 'blocked' | 'immune';
+  /**
+   * Wind knockback with no damage: a gust from (sx,sz) shoves the player along. Bracing the shield
+   * into the wind turns the throw into a nudge ('blocked'); nothing is ever hurt by it.
+   */
+  blowPlayer(sx: number, sz: number, force: number): 'blown' | 'blocked' | 'immune';
+  /** The same gust catching loose projectiles in mid-air: anything inside the cone is turned and batted away. */
+  blowProjectiles(sx: number, sz: number, dx: number, dz: number, range: number, cosSpread: number): void;
   /** true while a dialogue box is open (player + NPCs freeze) */
   talking: boolean;
 }
@@ -38,6 +46,8 @@ const SWING_DUR = 0.2, SPIN_DUR = 0.5, SWING_START = -1.9, SWING_END = 1.15;
 const SPIN_START = -0.35; // spin begins with the blade front-right, where the charge pose holds it
 const SPIN_RADIUS = 1.75; // spin attack AoE radius (normal swing: 1.05)
 const RECOVER_DUR = 0.14; // blend back to idle after an attack instead of snapping
+/** how long a gust of wind leaves the player off her feet: a shove with no damage behind it */
+const GUST_STAGGER = 0.34;
 const easeOutCubic = (p: number) => 1 - (1 - p) ** 3;
 const smooth = (p: number) => p * p * (3 - 2 * p);
 // quick wind-up, then a fast full circle that decelerates on the follow-through
@@ -226,6 +236,30 @@ export class Player {
     if (this.state !== 'hurt' && this.state !== 'dead') { this.state = 'hurt'; this.stateT = 0.12; }
   }
 
+  /**
+   * Wind on the player — the giant ladybug's gust. Never any damage and never any invulnerability:
+   * it only throws her off her feet, which next to a knight is danger enough. Bracing the shield
+   * into the wind turns the throw into a nudge, so a player who reads the wings opening can stand
+   * her ground instead of being blown across the meadow. A wound-up spin is lost: the wind takes
+   * her charge away with it.
+   */
+  blow(sx: number, sz: number, force: number): 'blown' | 'blocked' | 'immune' {
+    if (this.dead) return 'immune';
+    const dx = sx - this.pos.x, dz = sz - this.pos.z;
+    const d = Math.hypot(dx, dz) || 1;
+    const f = FACING_VEC[this.facing];
+    if (this.blocking && (f[0] * dx + f[1] * dz) / d > 0.2) {
+      this.game.audio.block(); // braced into the wind: the shield eats the gust
+      this.pushBack(sx, sz, force * 0.3);
+      return 'blocked';
+    }
+    this.holding = false; this.charged = false; this.chargeT = 0;
+    this.sparkle.visible = false;
+    this.pushBack(sx, sz, force);
+    this.stateT = Math.max(this.stateT, GUST_STAGGER);
+    return 'blown';
+  }
+
   private animate(moving: boolean, dt: number) {
     const m = this.model;
     if (!this.attacking) this.recoverT = Math.max(0, this.recoverT - dt);
@@ -338,6 +372,25 @@ export class Player {
 // ======================================================================= ENEMY
 type EState = 'patrol' | 'idle' | 'alert' | 'chase' | 'ranged' | 'windup' | 'attack' | 'recover';
 interface Stats { hp: number; speed: number; chase: number; dmg: number; sight: number; range: number; attackDur: number; recover: number; cooldown: number }
+
+// ---- Giant ladybug: the wing-gust special ---------------------------------------------------------
+// A beetle doesn't bite or sting. It lumbers at her until she is inside the reach of its wings, then
+// plants its feet and cracks the wing cases open — a long, obvious charge she can walk out of (or
+// interrupt with a sword) — and beats them down into a gust that shoves everything in front of it
+// away. No damage at all: the danger is where the wind puts her, and what is standing there.
+/** seconds the wings take to spread open: the tell, and the window to sidestep or hit it */
+const LADYBUG_CHARGE = 0.85;
+/** seconds of beating once they're open (the gust lands at the top of the first downbeat) */
+const LADYBUG_FLAP = 0.42;
+/** how far the gust reaches in front of the beetle, in tiles */
+const GUST_RANGE = 4.2;
+/** half-angle of the gust's cone, in radians (~36°: a fan, not a beam) */
+const GUST_SPREAD = 0.62;
+/** the shove at the mouth of the cone, decaying to 45% of it at full reach */
+const GUST_FORCE = 12;
+/** wingbeats per second while the gust is blowing */
+const GUST_FLAP_HZ = 11.5;
+
 const STATS: Record<EnemyKind, Stats> = {
   sword: { hp: 3, speed: 1.7, chase: 2.9, dmg: 2, sight: 6.5, range: 1.1, attackDur: 0.2, recover: 0.4, cooldown: 0.9 },
   spear: { hp: 4, speed: 1.5, chase: 2.5, dmg: 2, sight: 7, range: 1.8, attackDur: 0.24, recover: 0.45, cooldown: 1.1 },
@@ -346,6 +399,9 @@ const STATS: Record<EnemyKind, Stats> = {
   // Moblins — LA-inspired: sword+shield bruiser with a frontal block + charge, and a spear-thrower
   moblin: { hp: 4, speed: 1.7, chase: 2.7, dmg: 2, sight: 6.8, range: 1.15, attackDur: 0.24, recover: 0.5, cooldown: 1.2 },
   moblin_spear: { hp: 3, speed: 2.0, chase: 2.6, dmg: 1, sight: 8.5, range: 7.0, attackDur: 0.20, recover: 0.6, cooldown: 2.0 },
+  // Giant ladybug — a shell-backed brute of the lush meadows: slow, tough, and harmless except for
+  // the wind (dmg 0 — its gust only ever knocks back). It stops short of her and blows from there.
+  ladybug: { hp: 5, speed: 1.25, chase: 2.0, dmg: 0, sight: 7.5, range: 3.4, attackDur: LADYBUG_FLAP, recover: 0.6, cooldown: 2.4 },
 };
 
 /** how far a guard on a tight post (bridge, camp) may drift from its own spot, in tiles */
@@ -380,15 +436,22 @@ export class Enemy {
   // Moblin shield guard (sword variant) — LA Switch remake: big shield blocks while raised, breaks after 3 hits
   moblinGuardHits = 0;
   moblinGuardBroken = 0;
+  /** giant ladybug: how far its wings are open, 0 = folded away under the cases, 1 = spread and beating */
+  wingOpen = 0;
+  /** a slow clock that never stops: the beetle's antennae and breathing run off it */
+  private bugT = 0;
   readonly st: Stats;
-  readonly HW = 0.3;
-  readonly HH = 0.25;
+  readonly HW: number;
+  readonly HH: number;
 
   /**
    * A materialised soldier. Every soldier belongs to a guard POST: a patch of the world it holds.
    * Left alone it wanders that patch at random — never leaving it, tight on a bridge deck and loose
    * across a wood — and its death is written back to the world state permanently. A replacement
    * marching in from off the map carries a route to follow instead (`follow`).
+   *
+   * The posts hold wildlife as well as watches: a giant ladybug is materialised out of a colony in
+   * the lush meadows exactly the same way, and roams its own patch just the same.
    */
   constructor(private game: GameCtx, public kind: EnemyKind, x: number, z: number,
     public post: Post | null = null, public memberIndex = 0) {
@@ -396,6 +459,10 @@ export class Enemy {
     this.st = STATS[kind];
     this.hp = this.st.hp;
     this.model = buildSoldier(kind);
+    // a beetle is broader and longer than a man, and a heavier thing to swing at: its own footprint
+    this.HW = kind === 'ladybug' ? 0.42 : 0.3;
+    this.HH = kind === 'ladybug' ? 0.46 : 0.25;
+    if (kind === 'ladybug') this.radius = 0.55;
     this.facing = randomFacing(game.rand());
     this.pickPatrolDir();
     game.scene.add(this.model.root);
@@ -409,6 +476,8 @@ export class Enemy {
 
   get melee() { return this.kind === 'sword' || this.kind === 'spear' || this.kind === 'moblin'; }
   get isMoblin() { return this.kind === 'moblin' || this.kind === 'moblin_spear'; }
+  /** the giant ladybug: no weapon, just the wings (and a gust that hurts nobody) */
+  get isLadybug() { return this.kind === 'ladybug'; }
 
   /**
    * The tile this guard stands watch on, taken from its own world record: a replacement inherits
@@ -515,7 +584,7 @@ export class Enemy {
       g.world.moveBox(this.pos, this.knock.x * dt, this.knock.z * dt, this.HW, this.HH);
       const f = Math.max(0, 1 - dt * 6);
       this.knock.x *= f; this.knock.z *= f;
-      this.animate(false);
+      this.animate(false, dt);
       this.sync();
       return;
     }
@@ -524,7 +593,7 @@ export class Enemy {
     if (this.kind === 'moblin' && this.moblinGuardBroken > 0) {
       this.moblinGuardBroken = Math.max(0, this.moblinGuardBroken - dt);
       if (this.moblinGuardBroken <= 0) this.moblinGuardHits = 0;
-      this.animate(false);
+      this.animate(false, dt);
       this.sync();
       // can still be alerted / start chasing again once stun ends, but while dazed hold still
       if (this.moblinGuardBroken > 0) return;
@@ -625,6 +694,20 @@ export class Enemy {
       }
       case 'ranged': {
         if (p.dead || dist > 13) { this.state = 'patrol'; this.stateT = 1; break; }
+        if (this.isLadybug) {
+          // A beetle doesn't fence and doesn't shoot: it lumbers at her until she is inside the reach
+          // of its wings, squares up to her, and starts the long spread that ends in a gust.
+          if (dist > st.range) moving = this.walk(dx, dz, st.chase, dt);
+          else {
+            this.faceToward(dx, dz);
+            if (this.cooldown <= 0) {
+              this.state = 'windup';
+              this.stateT = LADYBUG_CHARGE;
+              g.audio.wings(); // the wing cases cracking open: the sound of the tell
+            }
+          }
+          break;
+        }
         if (this.kind === 'javelin' || this.kind === 'moblin_spear') {
           if (dist < 2.8) moving = this.walk(-dx, -dz, st.chase, dt);
           else if (dist > 5.5) moving = this.walk(dx, dz, st.chase, dt);
@@ -654,7 +737,9 @@ export class Enemy {
       }
       case 'windup': {
         this.stateT -= dt;
-        if (this.kind !== 'archer') this.faceToward(dx, dz);
+        // The beetle commits: once the cases crack open it blows where it is facing, so walking out
+        // of the fan during the charge (or hitting it) beats the gust. Archers hold their aim too.
+        if (this.kind !== 'archer' && !this.isLadybug) this.faceToward(dx, dz);
         if (this.stateT <= 0) {
           this.state = 'attack'; this.stateT = 0; this.attackHit = false; this.fired = false; this.yawPrev = this.yawCur = -1.7;
           if (this.kind === 'sword' || this.kind === 'moblin') g.audio.swing();
@@ -674,7 +759,7 @@ export class Enemy {
         break;
       }
     }
-    this.animate(moving);
+    this.animate(moving, dt);
     this.sync();
   }
 
@@ -729,6 +814,9 @@ export class Enemy {
         g.audio.throwJav();
         if (this.model.weapon) this.model.weapon.visible = false;
       }
+    } else if (this.isLadybug) {
+      // the spread wings come down on the first beat: one shove of wind, and no damage in it at all
+      if (!this.fired && this.stateT > 0.07) { this.fired = true; this.gust(); }
     } else {
       if (!this.fired) {
         this.fired = true;
@@ -736,6 +824,48 @@ export class Enemy {
         g.audio.arrow();
       }
     }
+  }
+
+  /**
+   * The giant ladybug's special attack: the wings finish opening and beat a gust of wind straight
+   * ahead. Everything caught in the fan in front of it — the player, other enemies (beetles and
+   * knights alike), arrows loose in the air — is shoved along it and takes no damage whatsoever.
+   * The wind is strongest at the mouth of the cone and weakens with distance, so being blown by a
+   * beetle up close is a real throw and one at the edge of its reach is only a stagger.
+   */
+  private gust() {
+    const g = this.game;
+    const fv = FACING_VEC[this.facing];
+    const ox = this.pos.x + fv[0] * 0.4, oz = this.pos.z + fv[1] * 0.4; // out from under the wing cases
+    const cos = Math.cos(GUST_SPREAD);
+    /** the shove a point inside the cone takes, aimed straight back along the cone — or null if outside it */
+    const caught = (tx: number, tz: number): { force: number; nx: number; nz: number } | null => {
+      let dx = tx - ox, dz = tz - oz;
+      const d = Math.hypot(dx, dz);
+      if (d > GUST_RANGE) return null;
+      // how far along the cone's axis the target sits: 1 = dead ahead, -1 = dead behind
+      const along = d > 1e-4 ? (dx * fv[0] + dz * fv[1]) / d : 1;
+      // Inside the cone — or practically touching the beetle's face, where there is no room to be
+      // missed. Squarely behind it is always safe: slipping round the back is how you dodge a gust.
+      if (along < cos && !(d <= 0.5 && along >= 0)) return null;
+      if (d > 1e-4) { dx /= d; dz /= d; } else { dx = fv[0]; dz = fv[1]; }
+      return { force: lerp(GUST_FORCE, GUST_FORCE * 0.45, Math.min(1, d / GUST_RANGE)), nx: dx, nz: dz };
+    };
+    const p = g.player;
+    if (!p.dead) {
+      const h = caught(p.pos.x, p.pos.z);
+      if (h) g.blowPlayer(this.pos.x, this.pos.z, h.force);
+    }
+    for (const o of g.enemies) {
+      if (o === this || !o.alive) continue;
+      const h = caught(o.pos.x, o.pos.z);
+      if (!h) continue;
+      o.knock = { x: h.nx * h.force * 0.75, z: h.nz * h.force * 0.75 };
+      o.knockT = 0.26;
+    }
+    g.blowProjectiles(this.pos.x, this.pos.z, fv[0], fv[1], GUST_RANGE, cos);
+    g.spawnEffect(fxGust(this.pos.x, this.pos.z, Math.atan2(fv[0], fv[1]), GUST_RANGE, GUST_SPREAD, g.rand).at(this.pos.x, this.pos.z));
+    g.audio.gust();
   }
 
   private recoil() {
@@ -795,8 +925,9 @@ export class Enemy {
     return false;
   }
 
-  private animate(moving: boolean) {
+  private animate(moving: boolean, dt: number) {
     const m = this.model;
+    if (this.isLadybug) { this.animateLadybug(moving, dt); return; } // a beetle has no arms to swing
     const swing = moving ? Math.sin(this.animT) : 0;
     m.legL.rotation.x = swing * 0.7;
     m.legR.rotation.x = -swing * 0.7;
@@ -884,6 +1015,30 @@ export class Enemy {
       else if (s === 'attack') m.armR.rotation.set(-Math.PI / 2 + 0.7, -0.9, 0);
       else m.armR.rotation.set(-Math.PI / 2 + 0.5, -0.5, 0);
     }
+  }
+
+  /**
+   * The beetle's whole body language, from where its AI has got to: six legs on an alternating tripod
+   * gait, antennae tasting the air, and the wings — folded flat under their cases until it commits to
+   * the gust, then cracking open through the charge (the tell), beating hard for the blast, and
+   * folding away again while it catches its breath. The pose itself lives with the model
+   * (`poseLadybug`), so the model viewer shows exactly this.
+   *
+   * `wingOpen` is eased toward whatever its state asks for, so a sword blow that interrupts the
+   * charge still folds the wings away smoothly instead of snapping them shut.
+   */
+  private animateLadybug(moving: boolean, dt: number) {
+    const s = this.state, st = this.st;
+    this.bugT += dt;
+    let target = 0;
+    if (s === 'windup') target = smooth(1 - Math.max(0, this.stateT) / LADYBUG_CHARGE); // spreading
+    else if (s === 'attack') target = 1;                                               // beating
+    else if (s === 'recover') target = 1 - smooth(Math.min(1, (1 - Math.max(0, this.stateT) / st.recover) / 0.65));
+    this.wingOpen += (target - this.wingOpen) * Math.min(1, dt * (target > this.wingOpen ? 8 : 5));
+    const open = clamp(this.wingOpen, 0, 1);
+    const beat = s === 'attack' ? this.stateT * GUST_FLAP_HZ * Math.PI * 2 : 0;
+    const step = moving ? Math.sin(this.animT) : Math.sin(this.bugT * 1.7) * 0.07;
+    poseLadybug(this.model as Ladybug, open, beat, step, this.bugT);
   }
 
   private sync() {
@@ -1220,6 +1375,26 @@ export class Projectile {
   destroy() { this.alive = false; this.game.scene.remove(this.mesh); }
 }
 
+/**
+ * A gust catching things already in the air: every live projectile inside the cone from (sx,sz) along
+ * (dx,dz) is turned downwind and slowed, so a beetle can swat a volley out of the sky — and can send
+ * a knight's own arrow back the way it came. Returns how many were caught.
+ */
+export function blowLooseProjectiles(projectiles: Projectile[], sx: number, sz: number, dx: number, dz: number, range: number, cosSpread: number): number {
+  let caught = 0;
+  for (const pr of projectiles) {
+    if (!pr.alive) continue;
+    const px = pr.pos.x - sx, pz = pr.pos.z - sz;
+    const d = Math.hypot(px, pz);
+    if (d > range || d < 1e-4 || (px * dx + pz * dz) / d < cosSpread) continue;
+    pr.dir = { x: px / d, z: pz / d }; // blown downwind, out of the cone
+    pr.speed *= 0.7;
+    pr.mesh.rotation.y = Math.atan2(pr.dir.x, pr.dir.z);
+    caught++;
+  }
+  return caught;
+}
+
 // ======================================================================= PICKUP
 export class Pickup {
   mesh: THREE.Group;
@@ -1330,6 +1505,63 @@ export function fxSpinWave(player: { pos: Vec2; facingAngle: number; sweepCur: n
     const m = part(UNIT_SPHERE, dustMat, [0, 0, 0], [0.2, 0.2, 0.2]);
     e.group.add(m);
     dust.push({ m, a: (i / 10) * Math.PI * 2 + 0.2, s: 0.18 + (i % 3) * 0.06 });
+  }
+  return e;
+}
+
+const gustMat = new THREE.MeshBasicMaterial({ color: 0xf4fbff, transparent: true, opacity: 0.6, depthWrite: false });
+const gustArcMat = new THREE.MeshBasicMaterial({ color: 0xd2efff, transparent: true, opacity: 0.4, depthWrite: false, side: THREE.DoubleSide });
+
+/**
+ * The giant ladybug's gust: a fan of wind streaks shooting out of the cone in front of it, an
+ * expanding ground arc showing how far the blast reached, and leaves and dust caught up and blown
+ * along it. `angle` is the facing (world angle, atan2(x, z)), `spread` the cone's half-angle.
+ */
+export function fxGust(x: number, z: number, angle: number, range: number, spread: number, rand: () => number): Effect {
+  const DUR = 0.55;
+  const ox = x + Math.sin(angle) * 0.45, oz = z + Math.cos(angle) * 0.45; // from just under the wing cases
+  const mat = gustMat.clone();
+  const arc = new THREE.Mesh(new THREE.RingGeometry(0.92, 1, 18, 1, -spread, spread * 2).rotateX(-Math.PI / 2), gustArcMat.clone());
+  arc.rotation.y = angle - Math.PI / 2; // RingGeometry's theta 0 sits at world +x after the rotateX (see fxSpinWave)
+  arc.position.set(ox, 0.06, oz);
+  const streaks: { m: THREE.Mesh; a: number; off: number; len: number; v: number; delay: number }[] = [];
+  const bits: { m: THREE.Mesh; a: number; v: number; y: number; spin: number }[] = [];
+  const e = new Effect(DUR, (p, t) => {
+    for (const s of streaks) {
+      const q = clamp((t - s.delay) / (DUR - s.delay), 0, 1);
+      const a = angle + s.a, cx = Math.sin(a), cz = Math.cos(a);
+      const d = easeOutCubic(q) * range * s.v;
+      s.m.position.set(ox + cx * d - cz * s.off, 0.28 + q * 0.45, oz + cz * d + cx * s.off);
+      s.m.rotation.y = a;
+      // each streak stretches out as it leaves the wings, then thins away down the cone
+      const len = s.len * Math.sin(Math.min(1, q * 1.7) * Math.PI * 0.5) * (1 - q * 0.55);
+      s.m.scale.set(0.075, 0.05, Math.max(0.001, len));
+    }
+    mat.opacity = 0.6 * (1 - p * p);
+    const rr = 0.5 + easeOutCubic(Math.min(1, t / (DUR * 0.7))) * range;
+    arc.scale.set(rr, 1, rr);
+    (arc.material as THREE.MeshBasicMaterial).opacity = 0.4 * (1 - p);
+    for (const b of bits) {
+      const q = clamp(t / (DUR * 0.92), 0, 1);
+      const d = easeOutCubic(q) * range * b.v;
+      b.m.position.set(ox + Math.sin(b.a) * d, b.y + Math.sin(q * Math.PI) * 0.5 - q * q * 0.4, oz + Math.cos(b.a) * d);
+      b.m.rotation.x += b.spin; b.m.rotation.z += b.spin * 0.7;
+    }
+  });
+  e.group.add(arc);
+  for (let i = 0; i < 9; i++) {
+    const m = part(UNIT_BOX, mat, [ox, 0.28, oz], [0.075, 0.05, 0.5]);
+    e.group.add(m);
+    streaks.push({
+      m, a: (rand() * 2 - 1) * spread * 0.92, off: (rand() * 2 - 1) * 0.28,
+      len: 0.7 + rand() * 0.9, v: 0.72 + rand() * 0.36, delay: rand() * 0.1,
+    });
+  }
+  for (let i = 0; i < 7; i++) {
+    const leaf = i % 3 === 0;
+    const m = part(UNIT_BOX, leaf ? leafMat : dustMat, [ox, 0.3, oz], leaf ? [0.1, 0.03, 0.08] : [0.08, 0.06, 0.07]);
+    e.group.add(m);
+    bits.push({ m, a: angle + (rand() * 2 - 1) * spread, v: 0.5 + rand() * 0.5, y: 0.22 + rand() * 0.5, spin: 0.2 + rand() * 0.3 });
   }
   return e;
 }

@@ -7,7 +7,8 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import {
   buildHeroine, buildSoldier, buildVillager, buildDog, VILLAGER_LOOKS, buildTrees, buildBush, buildBerryBush, buildRock, buildStump,
   buildFence, buildHouse, buildProp, buildHeart, buildRupee, buildArrow, buildJavelinProjectile, buildMoblinSpearProjectile,
-  buildFernGeo, buildTallGrassGeo, buildBriarGeo, buildLilyGeo, buildBoulderGeo, buildCropGeo, buildWateringCan, vegObject, type Humanoid,
+  buildFernGeo, buildTallGrassGeo, buildBriarGeo, buildLilyGeo, buildBoulderGeo, buildCropGeo, buildWateringCan, vegObject,
+  buildLadybug, poseLadybug, type Humanoid, type Ladybug,
 } from '../game/models';
 import type { PropKind, HouseSpec, EnemyKind } from '../game/world';
 import { World } from '../game/world';
@@ -16,10 +17,11 @@ import { updateFoliage } from '../game/foliage';
 import { POST_VS, POST_FS } from '../game/game';
 import { VIEW_W, VIEW_H, VIEW_TILES_X, VIEW_TILES_Y, CAM_HEIGHT, SHEAR, FACING_ANGLE } from '../game/constants';
 
-type Entry = { name: string; build: () => { obj: THREE.Object3D; humanoid?: Humanoid; footprint?: number } };
+type Entry = { name: string; build: () => { obj: THREE.Object3D; humanoid?: Humanoid; ladybug?: Ladybug; footprint?: number } };
 type Cat = { name: string; items: Entry[] };
 
 const hum = (h: Humanoid) => ({ obj: h.root, humanoid: h });
+const bug = (l: Ladybug) => ({ obj: l.root, humanoid: l, ladybug: l, footprint: 2.4 });
 const PROPS: PropKind[] = ['well', 'sign', 'stall', 'bench', 'weathercock', 'lamp', 'barrel', 'crate', 'flowerpot', 'hedge', 'log', 'menhir', 'cart', 'hay', 'scarecrow', 'campfire', 'tent', 'banner', 'tower', 'ruinwall', 'pillar', 'crown', 'windmill', 'anvil', 'forge', 'cauldron', 'grave', 'deadtree', 'reeds', 'rosebush', 'beehive', 'wheelbarrow', 'statue', 'mushroom', 'amberrock'];
 const world = new World();
 const grass = new GrassSystem(world);
@@ -28,6 +30,7 @@ const catalog: Cat[] = [
   { name: 'Heroine', items: [{ name: 'Aria', build: () => hum(buildHeroine()) }] },
   { name: 'Fallen Knights', items: (['sword', 'spear', 'javelin', 'archer'] as EnemyKind[]).map((k) => ({ name: k[0].toUpperCase() + k.slice(1) + ' knight', build: () => hum(buildSoldier(k)) })) },
   { name: 'Moblins', items: (['moblin', 'moblin_spear'] as EnemyKind[]).map((k) => ({ name: k === 'moblin' ? 'Sword moblin (shield)' : 'Spear moblin (thrower)', build: () => hum(buildSoldier(k)) })) },
+  { name: 'Wildlife', items: [{ name: 'Giant ladybug (wing gust)', build: () => bug(buildLadybug()) }] },
   { name: 'Villagers', items: [...Object.keys(VILLAGER_LOOKS).map((id) => ({ name: id[0].toUpperCase() + id.slice(1), build: () => hum(buildVillager(VILLAGER_LOOKS[id])) })), { name: 'Dog', build: () => hum(buildDog()) }] },
   { name: 'Houses', items: world.houses.map((h, i) => ({ name: `House ${i + 1} (${h.w}×${h.d}${h.sign && h.sign !== 'none' ? ', ' + h.sign : ''})`, build: () => { const spec: HouseSpec = { ...h, x: -h.w / 2, z: -h.d / 2 }; return { obj: buildHouse(spec), footprint: Math.max(h.w, h.d) + 2 }; } })) },
   { name: 'Foliage', items: [
@@ -117,7 +120,7 @@ const postCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 let mode: 'game' | 'free' = 'game';
 let facing = 0;
 let zoom = 3;
-let current: { obj: THREE.Object3D; humanoid?: Humanoid; footprint?: number } | null = null;
+let current: { obj: THREE.Object3D; humanoid?: Humanoid; ladybug?: Ladybug; footprint?: number } | null = null;
 let animT = 0;
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const animCb = $<HTMLInputElement>('anim'), postCb = $<HTMLInputElement>('post'), gridCb = $<HTMLInputElement>('grid');
@@ -166,6 +169,28 @@ function applyFacing() {
   current.obj.rotation.y = FACING_ANGLE[facing]; // same convention as entities.ts (root.rotation.y = facingAngle)
 }
 
+/**
+ * The giant ladybug's loop in the viewer: the same pose the game drives (poseLadybug), played as one
+ * readable cycle — a stroll, the long wing-spread charge, the beat that makes the gust, and folding
+ * away again — so the special attack can be inspected from any angle.
+ */
+const LADYBUG_CYCLE = 4.4;
+const FLAP_HZ = 11.5;
+function animateLadybug(lb: Ladybug, dt: number) {
+  if (!animCb.checked) { poseLadybug(lb, 0, 0, 0, animT); return; }
+  animT += dt;
+  const c = animT % LADYBUG_CYCLE;
+  // 0.0-1.4 stroll, 1.4-2.5 spread the wings (the charge), 2.5-3.0 beat, 3.0-3.8 fold, then rest
+  const open = c < 1.4 ? 0
+    : c < 2.5 ? smooth01((c - 1.4) / 1.1)
+      : c < 3.0 ? 1
+        : 1 - smooth01(Math.min(1, (c - 3.0) / 0.7));
+  const beat = c >= 2.5 && c < 3.0 ? (c - 2.5) * FLAP_HZ * Math.PI * 2 : 0;
+  const step = c < 1.4 || c > 3.8 ? Math.sin(animT * 7) : 0;
+  poseLadybug(lb, open, beat, step, animT);
+}
+const smooth01 = (p: number) => p * p * (3 - 2 * p);
+
 function animate(dt: number) {
   if (!current?.humanoid) {
     if (current) {
@@ -175,6 +200,7 @@ function animate(dt: number) {
     return;
   }
   const m = current.humanoid;
+  if (current.ladybug) { animateLadybug(current.ladybug, dt); return; }
   if (!animCb.checked) { m.legL.rotation.x = m.legR.rotation.x = 0; m.body.position.y = 0; return; }
   animT += dt * 9;
   const swing = Math.sin(animT);

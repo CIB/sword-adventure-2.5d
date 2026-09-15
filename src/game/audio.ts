@@ -157,6 +157,20 @@ export class AudioEngine {
   heart() { const t = this.ctx?.currentTime ?? 0; [988, 1319, 1976].forEach((f, i) => this.tone('triangle', f, 0.1, 0.18, { when: t + i * 0.08 })); }
   arrow() { this.noise(0.09, 0.22, 'highpass', 3000); this.tone('square', 900, 0.06, 0.05, { f1: 1600 }); }
   throwJav() { this.noise(0.18, 0.22, 'bandpass', 500, { f1: 1200, q: 1.2 }); }
+  /** a giant ladybug cracking its wing cases open: a swelling rustle, with the shells clicking apart */
+  wings() {
+    const t = this.ctx?.currentTime ?? 0;
+    this.noise(0.85, 0.13, 'bandpass', 460, { f1: 2600, q: 1.1, attack: 0.32 });
+    this.tone('square', 330, 0.05, 0.07, { f1: 170, when: t + 0.02 });
+    this.tone('square', 270, 0.05, 0.06, { f1: 150, when: t + 0.17 });
+  }
+  /** ...and the blast: a hard whoosh of moving air, all wind and no bite in it */
+  gust() {
+    const t = this.ctx?.currentTime ?? 0;
+    this.noise(0.44, 0.34, 'lowpass', 3200, { f1: 380, q: 0.6, attack: 0.008 });
+    this.noise(0.3, 0.15, 'highpass', 1200, { f1: 3400, when: t + 0.02 });
+    this.tone('sine', 190, 0.28, 0.12, { f1: 70, when: t + 0.01 });
+  }
   block() { this.tone('square', 2400, 0.05, 0.13); this.tone('square', 1700, 0.1, 0.1, { when: (this.ctx?.currentTime ?? 0) + 0.03 }); this.noise(0.04, 0.2, 'highpass', 4000); }
   grassCut() { this.noise(0.09, 0.16, 'bandpass', 2600, { q: 0.8, attack: 0.005 }); }
   bushCut() { this.noise(0.16, 0.32, 'bandpass', 1300, { q: 1, attack: 0.01 }); }
