@@ -7,10 +7,17 @@ import type { EnemyKind, Vec2, World, NpcSpec } from './world';
 import type { Post, WorldSoldier } from './worldstate';
 import { ACTIONS, type VillageState, type CropKind } from './village';
 import {
-  buildArrow, buildHeart, buildHeroine, buildJavelinProjectile, buildMoblinSpearProjectile, buildRupee, buildSoldier, part, toon,
+  buildArrow, buildEnergyBall, buildHeart, buildHeroine, buildJavelinProjectile, buildMoblinSpearProjectile, buildRupee, buildSoldier, part, toon,
   UNIT_BOX, UNIT_OCTA, UNIT_SPHERE, type Humanoid, buildVillager, buildDog, buildWateringCan, VILLAGER_LOOKS,
-  GUST_HALF_ARC, gustRange, isLadybug, poseLadybug,
+  GUST_HALF_ARC, gustRange, isLadybug, isSpitter, poseLadybug, ENERGY_BALL_SPEED, SPITTER_MAW_H,
 } from './models';
+
+/**
+ * Everything a projectile can be. Arrows, javelins and moblin spears are things thrown at the
+ * heroine; the spitflower's ball of energy is the odd one out — it is spat from a height and drops
+ * into level flight (see Projectile).
+ */
+export type ProjectileKind = 'arrow' | 'javelin' | 'moblin_spear' | 'energy_ball';
 
 export interface GameCtx {
   world: World;
@@ -20,7 +27,8 @@ export interface GameCtx {
   enemies: Enemy[];
   projectiles: Projectile[];
   rand(): number;
-  spawnProjectile(kind: 'arrow' | 'javelin' | 'moblin_spear', x: number, z: number, dx: number, dz: number, dmg: number): void;
+  /** `y` is the height a projectile leaves from (the spitflower spits out of its mouth); 0 = ground level */
+  spawnProjectile(kind: ProjectileKind, x: number, z: number, dx: number, dz: number, dmg: number, y?: number): void;
   spawnEffect(e: Effect): void;
   tryHitPlayer(dmg: number, sx: number, sz: number, opts?: { projectile?: boolean }): 'hit' | 'blocked' | 'immune';
   /** true while a dialogue box is open (player + NPCs freeze) */
@@ -29,6 +37,8 @@ export interface GameCtx {
 
 const angleTo = (dx: number, dz: number) => Math.atan2(dx, dz);
 const easeOut = (p: number) => 1 - (1 - p) * (1 - p);
+/** scratch vector: world positions read out of the model (the spitflower's mouth) without allocating one a frame */
+const TMP_V3 = new THREE.Vector3();
 
 function setEmissive(mats: THREE.MeshToonMaterial[], on: boolean) {
   for (const m of mats) { m.emissive.set(on ? 0xffffff : 0x000000); m.emissiveIntensity = on ? 0.9 : 1; }
@@ -367,6 +377,10 @@ const STATS: Record<EnemyKind, Stats> = {
   // the queen: the oversized beetle, and the only one of the two that fights like a small set-piece —
   // more shell to crack, a longer wind-up and a much longer, harder clap of wind
   ladybug_queen: { hp: 12, speed: 1.15, chase: 2.2, dmg: 2, sight: 8, range: 3.9, attackDur: 0.5, recover: 1.15, cooldown: 3.8 },
+  // The spitflower: rooted, so it has no speed to spend and no chase to run — its numbers are all in
+  // the reach of its spit, which carries further than anything else in the woods can throw. Half a
+  // heart a ball, and a slow enough rhythm that walking through two of them is a fight she can win.
+  spitter: { hp: 3, speed: 0, chase: 0, dmg: 1, sight: 10, range: 9, attackDur: 0.2, recover: 0.9, cooldown: 2.6 },
 };
 
 // ---- ladybug tuning -------------------------------------------------------
@@ -380,6 +394,34 @@ const GUST_PUSH = 13;
     how long it stays off balance (a beetle standing loose takes 6.5 of shove for 0.22 seconds) */
 const LADYBUG_CHARGING_KNOCK = 2.5;
 const LADYBUG_CHARGING_KNOCK_T = 0.12;
+
+// ---- spitflower tuning ----------------------------------------------------
+/** how fast the stem can swing its head round, radians/second — a plant turns, it does not snap */
+const SPIT_TURN = 2.4;
+/** how fast the head follows the pitch it is after (the nod down from the sun, or onto her) */
+const SPIT_NOD = 1.8;
+/** where the head rests when there is nothing to look at: tipped up at the light */
+const SPIT_REST = -0.5;
+/** the charge: the throat lights, the lips open, and the player has this long to see it coming */
+const SPIT_CHARGE = 0.85;
+/** ...and for the last stretch of it the head stops following her, so stepping out of the line works */
+const SPIT_COMMIT = 0.4;
+/** how much of her run the flower throws ahead of her (as a fraction of the ball's flight time) */
+const SPIT_LEAD = 0.6;
+/**
+ * How the turn is spent down the stem. A flower does not swivel: the foot of the stem takes only this
+ * much of the swing and the rest is bowed up the stalk joint by joint — a little at the bottom, most
+ * of it just under the head — so the plant is always visibly *leaning* round after her rather than
+ * spinning on a post. The whole turn still adds up to the AI's yaw, so the mouth ends up on the line
+ * the ball goes down either way.
+ */
+const SPIT_TWIST_FOOT = 0.2;
+/** how far the stem leans into a turn it has not finished yet, radians at the top of the stalk */
+const SPIT_BOW = 0.5;
+/** ...towards a turn no further off than this (a wider error does not lean it any harder) */
+const SPIT_BOW_MAX = 1.1;
+/** how fast that lean is taken up and let go again, radians/second (the stem has a little spring in it) */
+const SPIT_BOW_RATE = 3.2;
 
 /** how far a guard on a tight post (bridge, camp) may drift from its own spot, in tiles */
 const TIGHT_LEASH = 2.2;
@@ -419,6 +461,22 @@ export class Enemy {
   // Moblin shield guard (sword variant) — LA Switch remake: big shield blocks while raised, breaks after 3 hits
   moblinGuardHits = 0;
   moblinGuardBroken = 0;
+  /** rooted plants (the spitflower) only: the world yaw the head is turned to — a stem turns by degrees, not in steps */
+  yaw = 0;
+  /** ...the pitch of the head on the end of that stem, positive = looking down, and drove by the AI */
+  aimPitch = 0;
+  /** ...the spot the shot is committed to, and where the heroine was the last time the flower looked */
+  private aimX = 0;
+  private aimZ = 0;
+  private lastPX = 0;
+  private lastPZ = 0;
+  /** ...her speed as the flower reads it (it throws ahead of where she is going, not where she is) */
+  private pvx = 0;
+  private pvz = 0;
+  /** ...and whether the charge has passed the point where the head stops tracking her */
+  private lockAim = false;
+  /** ...and the lean into a turn it is still making, eased in and out so the stem has some spring */
+  private bow = 0;
   readonly st: Stats;
   readonly HW = 0.3;
   readonly HH = 0.25;
@@ -438,7 +496,12 @@ export class Enemy {
     // a beetle is mostly shell: even the soldier-sized one presents a rounder, broader target than a
     // soldier, and the queen the broadest of all
     if (isLadybug(kind)) this.radius = kind === 'ladybug_queen' ? 0.55 : 0.45;
+    // ...and a spitflower is a sitting target: it can neither dodge nor be knocked back, so the wide
+    // fans of leaves at its foot are the target, and the reach of a sword has nothing to do with it
+    if (isSpitter(kind)) this.radius = 0.55;
     this.facing = randomFacing(game.rand());
+    this.yaw = FACING_ANGLE[this.facing];
+    this.aimPitch = SPIT_REST;
     this.pickPatrolDir();
     game.scene.add(this.model.root);
     this.sync();
@@ -451,6 +514,12 @@ export class Enemy {
 
   get melee() { return this.kind === 'sword' || this.kind === 'spear' || this.kind === 'moblin' || isLadybug(this.kind); }
   get isMoblin() { return this.kind === 'moblin' || this.kind === 'moblin_spear'; }
+  /**
+   * A rooted plant: it grows where it is and never takes a step. Everything that walks (the patrol,
+   * the chase, a knockback, the shove of a passing beetle's gust) is skipped for these — see update,
+   * plantTick and Game.separateEnemies — and the whole of the enemy is the head on its stem.
+   */
+  get rooted() { return isSpitter(this.kind); }
 
   /**
    * The tile this guard stands watch on, taken from its own world record: a replacement inherits
@@ -555,7 +624,9 @@ export class Enemy {
 
     if (this.knockT > 0) {
       this.knockT -= dt;
-      g.world.moveBox(this.pos, this.knock.x * dt, this.knock.z * dt, this.HW, this.HH);
+      // a rooted plant does not slide: it takes the blow standing where it grew, and the animation
+      // reads knock/knockT as the shudder that runs up its stem. Only the things with legs move.
+      if (!this.rooted) g.world.moveBox(this.pos, this.knock.x * dt, this.knock.z * dt, this.HW, this.HH);
       const f = Math.max(0, 1 - dt * 6);
       this.knock.x *= f; this.knock.z *= f;
       this.animate(false, dt);
@@ -576,6 +647,10 @@ export class Enemy {
     const dx = p.pos.x - this.pos.x, dz = p.pos.z - this.pos.z;
     const dist = Math.hypot(dx, dz) || 0.001;
     let moving = false;
+
+    // A rooted plant has no patch to patrol and nobody to chase: the whole of it happens on the end
+    // of its stem, so it gets its own tick rather than the walker's state machine below.
+    if (this.rooted) { this.plantTick(dt, p, dx, dz, dist); this.animate(false, dt); this.sync(); return; }
 
     switch (this.state) {
       case 'patrol': {
@@ -728,6 +803,136 @@ export class Enemy {
     this.sync();
   }
 
+  /**
+   * The whole life of a rooted plant. There is no patrol here and no chase, because there are no
+   * legs to do either with: what there is instead is a head on the end of a stem, which turns to keep
+   * the heroine in front of it, and a mouth that fills with light before it spits. The turns are slow
+   * and the charge is long on purpose — the flower is a hazard to be walked around or cut down, not a
+   * thing to outrun, so everything it does is telegraphed from the moment it notices her.
+   *
+   * It notices with its head rather than its face: a plant has no cone of vision to sneak around, and
+   * the head is the thing that looks (which is exactly what it does with it). That is also why the
+   * pitch of the aim is worked out from SPITTER_MAW_H rather than from where the model happens to be
+   * this frame: the head aims the mouth, and the mouth is what the ball leaves from.
+   */
+  private plantTick(dt: number, p: Player, dx: number, dz: number, dist: number) {
+    const g = this.game, st = this.st;
+    const asleep = this.state === 'patrol';
+
+    // 1. is there anything worth looking at? A flower wakes with a start, and settles back to nodding
+    // at the sky (and forgets how she was moving) once she is well out of its reach
+    if (asleep && !p.dead && dist < st.sight) {
+      this.lockAim = false;
+      this.pvx = this.pvz = 0;
+      this.lastPX = p.pos.x; this.lastPZ = p.pos.z;
+      this.becomeAlert();
+    } else if (!asleep && (p.dead || dist > st.sight + 4)) {
+      this.state = 'patrol';
+      this.lockAim = false;
+    }
+
+    // 2. where it is looking: at her, or at the light. It throws ahead of her — the ball is aimed at
+    // where she will be when it gets there, not at where she was when the flower made up its mind —
+    // and past the commit the aim is frozen, so the line the glowing mouth is holding can be stepped
+    // out of. That frozen line is the only promise the shot makes, and the ball goes down it.
+    const awake = this.state !== 'patrol';
+    if (awake && !p.dead) {
+      const k = 1 - Math.exp(-dt * 6);
+      if (dt > 0) {
+        const ivx = (p.pos.x - this.lastPX) / dt, ivz = (p.pos.z - this.lastPZ) / dt;
+        this.pvx += (ivx - this.pvx) * k;
+        this.pvz += (ivz - this.pvz) * k;
+      }
+      this.lastPX = p.pos.x; this.lastPZ = p.pos.z;
+      if (!this.lockAim) {
+        const flight = dist / ENERGY_BALL_SPEED + SPIT_CHARGE * SPIT_COMMIT;
+        this.aimX = p.pos.x + this.pvx * flight * SPIT_LEAD;
+        this.aimZ = p.pos.z + this.pvz * flight * SPIT_LEAD;
+      }
+      // the stem swings round to the line (a plant turns at its own pace), and the head nods onto it
+      const want = Math.atan2(this.aimX - this.pos.x, this.aimZ - this.pos.z);
+      const step = SPIT_TURN * dt;
+      const turn = clamp(normAngle(want - this.yaw), -step, step);
+      this.yaw = normAngle(this.yaw + turn);
+      // what is left of the swing, and the lean that goes with turning: the stem bows into the
+      // direction it is taking her, and comes back upright as it arrives on the line
+      const wantBow = clamp(normAngle(want - this.yaw), -SPIT_BOW_MAX, SPIT_BOW_MAX) * (SPIT_BOW / SPIT_BOW_MAX);
+      this.bow += clamp(wantBow - this.bow, -SPIT_BOW_RATE * dt, SPIT_BOW_RATE * dt);
+      const wantPitch = clamp(Math.atan2(SPITTER_MAW_H - 0.55, Math.max(0.8, dist)), -0.35, 1.15);
+      this.aimPitch += clamp(wantPitch - this.aimPitch, -SPIT_NOD * dt, SPIT_NOD * dt);
+    } else {
+      this.aimPitch += clamp(SPIT_REST - this.aimPitch, -SPIT_NOD * dt, SPIT_NOD * dt);
+      this.bow += clamp(-this.bow, -SPIT_BOW_RATE * dt, SPIT_BOW_RATE * dt);
+      return; // nothing else to do asleep: no states, no shot, just the head coming back up
+    }
+
+    // 3. the spit itself, on the same four beats the archers and the beetle use: notice, charge,
+    // fire, recover — so a flower in mid-charge reads the same as anything else winding up
+    switch (this.state) {
+      case 'alert': {
+        this.stateT -= dt;
+        if (this.stateT <= 0) this.state = 'ranged';
+        break;
+      }
+      case 'ranged': {
+        // only at something it can actually hit: a ball into a tree trunk helps nobody
+        if (this.cooldown <= 0 && dist < st.range && this.clearShot(this.aimX, this.aimZ)) {
+          this.state = 'windup';
+          this.stateT = SPIT_CHARGE;
+          g.audio.spitterCharge(SPIT_CHARGE);
+        }
+        break;
+      }
+      case 'windup': {
+        this.stateT -= dt;
+        if (this.stateT <= SPIT_CHARGE * SPIT_COMMIT) this.lockAim = true; // the last stretch stops tracking
+        if (this.stateT <= 0) { this.state = 'attack'; this.stateT = 0; this.fired = false; }
+        break;
+      }
+      case 'attack': {
+        this.stateT += dt;
+        this.doAttack(dt, dx, dz, dist);
+        if (this.stateT >= st.attackDur) { this.state = 'recover'; this.stateT = st.recover; this.cooldown = st.cooldown; }
+        break;
+      }
+      case 'recover': {
+        this.stateT -= dt;
+        if (this.stateT <= 0) { this.state = 'ranged'; this.lockAim = false; }
+        break;
+      }
+    }
+  }
+
+  /** a straight, unblocked line to the spot the flower is throwing at — plants do not spit into trunks */
+  private clearShot(x: number, z: number): boolean {
+    const w = this.game.world;
+    const steps = Math.max(2, Math.ceil(Math.hypot(x - this.pos.x, z - this.pos.z) / 0.5));
+    for (let i = 1; i < steps; i++) {
+      const t = i / steps;
+      if (w.blocksProjectile(this.pos.x + (x - this.pos.x) * t, this.pos.z + (z - this.pos.z) * t)) return false;
+    }
+    return true;
+  }
+
+  /**
+   * The spitflower's whole attack: a ball of green light out of the mouth, along the line the head
+   * has been holding (see plantTick — the aim is set well before this, and stops updating partway
+   * through the charge). It leaves the maw at the height the maw actually is, which is what makes it
+   * a spit from a flower and not a bullet out of a wall: the ball drops into level flight on its way,
+   * so what crosses the clearing is a low, fast thing she can see coming and step out of.
+   */
+  private spit() {
+    const g = this.game;
+    const maw = this.model.maw;
+    const from = maw ? maw.getWorldPosition(TMP_V3) : TMP_V3.set(this.pos.x, g.world.surfaceAt(this.pos.x, this.pos.z) + SPITTER_MAW_H, this.pos.z);
+    let ax = this.aimX - from.x, az = this.aimZ - from.z;
+    const d = Math.hypot(ax, az) || 1;
+    ax /= d; az /= d;
+    g.spawnProjectile('energy_ball', from.x, from.z, ax, az, this.st.dmg, from.y);
+    g.spawnEffect(fxEnergyBurst(from.x, from.y, from.z, 0.7));
+    g.audio.spit();
+  }
+
   private doAttack(dt: number, dx: number, dz: number, dist: number) {
     const g = this.game, st = this.st, p = g.player;
     const fa = FACING_ANGLE[this.facing];
@@ -784,6 +989,13 @@ export class Enemy {
       if (!this.fired && this.stateT > 0.07) {
         this.fired = true;
         this.gust();
+      }
+    } else if (isSpitter(this.kind)) {
+      // the ball leaves early in the snap, so the petals closing over the mouth and the ball flying
+      // out of it are one motion
+      if (!this.fired && this.stateT > 0.05) {
+        this.fired = true;
+        this.spit();
       }
     } else {
       if (!this.fired) {
@@ -918,7 +1130,60 @@ export class Enemy {
     m.legR.rotation.x = -swing * 0.7;
     m.body.position.y = moving ? Math.abs(Math.sin(this.animT)) * 0.03 : 0;
     const k = this.kind, s = this.state;
-    if (k === 'moblin') {
+    if (isSpitter(k)) {
+      // Everything this enemy does is the head on the end of its stem, and all of it was decided in
+      // plantTick: the yaw the stem has turned to, the pitch the head has nodded to, and how far
+      // through a charge it is. Here that is only posed — the stem bends like a plant (a little at
+      // the foot, most of it near the top), the lips curl back off the maw so the light inside can be
+      // seen, and the mouth snaps shut again as the ball goes out.
+      const stalk = m.stalk ?? [];
+      const awake = s !== 'patrol';
+      const charge = s === 'windup' ? clamp(1 - this.stateT / SPIT_CHARGE, 0, 1) : 0;
+      const shot = s === 'attack' ? clamp(this.stateT / this.st.attackDur, 0, 1) : 0;
+      // the body is the foot of the stem: it takes only the first share of the turn, plus the slow
+      // nod of a plant standing in a breeze when there is nobody about to look at
+      m.body.rotation.y = this.yaw * SPIT_TWIST_FOOT + (awake ? 0 : Math.sin(this.age * 0.31) * 0.22);
+      // the neck: the head leans over whatever it is looking at, rears back a hand's width over the
+      // charge, and follows the ball forward as it goes — with a gust of wind still rocking it if the
+      // last thing that happened to it was a beetle's clap
+      let lean = clamp(this.aimPitch * 0.6, 0, 0.8) - 0.16 * charge + 0.12 * shot;
+      if (this.knockT > 0) {
+        const away = Math.atan2(this.knock.x, this.knock.z) - this.yaw; // in the stem's own frame
+        const k2 = clamp(this.knockT / 0.22, 0, 1);
+        lean += Math.cos(away) * 0.25 * k2;
+        m.body.rotation.z = Math.sin(away) * 0.2 * k2;
+      } else m.body.rotation.z = 0;
+      // The stem is one plant, so the turn runs up it the same way the nod does: weighed towards the
+      // top, where the head is, and hardly any of it at the root. There is no neck joint left to
+      // account for afterwards — the whole of the yaw is spent down here, foot and stalk together —
+      // so the twist and the bow below are the entire difference between this and a turret.
+      const twist = this.yaw * (1 - SPIT_TWIST_FOOT);
+      let wsum = 0;
+      for (let i = 0; i < stalk.length; i++) wsum += (i + 1) * (i + 1);
+      for (let i = 0; i < stalk.length; i++) {
+        const w = ((i + 1) * (i + 1)) / (wsum || 1);
+        stalk[i].rotation.y = twist * w;
+        stalk[i].rotation.x = lean * w + Math.sin(this.age * 0.7 + i * 0.6) * 0.012;
+        // the bow is to the left of the twist (negative z leans the joint's up towards +x), which is
+        // the way the head is already swinging while the turn is unfinished
+        stalk[i].rotation.z = -this.bow * w + Math.sin(this.age * 0.55 + i * 0.5) * 0.022;
+      }
+      // the head: the pitch the AI asked for, less the stem's own share of it (so the mouth ends up
+      // pointing exactly where the flower decided), and a nod into the spit
+      m.head.rotation.x = this.aimPitch - lean + 0.22 * shot;
+      // the lips and the ring of petals: the mouth opens over the charge and snaps shut on the ball
+      const open = 0.55 * charge - 0.3 * shot;
+      if (m.armL) m.armL.rotation.x = -open;
+      if (m.armR) m.armR.rotation.x = open;
+      if (m.petals) {
+        const spread = 1 + 0.2 * charge - 0.08 * shot;
+        m.petals.scale.set(spread, spread, 1);
+      }
+      // the charge itself, in the throat and at the glands on the lips: cold and all but dark at
+      // rest, filled with light over the wind-up, and gone the instant the ball leaves
+      const glow = m.throat?.material as THREE.MeshBasicMaterial | undefined;
+      if (glow) glow.opacity = clamp(0.06 + 0.85 * charge - 0.5 * shot, 0, 1);
+    } else if (k === 'moblin') {
       // LA sword+shield brute — big shield blocks while patrolling/chasing, drops when dazed
       if (this.moblinGuardBroken > 0) {
         // dazed after shield break — wobbles, shield droops, sword hangs
@@ -1041,7 +1306,9 @@ export class Enemy {
 
   private sync() {
     this.model.root.position.set(this.pos.x, this.game.world.surfaceAt(this.pos.x, this.pos.z), this.pos.z);
-    this.model.root.rotation.y = FACING_ANGLE[this.facing];
+    // a rooted plant has no 8-way facing — its head turns by degrees on the end of its stem, and that
+    // turn lives inside the model (see animate), so the root itself stays square to the world
+    this.model.root.rotation.y = this.rooted ? 0 : FACING_ANGLE[this.facing];
   }
 
   dispose() {
@@ -1334,30 +1601,53 @@ export class Projectile {
   alive = true;
   life = 0;
   speed: number;
-  constructor(private game: GameCtx, public kind: 'arrow' | 'javelin' | 'moblin_spear', x: number, z: number, public dir: Vec2, public dmg: number) {
+  /** the height it was thrown from (a spitflower's ball starts at its mouth) and the height it settles to */
+  private spawnY: number;
+  private flightY = 0;
+  private fromY = 0;
+  private y = 0;
+  constructor(private game: GameCtx, public kind: ProjectileKind, x: number, z: number, public dir: Vec2, public dmg: number, y = 0) {
     this.pos = { x, z };
+    this.spawnY = y;
     if (kind === 'arrow') this.mesh = buildArrow();
     else if (kind === 'moblin_spear') this.mesh = buildMoblinSpearProjectile();
+    else if (kind === 'energy_ball') this.mesh = buildEnergyBall();
     else this.mesh = buildJavelinProjectile();
-    this.speed = kind === 'arrow' ? 9.5 : kind === 'moblin_spear' ? 7.2 : 6.5;
+    this.speed = kind === 'arrow' ? 9.5 : kind === 'moblin_spear' ? 7.2 : kind === 'energy_ball' ? ENERGY_BALL_SPEED : 6.5;
     this.mesh.rotation.y = Math.atan2(dir.x, dir.z);
     if (kind === 'javelin' || kind === 'moblin_spear') this.mesh.rotation.x = -0.25;
     game.scene.add(this.mesh);
     this.sync();
   }
-  private y = 0;
   private sync() { this.mesh.position.set(this.pos.x, this.y, this.pos.z); }
   update(dt: number) {
     if (!this.alive) return;
-    if (this.life === 0) this.y = this.game.world.surfaceAt(this.pos.x, this.pos.z) + 0.6;
+    if (this.life === 0) {
+      this.flightY = this.game.world.surfaceAt(this.pos.x, this.pos.z) + 0.6;
+      this.fromY = Math.max(this.flightY, this.spawnY);
+      this.y = this.fromY;
+    }
     this.life += dt;
     this.pos.x += this.dir.x * this.speed * dt;
     this.pos.z += this.dir.z * this.speed * dt;
+    // an energy ball is spat out of a mouth well above the ground and drops into level flight on the
+    // way, rather than being thrown across it — the one projectile in the game with a fall to it
+    if (this.kind === 'energy_ball') {
+      this.y = lerp(this.flightY, this.fromY, Math.max(0, 1 - this.life / 0.35));
+      this.mesh.rotation.y += dt * 7;
+      this.mesh.rotation.x += dt * 3;
+      const s = 1 + Math.sin(this.life * 26) * 0.08;
+      this.mesh.scale.set(s, s, s);
+    }
     this.sync();
     const w = this.game.world;
     const ground = w.heightAt(this.pos.x, this.pos.z);
     if (this.life > 3 || w.blocksProjectile(this.pos.x, this.pos.z) || ground > this.y - 0.1 || ground < this.y - 1.4) {
-      this.game.spawnEffect(fxSpark(this.pos.x, this.y - ground - 0.1, this.pos.z, 0.5).at(this.pos.x, this.pos.z));
+      // the burst is drawn in world heights (it is already up in the air where the ball is), while
+      // the little spark of an arrow striking the ground is placed relative to it
+      this.game.spawnEffect(this.kind === 'energy_ball'
+        ? fxEnergyBurst(this.pos.x, this.y, this.pos.z, 0.6)
+        : fxSpark(this.pos.x, this.y - ground - 0.1, this.pos.z, 0.5).at(this.pos.x, this.pos.z));
       this.destroy();
       return;
     }
@@ -1418,6 +1708,10 @@ export class Effect {
 
 const sparkMat = new THREE.MeshBasicMaterial({ color: 0xfff2a0 });
 const whiteMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+/** the spitflower's light: a pale, cold green, with the hot core the ball carries inside it */
+const energyMat = new THREE.MeshBasicMaterial({ color: 0xa6f03c });
+const energyCoreMat = new THREE.MeshBasicMaterial({ color: 0xf4ffd6 });
+const energyHaloMat = new THREE.MeshBasicMaterial({ color: 0xa6f03c, transparent: true, opacity: 0.4, depthWrite: false });
 const puffMat = new THREE.MeshBasicMaterial({ color: 0xe6e6f0 });
 const leafMat = new THREE.MeshBasicMaterial({ color: 0x4cb040 });
 const alertMat = new THREE.MeshBasicMaterial({ color: 0xff3c3c });
@@ -1438,6 +1732,38 @@ export function fxSpark(x: number, y: number, z: number, size = 1): Effect {
   });
   e.group.add(core);
   for (let i = 0; i < 4; i++) { const m = part(UNIT_BOX, whiteMat, [x, y, z], [0.08, 0.08, 0.08]); e.group.add(m); bits.push({ m, a: (i / 4) * Math.PI * 2 + 0.4 }); }
+  return e;
+}
+
+/**
+ * A ball of spitflower energy going out: a flare of green light with a hot white core and a handful
+ * of shards thrown off it. Unlike fxSpark this one is placed in world heights, because it happens at
+ * whatever height the ball is at — up at a flower's mouth, or in the air over the heroine's head —
+ * rather than on the ground under it.
+ */
+export function fxEnergyBurst(x: number, y: number, z: number, size = 1): Effect {
+  const core = part(UNIT_OCTA, energyCoreMat, [x, y, z], [0.12, 0.12, 0.12]);
+  const flare = new THREE.Mesh(UNIT_SPHERE, energyHaloMat);
+  flare.position.set(x, y, z);
+  const bits: { m: THREE.Mesh; a: number; u: number }[] = [];
+  const e = new Effect(0.26, (p) => {
+    const s = Math.sin(p * Math.PI) * 0.9 * size;
+    core.scale.set(s, s * 1.3, s);
+    core.rotation.y = p * 4;
+    flare.scale.setScalar(0.5 * size * (0.6 + p * 1.6));
+    for (const b of bits) {
+      const r = 0.15 + p * 0.8 * size * b.u;
+      b.m.position.set(x + Math.cos(b.a) * r, y + Math.sin(b.a) * r * 0.6, z + Math.sin(b.a) * r * 0.3);
+      const bs = (1 - p) * 0.1;
+      b.m.scale.set(bs, bs, bs);
+    }
+  });
+  e.group.add(core, flare);
+  for (let i = 0; i < 5; i++) {
+    const m = part(UNIT_OCTA, energyMat, [x, y, z], [0.1, 0.1, 0.1]);
+    e.group.add(m);
+    bits.push({ m, a: (i / 5) * Math.PI * 2 + 0.5, u: 0.7 + (i % 3) * 0.25 });
+  }
   return e;
 }
 

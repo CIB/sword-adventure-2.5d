@@ -8,7 +8,7 @@ import { World, type Vec2, type TileObj } from './world';
 import { Wildlife } from './wildlife';
 import { AudioEngine } from './audio';
 import { Input, PAUSE_KEYS, MUTE_KEYS, ATTACK_KEYS, TALK_KEYS, ROTATE_CCW_KEYS, ROTATE_CW_KEYS, FULLSCREEN_KEYS, HELP_KEYS, MAP_KEYS, rotateView } from './input';
-import { Player, Enemy, Npc, Farmer, Projectile, Pickup, Effect, fxSpark, fxPuff, fxLeaves, fxSeeds, fxWater, fxSoil, fxHarvest, type GameCtx } from './entities';
+import { Player, Enemy, Npc, Farmer, Projectile, Pickup, Effect, fxSpark, fxPuff, fxLeaves, fxSeeds, fxWater, fxSoil, fxHarvest, type GameCtx, type ProjectileKind } from './entities';
 import { NPC_TALK, newQuestState, type Conversation, type QuestState, type TalkCtx } from './dialogue';
 import {
   buildTrees, buildBush, buildBerryBush, buildStump, buildRock, buildFence, buildHouse, buildProp, getGroundGradientMap, buildVillager, buildDog, VILLAGER_LOOKS,
@@ -97,7 +97,7 @@ export class Game implements GameCtx {
   hud: Hud;
   player: Player;
   enemies: Enemy[] = [];
-  /** the world's wild creatures (ladybugs in the green country around the player) */
+  /** the world's wild creatures (ladybugs in the green country, spitflowers in the woods around the player) */
   wildlife!: Wildlife;
   projectiles: Projectile[] = [];
   pickups: Pickup[] = [];
@@ -395,8 +395,9 @@ export class Game implements GameCtx {
   // ------------------------------------------------------------------ GameCtx
   rand() { return this.rng.next(); }
 
-  spawnProjectile(kind: 'arrow' | 'javelin' | 'moblin_spear', x: number, z: number, dx: number, dz: number, dmg: number) {
-    this.projectiles.push(new Projectile(this, kind, x, z, { x: dx, z: dz }, dmg));
+  /** `y` is the height the thing was thrown from: a spitflower spits out of its mouth, on a stem */
+  spawnProjectile(kind: ProjectileKind, x: number, z: number, dx: number, dz: number, dmg: number, y = 0) {
+    this.projectiles.push(new Projectile(this, kind, x, z, { x: dx, z: dz }, dmg, y));
   }
 
   spawnEffect(e: Effect) {
@@ -565,7 +566,7 @@ export class Game implements GameCtx {
     const ps = this.world.playerStart;
     this.player.reset(ps.x, ps.z);
     this.worldState.reset(); // a fresh run is a fresh world: new guards on every post, nothing carried over
-    this.wildlife.reset();   // ...and green country again, which will restock itself with beetles
+    this.wildlife.reset();   // ...and green country again, which will restock itself with beetles and flowers
     this.village.reset();    // ...and a fresh field for the farmer to start over on
     this.cam = { x: ps.x, z: ps.z - 1 };
     this.deathTimer = 0;
@@ -770,7 +771,9 @@ export class Game implements GameCtx {
           e.knock = { x: (dx / d) * 4.5, z: (dz / d) * 4.5 };
           e.knockT = 0.2;
         }
-        if (dist < 0.6) {
+        // a rooted plant stays where it grew, however hard the heroine leans on it (the knock above
+        // still shows, as the shudder that runs up its stem: see Enemy.update)
+        if (dist < 0.6 && !e.rooted) {
           const push = 0.6 - dist;
           const nx = dist > 1e-4 ? dx / d : 1, nz = dist > 1e-4 ? dz / d : 0;
           this.world.moveBox(e.pos, nx * push, nz * push, e.HW, e.HH);
@@ -787,9 +790,13 @@ export class Game implements GameCtx {
       const dx = b.pos.x - a.pos.x, dz = b.pos.z - a.pos.z;
       const d = Math.hypot(dx, dz);
       if (d > 0.7 || d < 1e-4) continue;
-      const push = (0.7 - d) / 2;
-      this.world.moveBox(a.pos, (-dx / d) * push, (-dz / d) * push, a.HW, a.HH);
-      this.world.moveBox(b.pos, (dx / d) * push, (dz / d) * push, b.HW, b.HH);
+      // rooted plants stand their ground: if one of a pair is a spitflower, the other one does all of
+      // the moving — a beetle does not shoulder a flower out of its own clearing
+      const push = 0.7 - d;
+      const wa = a.rooted ? 0 : b.rooted ? 1 : 0.5;
+      const wb = b.rooted ? 0 : a.rooted ? 1 : 0.5;
+      if (wa) this.world.moveBox(a.pos, (-dx / d) * push * wa, (-dz / d) * push * wa, a.HW, a.HH);
+      if (wb) this.world.moveBox(b.pos, (dx / d) * push * wb, (dz / d) * push * wb, b.HW, b.HH);
     }
   }
 

@@ -174,6 +174,18 @@ export class AudioEngine {
     this.noise(0.32, 0.14, 'bandpass', 2600, { f1: 700, q: 0.7 });
     this.tone('sine', 95, 0.22, 0.28, { f1: 42 });
   }
+  // ---- the spitflowers
+  /** the throat filling with light: a wet hum winding up under a rustle of petals, swelling for the whole charge */
+  spitterCharge(dur: number) {
+    this.tone('triangle', 150, dur, 0.06, { f1: 520, lp: 1400, attack: dur * 0.7, sustain: true });
+    this.noise(dur, 0.05, 'bandpass', 900, { f1: 2200, q: 1.2, attack: dur * 0.6 });
+  }
+  /** the ball leaving the maw: a wet pop with a spatter of air behind it */
+  spit() {
+    const t = this.ctx?.currentTime ?? 0;
+    this.tone('square', 520, 0.1, 0.13, { f1: 160, when: t });
+    this.noise(0.16, 0.13, 'bandpass', 1800, { f1: 700, q: 0.8, when: t });
+  }
   lowHp() { this.tone('square', 1046, 0.06, 0.07); }
   // ---- the farm
   /** the hoe biting into soil: a dull thud with a little grit */

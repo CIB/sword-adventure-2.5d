@@ -105,6 +105,18 @@ export interface Humanoid {
    * floor is a promise about tiles of *world*, so it must not shrink along with the beetle.
    */
   gustArcUnit?: number;
+  /**
+   * Spitflowers only: the stem, as a chain of segments — base first, each one a child of the segment
+   * below it, with the head on the far end. The enemy animation bends the chain the way a plant
+   * bends: a little at the foot and most of it near the top (see Enemy.animate).
+   */
+  stalk?: THREE.Group[];
+  /** spitflowers only: the ring of petals around the maw, which spreads wide over the charge */
+  petals?: THREE.Group;
+  /** spitflowers only: the mouth itself — the point a ball of energy leaves from, in world space */
+  maw?: THREE.Group;
+  /** spitflowers only: the charge glowing in the throat (the same unlit material lights the lip glands) */
+  throat?: THREE.Mesh;
   materials: THREE.MeshToonMaterial[];
 }
 
@@ -209,7 +221,7 @@ export function buildHeroine(): Humanoid {
   return { root, body, head, armR, armL, handR, handL, legR, legL, weapon, shield, ponytail, materials };
 }
 
-export const SOLDIER_COLORS: Record<EnemyKind, string> = { sword: '#3c9c44', spear: '#3858c8', javelin: '#c83838', archer: '#7848b8', moblin: '#3a6fbf', moblin_spear: '#4a84d6', ladybug: '#d43a2a', ladybug_queen: '#a8281c' };
+export const SOLDIER_COLORS: Record<EnemyKind, string> = { sword: '#3c9c44', spear: '#3858c8', javelin: '#c83838', archer: '#7848b8', moblin: '#3a6fbf', moblin_spear: '#4a84d6', ladybug: '#d43a2a', ladybug_queen: '#a8281c', spitter: '#e2542a' };
 
 // ---------------------------------------------------------------- the beetles
 /**
@@ -391,6 +403,7 @@ function buildMoblin(kind: 'moblin' | 'moblin_spear'): Humanoid {
 
 export function buildSoldier(kind: EnemyKind): Humanoid {
   if (isLadybug(kind)) return buildLadybug(kind);
+  if (isSpitter(kind)) return buildSpitter();
   if (kind === 'moblin' || kind === 'moblin_spear') return buildMoblin(kind);
   const m = {
     steel: toon('#a3adc0'), steelD: toon('#6b7382'), tunic: toon(SOLDIER_COLORS[kind]), visor: toon('#15151c'),
@@ -665,6 +678,150 @@ export function poseLadybug(h: Humanoid, open: number, beat: number, step: numbe
   h.armL.rotation.x = -0.5 + Math.sin(t * twitch) * 0.14 * (1 + o);
   h.armR.rotation.x = -0.5 + Math.sin(t * twitch + 1.1) * 0.14 * (1 + o);
   h.head.rotation.x = o * 0.14 + step * 0.03;
+}
+
+// ---------------------------------------------------------------- the spitflower
+/**
+ * How tall the stem is and how high the mouth rides on it, in world units. The flower is authored at
+ * its real size (it is a plant, not a scale drawing), and the AI pitches its aim from SPITTER_MAW_H,
+ * so the height the ball leaves at is the height the model actually has.
+ */
+const SPITTER_ROOT_Y = 0.09;         // where the stem comes up out of the leaves at the foot
+const SPITTER_JOINTS = 6;            // how many joints the stem is built from
+const SPITTER_JOINT_H = 0.23;        // ...and how tall each one is
+export const SPITTER_MAW_H = SPITTER_ROOT_Y + SPITTER_JOINTS * SPITTER_JOINT_H;
+
+/** The energy a spitflower throws: a cold green, so a ball in the air is never mistaken for a rupee or a spark. */
+export const ENERGY_GLOW = '#a6f03c';
+const ENERGY_CORE = '#f4ffd6';
+/** How fast that ball travels, in tiles/second — the AI leads the heroine with the same number. */
+export const ENERGY_BALL_SPEED = 7.5;
+
+export const isSpitter = (k: EnemyKind): k is 'spitter' => k === 'spitter';
+
+/**
+ * The spitflower — the plant the deep woods grow instead of a soldier's post.
+ *
+ * A big flower head on the end of a long stem, and no legs at all: it is the one enemy in the game
+ * that cannot take a step, which is why everything about it happens on the end of its neck. `stalk`
+ * is the stem, built as a chain of joints (each one a child of the joint below it, with the head on
+ * the last), so the enemy animation can bend the whole plant like a plant — a little at the foot and
+ * most of it near the top. The head is a ring of petals around a dark maw: `armL`/`armR` are the two
+ * lips that curl back off it, `handL`/`handR` the glowing glands at their tips, and `maw` is the
+ * mouth itself, the point the AI reads a ball of energy out of (see Enemy.spit).
+ *
+ * The throat behind the lips is the tell, and the only unlit thing on the model: it sits all but
+ * dark at rest and fills with light over the wind-up (the lip glands share that material, so they
+ * come up with it), which is what tells the player across a clearing that the flower has decided on
+ * her. The petals and the lips carry the same story in shape — spread wide, then snapped shut.
+ */
+export function buildSpitter(): Humanoid {
+  const stemMat = toon('#4e7f36');
+  const stemDark = toon('#3b6428');
+  const leafMat = toon('#3f7a2c');
+  const petalMat = toon('#e2542a');
+  const petalIn = toon('#f2a03c');
+  const mawMat = toon('#341a2c');
+  const glowMat = new THREE.MeshBasicMaterial({ color: ENERGY_GLOW, transparent: true, opacity: 0.06, depthWrite: false });
+
+  const root = new THREE.Group();
+  root.add(blobShadow(0.44));
+
+  // the foot: two fans of leaves around the stem. They ride the leg slots — a rooted plant never
+  // takes a step, so the shared walk cycle leaves them exactly where they were drawn
+  const foot = (side: 1 | -1) => {
+    const g = new THREE.Group();
+    for (let i = 0; i < 3; i++) {
+      const blade = part(UNIT_BOX, i === 1 ? leafMat : stemDark, [side * 0.3, 0.11, 0], [0.7, 0.05, 0.3]);
+      blade.rotation.set(-0.1, (i - 1) * 0.6, -side * 0.2);
+      g.add(blade);
+    }
+    return g;
+  };
+  const legL = foot(1), legR = foot(-1);
+  root.add(legL, legR);
+
+  // the stem: a chain of joints, each hanging off the one below it, so bending the chain bends the
+  // plant. The body group is the foot of it — the joint the whole stem turns from when the head
+  // swings round — which is why it is the neck and not the trunk that turns on this enemy
+  const body = new THREE.Group();
+  body.position.set(0, SPITTER_ROOT_Y, 0);
+  root.add(body);
+  const stalk: THREE.Group[] = [];
+  let joint: THREE.Group = body;
+  for (let i = 0; i < SPITTER_JOINTS; i++) {
+    const seg = new THREE.Group();
+    const taper = 0.18 * (1 - (i / (SPITTER_JOINTS - 1)) * 0.42);
+    seg.add(part(UNIT_CYL, i % 2 ? stemMat : stemDark, [0, SPITTER_JOINT_H / 2, 0], [taper, SPITTER_JOINT_H * 1.06, taper]));
+    // a pair of little leaves part way up: the stem of a growing plant is never a bare pole
+    if (i === 1 || i === 3) for (const side of [1, -1] as const) {
+      const leaf = part(UNIT_BOX, leafMat, [side * 0.24, SPITTER_JOINT_H * 0.45, 0], [0.44, 0.04, 0.2]);
+      leaf.rotation.set(-0.12, side * 0.45, -side * 0.45);
+      seg.add(leaf);
+    }
+    if (i > 0) seg.position.y = SPITTER_JOINT_H; // stacked: the joint sits on top of the last one
+    joint.add(seg);
+    stalk.push(seg);
+    joint = seg;
+  }
+
+  const head = new THREE.Group();
+  head.position.y = SPITTER_JOINT_H; // the flower rides the top of the stem, and turns on it
+  joint.add(head);
+
+  // the calyx: the green cup the petals grow out of, behind the face
+  head.add(part(UNIT_SPHERE, stemDark, [0, 0, -0.05], [0.5, 0.46, 0.42]));
+
+  // the face: a ring of petals in the head's own x-y plane (a head looks along its own +z, the same
+  // way the soldiers and the beetles do)
+  const petals = new THREE.Group();
+  head.add(petals);
+  const PETALS = 8;
+  for (let i = 0; i < PETALS; i++) {
+    const ring = new THREE.Group();
+    // half a petal round, so none of them sits square on the top or the bottom of the face: the
+    // mouth's two lips want that room
+    ring.rotation.z = ((i + 0.5) / PETALS) * Math.PI * 2;
+    const petal = part(UNIT_SPHERE, i % 2 ? petalIn : petalMat, [0, 0.3, -0.02], [0.34, 0.44, 0.14]);
+    petal.rotation.x = -0.14; // the tips lean a little toward the light
+    ring.add(petal);
+    petals.add(ring);
+  }
+
+  // the maw: a dark throat in the middle of the face, with the charge glowing inside it
+  const maw = new THREE.Group();
+  maw.position.set(0, 0, 0.05);
+  head.add(maw);
+  const tube = part(UNIT_CYL, mawMat, [0, 0, 0], [0.5, 0.32, 0.5]);
+  tube.rotation.x = Math.PI / 2; // a cylinder is built up the y axis; the mouth points along +z
+  maw.add(tube);
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2 + 0.26;
+    const tooth = part(UNIT_CONE, mawMat, [Math.cos(a) * 0.2, Math.sin(a) * 0.2, 0.16], [0.11, 0.16, 0.11]);
+    tooth.rotation.x = Math.PI / 2;
+    maw.add(tooth);
+  }
+  const throat = part(UNIT_SPHERE, glowMat, [0, 0, 0.05], [0.32, 0.32, 0.24]);
+  maw.add(throat);
+
+  // the two lips: they curl back off the maw over the charge, so the light gathered inside it is what
+  // the player sees, and snap forward again as the ball goes out. Their tips are the hand slots, and
+  // they carry the same glow — the whole flower lights up together
+  const lip = (side: 1 | -1) => {
+    const arm = new THREE.Group();
+    arm.position.set(0, side * 0.19, 0.12);
+    arm.add(part(UNIT_SPHERE, petalMat, [0, side * 0.18, -0.02], [0.46, 0.44, 0.18]));
+    const hand = new THREE.Group();
+    hand.position.set(0, side * 0.3, -0.02);
+    hand.add(part(UNIT_SPHERE, glowMat, [0, 0, 0], [0.17, 0.17, 0.13]));
+    arm.add(hand);
+    return { arm, hand };
+  };
+  const { arm: armL, hand: handL } = lip(1); // the upper lip
+  const { arm: armR, hand: handR } = lip(-1); // ...and the lower one
+  head.add(armL, armR);
+
+  return { root, body, head, armR, armL, handR, handL, legR, legL, stalk, petals, maw, throat, materials: collectMaterials(root) };
 }
 
 // ---------------------------------------------------------------- props
@@ -1736,5 +1893,28 @@ export function buildMoblinSpearProjectile(): THREE.Group {
   g.add(tip);
   g.add(part(UNIT_BOX, toon('#c82828'), [0, 0, 0.10], [0.07, 0.07, 0.16]));
   g.add(part(UNIT_BOX, toon('#c48b4f'), [0, 0, -0.48], [0.05, 0.05, 0.12]));
+  return g;
+}
+
+/**
+ * The ball a spitflower throws: a hot white core inside a cold green light, with three little shards
+ * turning round it so it reads as something alive in the air rather than a thrown stone. It is the
+ * one projectile in the game made of nothing but light — and the only one that is spat from a height
+ * and drops into level flight on its way (see Projectile).
+ */
+export function buildEnergyBall(): THREE.Group {
+  const g = new THREE.Group();
+  const core = new THREE.Mesh(UNIT_SPHERE, new THREE.MeshBasicMaterial({ color: ENERGY_CORE }));
+  core.scale.set(0.3, 0.3, 0.3);
+  const halo = new THREE.Mesh(UNIT_SPHERE, new THREE.MeshBasicMaterial({ color: ENERGY_GLOW, transparent: true, opacity: 0.4, depthWrite: false }));
+  halo.scale.set(0.64, 0.64, 0.64);
+  g.add(core, halo);
+  const shardMat = new THREE.MeshBasicMaterial({ color: ENERGY_GLOW });
+  for (let i = 0; i < 3; i++) {
+    const a = (i / 3) * Math.PI * 2;
+    const shard = part(UNIT_OCTA, shardMat, [Math.cos(a) * 0.32, Math.sin(a) * 0.32, 0], [0.15, 0.15, 0.15]);
+    shard.rotation.set(a, a * 2, 0);
+    g.add(shard);
+  }
   return g;
 }
