@@ -343,9 +343,9 @@ function runWildlife(seconds: number, x: number, z: number, viewR = 26) {
   const { ctx } = runWildlife(40, 44.5, 38.5);
   const bugs = ctx.enemies.filter((e) => e.kind === 'ladybug');
   const bug = bugs[0];
-  // The number is asserted, not just printed: the beetle must take exactly six 1-damage swings,
+  // The number is asserted, not just printed: the beetle must take exactly four 1-damage swings,
   // so a quiet revert of its HP fails the check instead of reading as a different number
-  check('a ladybug is a soft target: six swings and it is done', swingsToKill(bug) === 6 && bug.st.hp === 6 && bug.st.dmg === 1,
+  check('a ladybug is a soft target: four swings and it is done', swingsToKill(bug) === 4 && bug.st.hp === 4 && bug.st.dmg === 1,
     `${bug.st.hp} hp, gust does ${bug.st.dmg}`);
 }
 /** how many plain-swing hits it takes to kill (0 = it survives the whole trial) */
@@ -357,8 +357,8 @@ function swingsToKill(bug: Enemy, trial = 12): number {
 
 // What the soft-target number means in the actual game: full sword swings run through the
 // player's real state machine and the game's own reach/arc check — not direct hurt() calls.
-// One full swing must hit the beetle exactly once, for 1 damage, so a 6 hp ladybug falls on
-// the sixth swing (this is the thing that used to read as three in a stale build).
+// One full swing must hit the beetle exactly once, for 1 damage, so a 4 hp ladybug falls on
+// the fourth swing (this is the thing that used to read as three in a stale build).
 {
   const { ctx, player } = makeCtx(44.5, 44.5);
   player.facing = 0; // due south, at the beetle
@@ -388,7 +388,7 @@ function swingsToKill(bug: Enemy, trial = 12): number {
   }
   check('one full swing hits the beetle exactly once, for 1 damage', swings === hits && hits === bug.st.hp,
     `${swings} swings, ${hits} hits, ${bug.st.hp} hp`);
-  check('...so a 6 hp ladybug falls on the sixth swing, not the third', !bug.alive && swings === 6, `${swings} swings`);
+  check('...so a 4 hp ladybug falls on the fourth swing, not the third', !bug.alive && swings === 4, `${swings} swings`);
 }
 
 // The queen is the special encounter: one at a time, rare, and never part of the crowd. Given long
