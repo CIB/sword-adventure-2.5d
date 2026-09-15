@@ -11,7 +11,7 @@ import { World } from '../src/game/world';
 import { Enemy, Player, Projectile, fxGust, type GameCtx } from '../src/game/entities';
 import { Wildlife } from '../src/game/wildlife';
 import { buildSoldier, gustRange, isLadybug } from '../src/game/models';
-import { RNG, MAX_HP, FACING_VEC, SHEAR } from '../src/game/constants';
+import { RNG, MAX_HP, FACING_VEC, SHEAR, inArc } from '../src/game/constants';
 
 let failures = 0;
 const check = (name: string, cond: boolean, extra = '') => {
@@ -343,14 +343,52 @@ function runWildlife(seconds: number, x: number, z: number, viewR = 26) {
   const { ctx } = runWildlife(40, 44.5, 38.5);
   const bugs = ctx.enemies.filter((e) => e.kind === 'ladybug');
   const bug = bugs[0];
-  check('a ladybug is a soft target: six swings and it is done', gapCheck(bug) && bug.st.dmg === 1,
+  // The number is asserted, not just printed: the beetle must take exactly six 1-damage swings,
+  // so a quiet revert of its HP fails the check instead of reading as a different number
+  check('a ladybug is a soft target: six swings and it is done', swingsToKill(bug) === 6 && bug.st.hp === 6 && bug.st.dmg === 1,
     `${bug.st.hp} hp, gust does ${bug.st.dmg}`);
 }
-function gapCheck(bug: Enemy) {
-  // six hits of a normal swing kill it
-  let dead = false;
-  for (let i = 0; i < 6 && !dead; i++) dead = bug.hurt(1, bug.pos.x, bug.pos.z - 1);
-  return dead;
+/** how many plain-swing hits it takes to kill (0 = it survives the whole trial) */
+function swingsToKill(bug: Enemy, trial = 12): number {
+  let hits = 0;
+  while (hits < trial && bug.alive) { bug.hurt(1, bug.pos.x, bug.pos.z - 1); hits++; }
+  return bug.alive ? 0 : hits;
+}
+
+// What the soft-target number means in the actual game: full sword swings run through the
+// player's real state machine and the game's own reach/arc check — not direct hurt() calls.
+// One full swing must hit the beetle exactly once, for 1 damage, so a 6 hp ladybug falls on
+// the sixth swing (this is the thing that used to read as three in a stale build).
+{
+  const { ctx, player } = makeCtx(44.5, 44.5);
+  player.facing = 0; // due south, at the beetle
+  const bug = new Enemy(ctx, 'ladybug', 44.5, 45.8); // 1.3 tiles ahead: inside the sweep
+  ctx.enemies.push(bug);
+  let swings = 0, hits = 0, inSwing = 0, wasAttacking = false;
+  for (let i = 0; i < 300 && bug.alive; i++) {
+    const press = player.state === 'idle'; // tap the sword each frame she is free to swing
+    player.update(DT, { moveX: 0, moveZ: 0, down: () => false, justPressed: () => press } as never);
+    if (player.attacking) {
+      if (!wasAttacking) { swings++; inSwing = 0; }
+      const sw = player.getSweep();
+      if (sw && bug.alive) {
+        const dx = bug.pos.x - player.pos.x, dz = bug.pos.z - player.pos.z;
+        const d = Math.hypot(dx, dz);
+        // the same reach and arc check the game applies (game.ts: resolveSword)
+        if (d <= sw.r + bug.radius && (d <= 0.45 || inArc(Math.atan2(dx, dz), sw.from, sw.to, 0.3))) {
+          if (!sw.hit.has(bug)) {
+            sw.hit.add(bug);
+            inSwing++; hits++;
+            bug.hurt(sw.dmg, player.pos.x, player.pos.z, sw.heavy);
+          }
+        }
+      }
+    }
+    wasAttacking = player.attacking;
+  }
+  check('one full swing hits the beetle exactly once, for 1 damage', swings === hits && hits === bug.st.hp,
+    `${swings} swings, ${hits} hits, ${bug.st.hp} hp`);
+  check('...so a 6 hp ladybug falls on the sixth swing, not the third', !bug.alive && swings === 6, `${swings} swings`);
 }
 
 // The queen is the special encounter: one at a time, rare, and never part of the crowd. Given long
@@ -365,11 +403,15 @@ function gapCheck(bug: Enemy) {
   check('...but never two of her at once', queenMax <= 1, `${queenMax} at once`);
   check('...and the ordinary beetles do not stop coming', spawned.filter((s) => !queens.includes(s)).length >= 3,
     `${spawned.length - queens.length} commons`);
-  const queen = ctx.enemies.find((e) => e.kind === 'ladybug_queen');
-  check('the queen is the tough one of the family', !!queen && !gapCheck(queen) && queen.st.hp > 3, `${queen?.st.hp} hp, dmg ${queen?.st.dmg}`);
+  // the encounter's own queen may already have wandered off the active region and been let go by
+  // then (the spawner's business, with full HP intact) — the toughness is about the species, so
+  // measure it on a live one, a fresh one if the other has gone
+  let queen = ctx.enemies.find((e) => e.kind === 'ladybug_queen' && e.alive);
+  if (!queen) { queen = new Enemy(ctx, 'ladybug_queen', 44.5, 39.1); ctx.enemies.push(queen); }
+  check('the queen is the tough one of the family', swingsToKill(queen) === 12 && queen.st.hp === 12, `${queen.st.hp} hp, dmg ${queen.st.dmg}`);
   check('...and her clap does twice what a common beetle\'s does',
-    (queen?.st.dmg ?? 0) === 2 && ctx.enemies.filter((e) => e.kind === 'ladybug').every((e) => e.st.dmg === 1),
-    `queen ${queen?.st.dmg}, commons ${[...new Set(ctx.enemies.filter((e) => e.kind === 'ladybug').map((e) => e.st.dmg))].join(',')}`);
+    queen.st.dmg === 2 && ctx.enemies.filter((e) => e.kind === 'ladybug').every((e) => e.st.dmg === 1),
+    `queen ${queen.st.dmg}, commons ${[...new Set(ctx.enemies.filter((e) => e.kind === 'ladybug').map((e) => e.st.dmg))].join(',')}`);
   check('...while the commons keep the population at its usual size', wildlife.bugs.length <= 6, `${wildlife.bugs.length} bugs`);
 }
 
