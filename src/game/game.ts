@@ -50,12 +50,17 @@ void main(){
 }`;
 
 /**
- * Characters with hand-made (AI-generated, SNES-style) portraits in public/portraits/; everyone else gets
- * a live render of their 3D head. NPC ids map to in-game names: `bard` = Marigold, `granny` = Grandma
- * (Maud). `aria` is the heroine herself (no NPC dialogue, but reserved so her portrait is available).
+ * Characters with hand-made (AI-generated, SNES-style) portraits in public/portraits/ (the file is always
+ * named after the NPC id). Everyone else gets a live render of their 3D head. NPC ids map to in-game names:
+ * `elder` = Elder Oswin, `bard` = Marigold, `granny` = Granny Maud, `farmer` = Hollis. `aria` is the
+ * heroine herself (no NPC dialogue, but reserved so her portrait is available).
+ *
+ * Adding a portrait: drop a 128x128 PNG next to the others (downscale the raw render with
+ * `magick raw.png -filter box -resize 128x128 -strip public/portraits/<id>.png` — box keeps the pixel art
+ * crisp and -strip drops the generator metadata, which is worth a megabyte a file) and add the id here.
  */
-const PORTRAITS = new Set(['elder', 'bard', 'granny', 'aria']);
-const PORTRAIT_VERSION = 3; // bump when portrait images change (busts the browser cache)
+const PORTRAITS = new Set(['elder', 'bard', 'granny', 'farmer', 'aria']);
+const PORTRAIT_VERSION = 4; // bump when portrait images change (busts the browser cache)
 
 /**
  * Oblique projection: ground stays 1:1, world height becomes a vertical screen offset.
