@@ -359,13 +359,14 @@ const STATS: Record<EnemyKind, Stats> = {
   // Moblins — LA-inspired: sword+shield bruiser with a frontal block + charge, and a spear-thrower
   moblin: { hp: 4, speed: 1.7, chase: 2.7, dmg: 2, sight: 6.8, range: 1.15, attackDur: 0.24, recover: 0.5, cooldown: 1.2 },
   moblin_spear: { hp: 3, speed: 2.0, chase: 2.6, dmg: 1, sight: 8.5, range: 7.0, attackDur: 0.20, recover: 0.6, cooldown: 2.0 },
-  // The ladybugs: slow, lumbering beetles that never bite. Their whole attack is a gust of wind out
-  // of the open shell — no damage at all (dmg 0), but it blows the heroine off her feet, so the range
-  // they pick their fight at is the reach of that gust rather than the length of an arm.
-  ladybug: { hp: 3, speed: 1.3, chase: 2.5, dmg: 0, sight: 7, range: 2.6, attackDur: 0.42, recover: 0.95, cooldown: 3.4 },
+  // The ladybugs: slow, lumbering beetles whose whole attack is a gust of wind out of the open
+  // shell. It hits lightly but it hits: half a heart from a common one, a whole one from the queen,
+  // and either way she is picked up and thrown, so the range they pick their fight at is the reach of
+  // that gust rather than the length of an arm.
+  ladybug: { hp: 3, speed: 1.3, chase: 2.5, dmg: 1, sight: 7, range: 2.6, attackDur: 0.42, recover: 0.95, cooldown: 3.4 },
   // the queen: the oversized beetle, and the only one of the two that fights like a small set-piece —
-  // more shell to crack, a longer wind-up and a much longer clap of wind
-  ladybug_queen: { hp: 6, speed: 1.15, chase: 2.2, dmg: 0, sight: 8, range: 3.9, attackDur: 0.5, recover: 1.15, cooldown: 3.8 },
+  // more shell to crack, a longer wind-up and a much longer, harder clap of wind
+  ladybug_queen: { hp: 6, speed: 1.15, chase: 2.2, dmg: 2, sight: 8, range: 3.9, attackDur: 0.5, recover: 1.15, cooldown: 3.8 },
 };
 
 // ---- ladybug tuning -------------------------------------------------------
@@ -787,23 +788,28 @@ export class Enemy {
 
   /**
    * The ladybug's whole attack: a clap of its hindwings throws a cone of wind out of its open shell.
-   * Nothing in here touches `tryHitPlayer` — the gust cannot hurt anyone. It empties the cone in
-   * front of it: the heroine is picked up and set back down, other soldiers are blown off their feet,
-   * and arrows in flight are turned around and sent home. Both beetles throw the same wind, as far
-   * as their own shell carries it (gustRange) — the queen's is the longer clap.
+   * It empties the cone in front of it: the heroine is hurt and thrown off her feet, other soldiers
+   * are blown off their feet, and arrows in flight are turned around and sent home. Both beetles
+   * throw the same wind, as far as their own shell carries it (gustRange) — the queen's is the longer
+   * and the heavier clap, and she does the damage of one (see STATS).
    */
   private gust() {
     const g = this.game;
     const a = FACING_ANGLE[this.facing];
     g.audio.gust();
     g.spawnEffect(fxGust(this.pos.x, this.pos.z, a, gustRange(this.kind)).at(this.pos.x, this.pos.z));
-    // the heroine — a step closer, a harder shove; a shield braced into the wind takes some of it
+    // the heroine. The wind lands first — through tryHitPlayer, so a shield braced into it turns the
+    // damage away entirely (dot > 0.2, as with any blow) and her invulnerability frames shrug off a
+    // second gust — and the shove comes after it so what carries her off her feet is the gust's own
+    // throw rather than the standard knockback of a hit. A step closer is a harder shove.
     const p = g.player;
     if (!p.dead && this.inGust(p.pos.x, p.pos.z, a)) {
       const d = Math.hypot(p.pos.x - this.pos.x, p.pos.z - this.pos.z);
+      g.tryHitPlayer(this.st.dmg, this.pos.x, this.pos.z);
       p.shove(this.pos.x, this.pos.z, (GUST_PUSH / (1 + d * 0.4)) * (p.blocking ? 0.6 : 1), 0.24);
     }
-    // other soldiers (and the odd fellow beetle) are blown off their feet just the same
+    // other soldiers (and the odd fellow beetle) are blown off their feet just the same, but the wind
+    // only hurts the heroine: a beetle that could kill a knight would rewrite the world's guard posts
     for (const e of g.enemies) {
       if (e === this || !e.alive || e.knockT > 0 || !this.inGust(e.pos.x, e.pos.z, a)) continue;
       let ex = e.pos.x - this.pos.x, ez = e.pos.z - this.pos.z;

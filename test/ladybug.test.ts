@@ -1,10 +1,10 @@
 // Ladybugs: the lush-country spawner that keeps them common in the green parts of the world, and the
-// wing-clap — a charged-up gust of wind that shoves everything in front of the beetle and hurts
-// nobody. The ordinary beetle is soldier-sized (the queen is the oversized one, and rare), so the
-// model checks below measure it against a soldier on screen, not against its own authoring numbers.
-// Driven here the way Game.update drives them (a live Enemy per bug, a real Player, the same GameCtx
-// the soldier tests use), with a tryHitPlayer that counts its calls so "no damage" means the AI never
-// even asked.
+// wing-clap — a charged-up gust of wind that hurts the heroine and throws everything else in front of
+// the beetle off its feet. The ordinary beetle is soldier-sized (the queen is the oversized one, and
+// rare), so the model checks below measure it against a soldier on screen, not against its own
+// authoring numbers. Driven here the way Game.update drives them (a live Enemy per bug, a real
+// Player, the same GameCtx the soldier tests use), with a tryHitPlayer that records every call so
+// "one half-heart, once" can be checked to the number.
 // Run: npx esbuild test/ladybug.test.ts --bundle --platform=node --format=esm | node --input-type=module
 import * as THREE from 'three';
 import { World } from '../src/game/world';
@@ -23,7 +23,12 @@ const world = new World();
 const DT = 1 / 30;
 const NO_INPUT = { moveX: 0, moveZ: 0, down: () => false, justPressed: () => false } as never;
 
-/** a GameCtx with no renderer, plus a tally of every time something tried to hurt the heroine */
+/**
+ * A GameCtx with no renderer, plus a tally of every time something tried to hurt the heroine. Where
+ * the real Game decides whether a blow lands (Game.tryHitPlayer: shields, i-frames), this one records
+ * the request and then lets the real Player take it, so the damage the beetle asks for is the damage
+ * her hearts actually show — and a blow the Player itself shrugs off still shows up in `hits`.
+ */
 function makeCtx(playerX: number, playerZ: number) {
   const rng = new RNG(1234);
   const noop = () => {};
@@ -33,8 +38,7 @@ function makeCtx(playerX: number, playerZ: number) {
     world, scene: new THREE.Scene(), audio, rand: () => rng.next(), talking: false,
     enemies: [] as Enemy[], projectiles: [] as Projectile[],
     spawnProjectile: noop, spawnEffect: noop,
-    // the real Game applies the damage; here we only record that somebody asked for it
-    tryHitPlayer: (dmg: number) => { hits.push(dmg); return 'hit' as const; },
+    tryHitPlayer: (dmg: number, sx: number, sz: number) => { hits.push(dmg); (ctx as { player: Player }).player.hurt(dmg, sx, sz); return 'hit' as const; },
   } as unknown as GameCtx;
   const player = new Player(ctx, playerX, playerZ);
   (ctx as { player: Player }).player = player;
@@ -138,9 +142,23 @@ check('the ground tell is measured in tiles of world, not in beetle lengths',
   check('its wing covers swing right open for the charge', maxOpen > 1, `open=${maxOpen.toFixed(2)}`);
   check('it paints the gust cone on the ground while it charges', sawArc);
   check('the gust shoves the heroine away from it', player.pos.z > pz0 + 0.5, `moved ${(player.pos.z - pz0).toFixed(2)} tiles`);
-  check('...without hurting her', player.hp === MAX_HP, `hp=${player.hp}`);
-  check('...and without ever asking to', hits.length === 0, `tryHitPlayer called ${hits.length}x`);
+  check('...and it hurts her on the way out', player.hp === MAX_HP - bug.st.dmg, `hp=${player.hp} of ${MAX_HP}`);
+  check('...once, for exactly the damage its stats say', hits.length === 1 && hits[0] === bug.st.dmg,
+    `tryHitPlayer called ${hits.length}x with ${hits.join(',')} (dmg ${bug.st.dmg})`);
   check('the gust reaches as far as its ground tell promises', Math.abs(player.pos.z - pz0) <= gustRange('ladybug'));
+}
+
+// Two beetles clapping in the same breath: the wind hurts, but her i-frames are still hers, so a pair
+// of them cannot grind her down any faster than one — though both gusts throw her.
+{
+  const { ctx, player, hits } = makeCtx(44.5, 41.5);
+  const a = new Enemy(ctx, 'ladybug', 44.5, 39.6); a.facing = 0;
+  const b = new Enemy(ctx, 'ladybug', 45.4, 39.8); b.facing = 0;
+  ctx.enemies.push(a, b);
+  for (const bug of [a, b]) { bug.state = 'attack'; bug.stateT = 0.2; bug.fired = false; bug.update(DT); }
+  check('two gusts in the same breath only cost her one hit', hits.length === 2 && player.hp === MAX_HP - 1,
+    `${hits.length} calls, hp ${player.hp} of ${MAX_HP}`);
+  check('...and both of them still throw her', player.knock.z > 0 && Math.abs(player.knock.z) > 2, `knock ${player.knock.z.toFixed(1)}`);
 }
 
 // Facing matters: a beetle charged up with the heroine at its back leaves her alone.
@@ -151,7 +169,8 @@ check('the ground tell is measured in tiles of world, not in beetle lengths',
   ctx.enemies.push(bug);
   const pz0 = player.pos.z;
   for (let i = 0; i < Math.round(0.6 / DT); i++) bug.update(DT);
-  check('a gust thrown the other way leaves her standing', Math.abs(player.pos.z - pz0) < 0.05 && player.hp === MAX_HP && hits.length === 0);
+  check('a gust thrown the other way leaves her standing', Math.abs(player.pos.z - pz0) < 0.05 && player.hp === MAX_HP && hits.length === 0,
+    `moved ${Math.abs(player.pos.z - pz0).toFixed(2)} tiles, hp ${player.hp}, ${hits.length} hit(s)`);
 }
 
 // Everything in the cone goes, not just the heroine: soldiers are blown off their feet, and an arrow
@@ -183,7 +202,7 @@ check('the ground tell is measured in tiles of world, not in beetle lengths',
 
 // The queen throws the same wind, but hers reaches past where a common beetle's stops.
 {
-  const { ctx } = makeCtx(44.5, 42.4);
+  const { ctx, player, hits } = makeCtx(44.5, 42.4);
   const queen = new Enemy(ctx, 'ladybug_queen', 44.5, 37.8);
   queen.facing = 0; // due south, up the meadow
   ctx.enemies.push(queen);
@@ -199,6 +218,13 @@ check('the ground tell is measured in tiles of world, not in beetle lengths',
   queen.state = 'attack'; queen.stateT = 0.2; queen.fired = false;
   queen.update(DT);
   check('...and still stops at the edge of her own cone', beyond.knockT <= 0);
+  // and where the two claps cross, hers is the one that costs a whole heart
+  player.pos = { x: 44.5, z: 41.0 };
+  queen.state = 'attack'; queen.stateT = 0.2; queen.fired = false;
+  queen.update(DT);
+  check('the queen\'s clap costs a whole heart where a common beetle\'s costs half of one',
+    player.hp === MAX_HP - queen.st.dmg && queen.st.dmg === 2 && hits[hits.length - 1] === 2 && player.knock.z > 0,
+    `hp ${player.hp} of ${MAX_HP}, last blow ${hits[hits.length - 1]}`);
 }
 
 // ============================================================ the wind itself
@@ -213,7 +239,7 @@ check('the ground tell is measured in tiles of world, not in beetle lengths',
     far = Math.max(far, Math.abs(b.min.x - 44.5), Math.abs(b.max.x - 44.5), Math.abs(b.min.z - 38.5), Math.abs(b.max.z - 38.5));
   }
   check('the blast effect plays out and cleans up', frames > 10 && frames < 200, `${frames} frames`);
-  check('the wind reaches exactly as far as the gust that hurts nobody', far >= gustRange('ladybug') * 0.9 && far <= gustRange('ladybug') * 1.35, `reach=${far.toFixed(2)} vs ${gustRange('ladybug')}`);
+  check('the wind reaches exactly as far as the gust that hits her', far >= gustRange('ladybug') * 0.9 && far <= gustRange('ladybug') * 1.35, `reach=${far.toFixed(2)} vs ${gustRange('ladybug')}`);
 }
 
 // ============================================================ the population
@@ -273,13 +299,14 @@ function runWildlife(seconds: number, x: number, z: number, viewR = 26) {
   const { ctx } = runWildlife(40, 44.5, 38.5);
   const bugs = ctx.enemies.filter((e) => e.kind === 'ladybug');
   const bug = bugs[0];
-  check('a ladybug is a soft target that leaves nothing to chance', gapCheck(bug));
+  check('a ladybug is a soft target: three swings and it is done', gapCheck(bug) && bug.st.dmg === 1,
+    `${bug.st.hp} hp, gust does ${bug.st.dmg}`);
 }
 function gapCheck(bug: Enemy) {
-  // three hits of a normal swing kill it, and it never damages anyone by attacking
+  // three hits of a normal swing kill it
   let dead = false;
   for (let i = 0; i < 3 && !dead; i++) dead = bug.hurt(1, bug.pos.x, bug.pos.z - 1);
-  return dead && bug.st.dmg === 0;
+  return dead;
 }
 
 // The queen is the special encounter: one at a time, rare, and never part of the crowd. Given long
@@ -296,7 +323,9 @@ function gapCheck(bug: Enemy) {
     `${spawned.length - queens.length} commons`);
   const queen = ctx.enemies.find((e) => e.kind === 'ladybug_queen');
   check('the queen is the tough one of the family', !!queen && !gapCheck(queen) && queen.st.hp > 3, `${queen?.st.hp} hp, dmg ${queen?.st.dmg}`);
-  check('...and still harmless: she only ever blows people about', ctx.enemies.every((e) => e.st.dmg === 0 || !isLadybug(e.kind)));
+  check('...and her clap does twice what a common beetle\'s does',
+    (queen?.st.dmg ?? 0) === 2 && ctx.enemies.filter((e) => e.kind === 'ladybug').every((e) => e.st.dmg === 1),
+    `queen ${queen?.st.dmg}, commons ${[...new Set(ctx.enemies.filter((e) => e.kind === 'ladybug').map((e) => e.st.dmg))].join(',')}`);
   check('...while the commons keep the population at its usual size', wildlife.bugs.length <= 6, `${wildlife.bugs.length} bugs`);
 }
 
