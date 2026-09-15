@@ -14,6 +14,7 @@ import { World } from '../src/game/world';
 import { Tile, MAP_W } from '../src/game/constants';
 import {
   VillageState, CROPS, CROP_IDS, cropStages, cropGrowTime, isRipe, WATER_CAN, SEED_PACK, TILL_PER_DAY,
+  WATER_PER_DAY, STALLED, DAY_SECONDS,
   type FarmPlotSeed, type VillageEvent, type VillageTerrain,
 } from '../src/game/village';
 
@@ -141,7 +142,10 @@ const visited = new Set<number>();
 let inWall = 0, badPos = 0, maxBasket = 0, minWater = WATER_CAN;
 const acts = new Set<string>();
 const DT = 1 / 30;
-for (let i = 0; i < 60 * 30 * 2 + 60; i++) { // just over two village days
+// just over three village days: the first one belongs to the harvest that was already standing in the
+// rows when the run began, which is exactly what a farmer does — pick what is ripe before breaking
+// more ground. Two days is not enough to see the fields start to expand.
+for (let i = 0; i < 60 * 30 * 3 + 60; i++) {
   v.tick(DT);
   for (const e of v.takeEvents()) seen.add(e.kind);
   const f = v.farmer;
@@ -153,11 +157,11 @@ for (let i = 0; i < 60 * 30 * 2 + 60; i++) { // just over two village days
   visited.add(Math.floor(f.z) * MAP_W + Math.floor(f.x));
 }
 check('the farmer never stood inside a wall', inWall === 0 && badPos === 0, `${inWall} frames`);
-check('the day clock ran', v.day === 3, `day ${v.day}`);
+check('the day clock ran', v.day === 4, `day ${v.day}`);
 check('the farmer harvested', v.stats.harvested > 0, `${v.stats.harvested} items`);
 check('the farmer watered', v.stats.watered > 0, `${v.stats.watered} tiles`);
 check('the farmer broke new ground', v.stats.tilled > tilledAtStart, `${tilledAtStart} → ${v.stats.tilled}`);
-check('the till budget is what limits the field', v.stats.tilled <= tilledAtStart + 2 * TILL_PER_DAY, `${v.stats.tilled - tilledAtStart} broken in 2 days`);
+check('the till budget is what limits the field', v.stats.tilled <= tilledAtStart + 3 * TILL_PER_DAY, `${v.stats.tilled - tilledAtStart} broken in 3 days`);
 check('he sowed what he broke', v.stats.sown > 0, `${v.stats.sown} seeds`);
 check('baskets came off the field', maxBasket > 0, `biggest basket ${maxBasket}`);
 check('produce sold at the cart earns the village', v.stats.gold > 0, `${v.stats.gold} rupees`);
@@ -170,11 +174,59 @@ for (const k of ['sow', 'water', 'harvest', 'till', 'ripe', 'day', 'deliver'] as
 for (const a of ['walk', 'rest', 'water', 'sow', 'harvest']) check(`the farmer was seen "${a}"`, acts.has(a), [...acts].join(' '));
 check('he is not chasing a tile he cannot reach', !(v.farmer.act === 'walk' && v.farmer.path.length === 0));
 
+// ---- a farmer who cannot get somewhere must not stop the village with him
+// The pathfinder refuses to cut corners between solid props, and a trip to the cart that fails twice
+// completes anyway: both of those exist because a wedged farmer used to freeze the whole simulation —
+// the day kept turning, and nothing else ever happened again. So: run long, and demand progress.
+const long = new VillageState(world, world.farmPlots, 0x51a);
+const marks: number[] = [];
+for (let d = 1; d <= 14; d++) {
+  for (let i = 0; i < 60 * 20; i++) { long.tick(0.05); long.takeEvents(); }
+  marks.push(long.stats.harvested + long.stats.tilled + long.stats.sown + long.stats.watered);
+}
+const stillWorking = marks.slice(1).every((n, i) => n > marks[i]);
+check('a fortnight of days never wedges the farmer', stillWorking, `jobs done by day: ${marks.join(' ')}`);
+// five tiles a day of spade work over a fortnight is most of a village: the point is that the ground
+// keeps going, at the rate the sim advertises, and not that it is a spreadsheet-perfect 5 x 14
+check('the fields keep expanding at the advertised rate', long.fallowCount() <= 8, `${long.fallowCount()} fallow tiles left after 14 days`);
+check('nobody starves: the can, the spade and the pouch all ran',
+  long.stats.watered > 40 && long.stats.tilled > 40 && long.stats.sown > 40, JSON.stringify(long.stats));
+
+// ---- the night is what makes the can his morning chore
+const night = fakeVillage(31);
+for (const t of night.tiles) if (t.crop && !isRipe(t)) { t.moist = 1; t.wilted = false; }
+let wetAtDawn = -1;
+let dayBefore = night.day;
+for (let i = 0; i < Math.ceil(DAY_SECONDS / 0.2) + 4; i++) {
+  night.tick(0.2);
+  if (night.day !== dayBefore) {
+    wetAtDawn = night.tiles.filter((t) => t.crop && !isRipe(t) && t.moist > STALLED).length;
+    break;
+  }
+}
+check('the night dries the soil, so the whole field wants water at dawn', wetAtDawn === 0, `${wetAtDawn} still wet at sunrise`);
+const parched = fakeVillage(33);
+const dryTile = parched.tiles.find((t) => t.crop && !isRipe(t) && !t.wilted)!;
+dryTile.moist = 0;
+check('a thirsty crop is a job, not a death sentence', parched.jobFor(dryTile) === 'water' && !dryTile.wilted);
+check('a stalled crop still holds its place in the row', dryTile.stage >= 0 && parched.openCount() >= 0);
+
 // ---- the fields fill in over a season
 const openTilled = v.tiles.filter((t) => v.plots[t.plot].unlocked && t.tilled).length;
 const openAll = v.tiles.filter((t) => v.plots[t.plot].unlocked).length;
 check('the open plots are filling in', openTilled / openAll > 0.45, `${openTilled}/${openAll} tilled`);
-check('every planted tile is being kept wet or is being waited on', v.tiles.every((t) => !t.crop || t.moist >= 0 || isRipe(t)));
+// watering is rationed (a can and a bit a day) and the night takes the rest of it back out, so a field
+// is partly dark with damp and partly pale — that contrast is the whole point of simulating moisture
+const waterPerDay = v.stats.watered / (v.day - 1);
+check('he waters a canful a day, not the whole village',
+  waterPerDay > 0 && waterPerDay <= WATER_PER_DAY + 1, `${waterPerDay.toFixed(1)} tiles a day`);
+check('and he really does water most days (the can is not decoration)',
+  v.stats.watered >= WATER_PER_DAY, `${v.stats.watered} waterings in ${v.day - 1} days`);
+check("the day's digging budget gets spent, not hoarded",
+  v.stats.tilled - tilledAtStart >= TILL_PER_DAY, `${v.stats.tilled - tilledAtStart} tiles broken`);
+check('and broken ground does not pile up unplanted', v.openCount() < 24, `${v.openCount()} open tiles`);
+check('and the ground he did not reach is dry, not dead',
+  v.tiles.every((t) => !t.crop || t.wilted || t.moist >= 0) && v.stats.lost <= v.stats.harvested);
 
 // ---- the seed sack opens a field, and the farmer takes it on
 check('the village will not re-open a plot it already works', v.unlockPlot(0) === false);

@@ -20,8 +20,10 @@
  *    away from readable when you come back.
  *  - A ripe crop holds for a while and then wilts; a wilted crop has to be cleared before the ground is
  *    useful again. Deadlines give the day rhythm without punishing the player for looking elsewhere.
- *  - The farmer expands the fields a few tiles a day (till → sow → water → harvest), so a plot the
- *    shopkeeper's seed sack opens up fills in over a session rather than all at once.
+ *  - The farmer's day is budgeted like a person's: so many tiles of new ground broken, so many drawn
+ *    with the can, a rest between stretches of work, and the spade and the pouch by turns. That is what
+ *    keeps him farming instead of optimising, and it is why the fields expand a few tiles a day — a plot
+ *    the shopkeeper's seed sack opens up fills in over a session rather than in one frame.
  *  - He works *down a row*: each plot keeps a cursor into its serpentine tile order and he does whatever
  *    the next tile that wants something needs. That is both how a person farms and the only scheme that
  *    cannot starve a class of work — an urgent-harvest pass is the one thing allowed to jump the row.
@@ -48,9 +50,16 @@ export const WATER_CAN = 8;
 /** seeds of one crop the farmer restocks to at the cart */
 export const SEED_PACK = 12;
 /** how full the basket gets before he carries it to the cart */
-export const BASKET_FULL = 8;
+export const BASKET_FULL = 10;
 /** new ground the farmer breaks per day, in tiles — the fields visibly expand */
-export const TILL_PER_DAY = 8;
+export const TILL_PER_DAY = 5;
+/**
+ * Tiles a farmer will draw water for in a day: about a day and a half of cans. Watering has to be both
+ * his first chore and a rationed one — a village field is never fully watered by one man, so if the can
+ * outranked everything else he would abandon the hoe and the seed pouch forever, and if it were left to
+ * the ordinary sweep he would water a tile once every two days and the field would grow in slow motion.
+ */
+export const WATER_PER_DAY = 12;
 /** tiles/s: walking to a job, and shuffling about when there is nothing to do */
 export const FARMER_SPEED = 1.75;
 export const FARMER_STROLL = 0.65;
@@ -58,11 +67,18 @@ export const FARMER_STROLL = 0.65;
 export const RETRY_AFTER = 25;
 /** a crop is "thirsty" (worth the farmer's trip) below this moisture */
 export const THIRSTY = 0.5;
+/** at or below this the soil is dust: the plant is alive and waiting, but it is not growing */
+export const STALLED = 0.06;
 /**
  * How much of its hold window a ripe crop may burn before it counts as an emergency — the one case in
  * which the farmer abandons his row, because a crop that wilts is a season's work thrown away.
+ *
+ * Deliberately late. A village field ripens faster than one man can clear it, so an early trigger turns
+ * the emergency into his whole day and the hoe and the seed pouch never get a turn; a late one lets ripe
+ * produce stand in the row (which is what makes a farm look farmed, and what gives a player a reason to
+ * walk over and pick), and costs him only the crops that were truly going to waste.
  */
-export const RIPE_URGENCY = 0.7;
+export const RIPE_URGENCY = 0.9;
 /** jobs between rests: he is a man, not a sprinkler */
 export const JOBS_PER_REST = 8;
 /** jobs done in one plot before he moves on to the next field */
@@ -111,25 +127,25 @@ export interface CropSpec {
 export const CROPS: Record<CropId, CropSpec> = {
   // the quick village crop: up in about a day and a half, so the loop is visible in one visit
   turnip: {
-    id: 'turnip', name: 'TURNIP', plural: 'TURNIPS', stageSec: [9, 9, 10, 12], drink: 0.014, hold: 150,
+    id: 'turnip', name: 'TURNIP', plural: 'TURNIPS', stageSec: [9, 9, 10, 12], drink: 0.014, hold: 300,
     yieldMin: 1, yieldMax: 2, seedPrice: 12, sellPrice: 7,
     shape: 'root', leaf: '#5fb84a', leafD: '#3f8c3a', stem: '#4a9a44', fruit: '#f2eae2', fruitAlt: '#a04ab0',
     height: 0.46, fronds: 7,
   },
   potato: {
-    id: 'potato', name: 'POTATO', plural: 'POTATOES', stageSec: [11, 12, 13, 14, 15], drink: 0.012, hold: 180,
+    id: 'potato', name: 'POTATO', plural: 'POTATOES', stageSec: [11, 12, 13, 14, 15], drink: 0.012, hold: 360,
     yieldMin: 2, yieldMax: 3, seedPrice: 20, sellPrice: 9,
     shape: 'bush', leaf: '#4fa845', leafD: '#357a36', stem: '#3f7a3a', fruit: '#c8a06a', fruitAlt: '#a8834f',
     height: 0.54, fronds: 8,
   },
   tomato: {
-    id: 'tomato', name: 'TOMATO', plural: 'TOMATOES', stageSec: [12, 13, 14, 15], drink: 0.016, hold: 120, regrowTo: 2,
+    id: 'tomato', name: 'TOMATO', plural: 'TOMATOES', stageSec: [12, 13, 14, 15], drink: 0.016, hold: 240, regrowTo: 2,
     yieldMin: 1, yieldMax: 2, seedPrice: 24, sellPrice: 12,
     shape: 'vine', leaf: '#3f8f3f', leafD: '#2d6a32', stem: '#5a8a3a', fruit: '#d8362a', fruitAlt: '#f0603a',
     height: 0.9, fronds: 6,
   },
   pumpkin: {
-    id: 'pumpkin', name: 'PUMPKIN', plural: 'PUMPKINS', stageSec: [14, 16, 18, 20, 22, 24], drink: 0.014, hold: 200,
+    id: 'pumpkin', name: 'PUMPKIN', plural: 'PUMPKINS', stageSec: [14, 16, 18, 20, 22, 24], drink: 0.014, hold: 420,
     yieldMin: 1, yieldMax: 1, seedPrice: 40, sellPrice: 26,
     shape: 'gourd', leaf: '#4a9a3f', leafD: '#357a36', stem: '#4a7a34', fruit: '#e08a28', fruitAlt: '#c06a1c',
     height: 0.56, fronds: 9,
@@ -275,6 +291,8 @@ export interface Farmer {
   /** standing-about time before the next stroll */
   idleT: number;
   stuck: number;
+  /** how many times in a row he has had to fight his way out of the same corner */
+  stuckTries: number;
   /** where a rest is drifting him, if anywhere */
   strolling: Vec2 | null;
   /** tile index -> sim time before which the farmer will not try to reach it again */
@@ -315,6 +333,10 @@ export class VillageState {
    * waiting forever behind an endless round of watering.
    */
   private tillTurn = TILL_PER_DAY;
+  /** the day's watering budget, in tiles (see WATER_PER_DAY) */
+  private waterTurn = WATER_PER_DAY;
+  /** the ground hour alternates between the spade and the seed pouch (see `nextJob`) */
+  private groundTurn = 0;
   /** the plot the farmer is working, so he finishes a row before crossing the village */
   private lastPlot = 0;
   /** which plot the sweep starts from, and how many jobs he has done in it since it moved on */
@@ -403,7 +425,7 @@ export class VillageState {
       x: at.x, z: at.z, facing: 0, moving: false, act: 'idle', actT: 0, actDur: 0,
       job: -1, jobKind: null, path: [], wp: 0, fetching: false,
       water: WATER_CAN, seeds, basket: emptyByCrop(), basketN: 0,
-      idleT: 0.4, stuck: 0, strolling: null, retry: {},
+      idleT: 0.4, stuck: 0, stuckTries: 0, strolling: null, retry: {},
     };
   }
 
@@ -517,8 +539,12 @@ export class VillageState {
   private newDay() {
     this.stats.days = this.day;
     this.tillTurn = TILL_PER_DAY;
-    // morning: every planted tile keeps a little overnight damp, so a field is never bone dry
-    for (const t of this.tiles) if (t.crop && !t.wilted) t.moist = Math.max(t.moist, 0.18);
+    this.waterTurn = WATER_PER_DAY;
+    // Morning: the night air took most of what the soil drank. Every planted tile wakes up just dry
+    // enough to want the can, which is what gives a farmer's day its shape — water first, then the rest.
+    // Without this a crop sits at the slow-but-nonzero damp pace for a week and watering is a chore
+    // nobody ever needs, which is a farming simulation in name only.
+    for (const t of this.tiles) if (t.crop && !t.wilted) t.moist = Math.min(t.moist, 0.2) * 0.25;
     this.emit('day', 0, 0, null, this.day, this.openCount(), 0);
   }
 
@@ -544,8 +570,10 @@ export class VillageState {
         }
         continue;
       }
-      // wet soil grows at full pace, drying soil slowly, dust not at all
-      const rate = t.moist > 0.45 ? 1 : t.moist > 0.02 ? 0.45 : 0;
+      // Wet soil grows at full pace, drying soil at a third of it, and dust not at all. The middle band
+      // is what makes one farmer's can matter — a field of sixty tiles is more than one man can water,
+      // so the rows he got to stand a head taller than the rows he did not, all season long.
+      const rate = t.moist > 0.45 ? 1 : t.moist > STALLED ? 0.34 : 0;
       if (rate === 0) continue;
       t.grow += (dt * rate) / spec.stageSec[t.stage];
       while (t.grow >= 1 && t.stage < last) {
@@ -670,17 +698,22 @@ export class VillageState {
   }
 
   /**
-   * What the farmer does next.
-   *
-   * Two passes, in this order:
+   * What the farmer does next. Five passes, in this order:
    *  1. an emergency — a ripe crop close to going to seed anywhere on the village's ground. That is the
    *     one thing with a real deadline, so it is worth crossing a field for.
-   *  2. otherwise, the sweep: each plot keeps a cursor into its serpentine tile order and he does
-   *     whatever the next tile that wants something needs — water it, sow it, break it, pick it. That is
-   *     how a person actually works a field (down the row, one chore per tile), it is what makes him read
-   *     as *farming* rather than as a bot chasing the nearest red dot, and it makes starvation
-   *     impossible: the cursor comes round to every tile, so no class of work can be skipped forever by
-   *     a more urgent one.
+   *  2. the can — the thirstiest tile in the field he is standing in, while the day's water lasts.
+   *  3. the ground hour, from mid-morning: the nearest tile that wants seed, else the nearest fallow
+   *     ground while the day's digging budget lasts. This is what makes the fields grow outward.
+   *  4. the sweep: each plot keeps a cursor into its serpentine tile order and he does whatever the next
+   *     tile that wants something needs — water it, sow it, break it, pick it. That is how a person
+   *     actually works a field (down the row, one chore per tile), it is what makes him read as *farming*
+   *     rather than as a bot chasing the nearest red dot, and it makes starvation impossible: the cursor
+   *     comes round to every tile, so no class of work can be skipped forever by a more urgent one.
+   *
+   * Two chores are rationed per day — so much new ground with the spade (`TILL_PER_DAY`) and a canful of
+   * water (`WATER_PER_DAY`) — because a man with a hundred tiles and two hands has to stop something,
+   * and the two that are always worth deferring are the ones with no deadline. A field nobody waters
+   * grows in slow motion; a field nobody breaks never arrives at all.
    */
   private nextJob(): { kind: JobKind; tile: number; ok: boolean } | null {
     const f = this.farmer;
@@ -697,7 +730,43 @@ export class VillageState {
       if (!panic || d < panic.d) panic = { tile: t.i, kind: 'harvest', d };
     }
     if (panic) return { kind: panic.kind, tile: panic.tile, ok: true };
-    // 2. the sweep: a plot at a time, so he finishes a field before crossing the village to the next
+    // 2. the can first, in the field he is standing in: a thirsty crop is the only thing that actually
+    // stops growth, so it comes before the hoe and the seed pouch — but only down his own row, because
+    // watering the row you are in is how a farmer carries a can, and chasing the driest tile across the
+    // village is how a bot does it (and leaves the fallow ground at the end of the row unbroken).
+    if (this.waterTurn > 0) {
+      const cur = this.plots[this.lastPlot];
+      const plot = cur && cur.unlocked && cur.tiles.length ? cur : this.plots.find((p) => p.unlocked && p.tiles.length);
+      let drink: { tile: number; d: number } | null = null;
+      for (const idx of plot ? plot.tiles : []) {
+        const t = this.tiles[idx];
+        if (!t.crop || t.wilted || isRipe(t) || t.moist >= THIRSTY || !usable(t)) continue;
+        const d = Math.hypot(t.x + 0.5 - f.x, t.z + 0.5 - f.z) + t.moist * 2;
+        if (!drink || d < drink.d) drink = { tile: t.i, d };
+      }
+      if (drink) return { kind: 'water', tile: drink.tile, ok: f.water > 0 };
+    }
+    // 3. the ground hour, from mid-morning on: the spade and the seed pouch, one turn each. This is the
+    // pass that makes the fields visibly expand — out in front of the row sweep, because a fallow tile at
+    // the far end of a row would otherwise wait behind a hundred "pick me"s in front of it and the cursor
+    // would never come round to it.
+    if (this.dayT > DAY_SECONDS * 0.3) {
+      const dig = this.tillTurn > 0 ? this.nearestJob('till') : -1;
+      const plant = this.nearestJob('sow');
+      const seeded = plant >= 0 && f.seeds[this.plotOf(this.tiles[plant]).crop] > 0;
+      // Spade and pouch by turns — one tile broken, one tile sown. Any other order runs away with the
+      // hour: sow-first leaves a field of bare broken ground (root crops come back to open ground every
+      // time they are pulled, so that backlog never clears), and till-first leaves a farmer who only ever
+      // seeds the ground he broke a week ago.
+      if (this.groundTurn % 2 === 0) {
+        if (dig >= 0) return { kind: 'till', tile: dig, ok: true };
+        if (seeded) return { kind: 'sow', tile: plant, ok: true };
+      } else {
+        if (seeded) return { kind: 'sow', tile: plant, ok: true };
+        if (dig >= 0) return { kind: 'till', tile: dig, ok: true };
+      }
+    }
+    // 4. the sweep: a plot at a time, so he finishes a field before crossing the village to the next
     // one (and the plot he is on moves on after a pass, or the far fields would never be reached)
     const n = this.plots.length;
     for (let k = 0; k < n; k++) {
@@ -710,7 +779,11 @@ export class VillageState {
         const t = this.tiles[plot.tiles[idx]];
         const kind = this.jobFor(t);
         if (!kind || !usable(t)) continue;
-        if (kind === 'till' && this.tillTurn <= 0) continue; // that is a day's worth of spade work
+        // a day's worth of spade work, and a canful of water: past those the row's chores wait for
+        // tomorrow. Without the water cap the head of a row is thirsty every morning and the fallow
+        // ground at the tail of it never gets broken, which is how a field stops expanding.
+        if (kind === 'till' && this.tillTurn <= 0) continue;
+        if (kind === 'water' && this.waterTurn <= 0) continue;
         const ok = ready(kind, t);
         // the cursor only moves when he can actually do the job: a tile he has to walk past for want of
         // seed is still the next thing on his list when he gets back from the cart
@@ -718,7 +791,25 @@ export class VillageState {
         return { kind, tile: t.i, ok };
       }
     }
+    // 5. nothing in the row wants him and the spade is put away: then seed the ground that is already
+    // worked, nearest first, so a tile he broke this morning is not left bare until tomorrow's sweep
+    const spare = this.nearestJob('sow');
+    if (spare >= 0) return { kind: 'sow', tile: spare, ok: f.seeds[this.plotOf(this.tiles[spare]).crop] > 0 };
     return null;
+  }
+
+  /** the nearest tile in any open plot that wants this chore, or -1: for work the row is not getting to */
+  private nearestJob(kind: JobKind): number {
+    const f = this.farmer;
+    let best = -1;
+    let bd = Infinity;
+    for (const t of this.tiles) {
+      if (this.jobFor(t) !== kind) continue;
+      if (this.time < (f.retry[t.i] ?? 0)) continue;
+      const d = Math.hypot(t.x + 0.5 - f.x, t.z + 0.5 - f.z);
+      if (d < bd) { bd = d; best = t.i; }
+    }
+    return best;
   }
 
   private assign(kind: JobKind, tile: number) {
@@ -727,6 +818,8 @@ export class VillageState {
     f.job = tile;
     f.jobKind = kind;
     if (kind === 'till') this.tillTurn--;
+    else if (kind === 'water') this.waterTurn--;
+    if (kind === 'till' || kind === 'sow') this.groundTurn++;
     f.actDur = ACT_DUR[kind];
     f.act = 'walk';
     f.moving = false;
@@ -750,6 +843,7 @@ export class VillageState {
     f.act = 'idle';
     f.actDur = 0;
     f.idleT = 0.3;
+    f.stuckTries = 0;
   }
 
   private startFetch() {
@@ -762,6 +856,7 @@ export class VillageState {
     f.fetching = true;
     f.moving = false;
     f.stuck = 0;
+    f.stuckTries = 0;
     f.actDur = ACT_DUR.fetch;
     f.path = this.pathTo(cart.x, cart.z);
     f.wp = 0;
@@ -794,14 +889,8 @@ export class VillageState {
     const moved = Math.hypot(f.x - ox, f.z - oz);
     f.moving = moved > 1e-4;
     if (moved < step * 0.35) f.stuck += dt; else f.stuck = 0;
-    if (Math.hypot(goal.x - f.x, goal.z - f.z) < 0.1) f.wp++;
-    if (f.stuck > 1.6) {
-      // boxed in (the player, a hedge, a cart): hop aside, and if that fails, give up on the job
-      f.stuck = 0;
-      const a = this.rng.next() * Math.PI * 2;
-      this.terrain.moveBox(f, Math.cos(a) * 0.5, Math.sin(a) * 0.5, FHW, FHH, 0.1);
-      if (f.job >= 0) this.giveUp();
-    }
+    if (Math.hypot(goal.x - f.x, goal.z - f.z) < 0.1) { f.wp++; f.stuckTries = 0; }
+    if (f.stuck > 1.2) this.recoverFromStuck();
   }
 
   /**
@@ -896,6 +985,44 @@ export class VillageState {
     return t.tilled ? 'sow' : 'till';
   }
 
+  /**
+   * Boxed in — by the player, a hedge, a crate of seeds. Shuffle aside and re-path from wherever he got
+   * to, so a body in the way costs a step rather than his day. Twice round the block and he abandons the
+   * tile; a cart trip he cannot finish is worse than that (he would walk into the same crate until the
+   * world ended, and the whole village simulation would stop behind him), so a failed errand is treated
+   * as done where he stands: the boy takes the basket, he fills the can, nobody minds.
+   */
+  private recoverFromStuck() {
+    const f = this.farmer;
+    f.stuck = 0;
+    f.stuckTries++;
+    const a = this.rng.next() * Math.PI * 2;
+    this.terrain.moveBox(f, Math.cos(a) * 0.5, Math.sin(a) * 0.5, FHW, FHH, 0.1);
+    if (f.stuckTries < 2) {
+      const cart = this.plots[this.lastPlot]?.cart ?? this.plots[0]?.cart ?? null;
+      const goal = f.job >= 0 && this.tiles[f.job]
+        ? { x: this.tiles[f.job].x + 0.5, z: this.tiles[f.job].z + 0.5 }
+        : cart;
+      if (goal) {
+        f.path = this.pathTo(goal.x, goal.z);
+        f.wp = 0;
+        if (f.path.length) return;
+      }
+    }
+    f.stuckTries = 0;
+    if (f.job < 0 && f.fetching) {
+      this.finishFetch();
+      f.act = 'idle';
+      f.actT = 0;
+      f.actDur = 0;
+      f.fetching = false;
+      f.path = [];
+      f.wp = 0;
+      return;
+    }
+    this.giveUp();
+  }
+
   /** the moment the tool comes down: the farmer's action spends his pack and calls the verb */
   private toolLands() {
     const f = this.farmer;
@@ -934,7 +1061,7 @@ export class VillageState {
     if (f.job < 0) return;
     this.lastPlot = this.tiles[f.job].plot;
     this.jobsDone++;
-    f.idleT = 0.1 + this.rng.next() * 0.3;
+    f.idleT = 0.06 + this.rng.next() * 0.2;
     // a field at a time: after a pass he moves on to the next plot, so nothing waits behind a busy row
     this.plotJobs++;
     if (this.plotJobs >= PLOT_PASS) {
@@ -996,6 +1123,9 @@ export class VillageState {
       for (const [ox, oz] of DIRS) {
         const nx = cx + ox, nz = cz + oz;
         if (!free(nx, nz)) continue;
+        // A diagonal is only a shortcut if he can actually fit through it: cutting the corner between two
+        // solid tiles puts him nose-first into a box he cannot slide out of (see `recoverFromStuck`).
+        if (ox !== 0 && oz !== 0 && (!free(cx + ox, cz) || !free(cx, cz + oz))) continue;
         const ni = at(nx, nz);
         if (prev[ni] !== -2) continue;
         prev[ni] = c;
@@ -1025,6 +1155,8 @@ export class VillageState {
     this.dayT = 0;
     this.events = [];
     this.tillTurn = TILL_PER_DAY;
+    this.waterTurn = WATER_PER_DAY;
+    this.groundTurn = 0;
     this.lastPlot = 0;
     this.activePlot = 0;
     this.plotJobs = 0;
