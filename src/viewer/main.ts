@@ -6,7 +6,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import {
   buildHeroine, buildSoldier, buildVillager, buildDog, VILLAGER_LOOKS, buildTrees, buildBush, buildBerryBush, buildRock, buildStump,
-  buildFence, buildHouse, buildProp, buildHeart, buildRupee, buildArrow, buildJavelinProjectile, buildMoblinSpearProjectile,
+  buildFence, buildHouse, buildProp, buildHeart, buildRupee, buildArrow, buildJavelinProjectile, buildMoblinSpearProjectile, buildEnergyBall, buildSpitter,
   buildFernGeo, buildTallGrassGeo, buildBriarGeo, buildLilyGeo, buildBoulderGeo, buildCropGeo, buildWateringCan, vegObject, LADYBUG_KINDS, type Humanoid,
 } from '../game/models';
 import type { PropKind, HouseSpec, EnemyKind } from '../game/world';
@@ -28,15 +28,21 @@ const catalog: Cat[] = [
   { name: 'Heroine', items: [{ name: 'Aria', build: () => hum(buildHeroine()) }] },
   { name: 'Fallen Knights', items: (['sword', 'spear', 'javelin', 'archer'] as EnemyKind[]).map((k) => ({ name: k[0].toUpperCase() + k.slice(1) + ' knight', build: () => hum(buildSoldier(k)) })) },
   { name: 'Moblins', items: (['moblin', 'moblin_spear'] as EnemyKind[]).map((k) => ({ name: k === 'moblin' ? 'Sword moblin (shield)' : 'Spear moblin (thrower)', build: () => hum(buildSoldier(k)) })) },
-  { name: 'Beasts', items: LADYBUG_KINDS.map((k) => ({ name: k === 'ladybug' ? 'Ladybug (soldier-sized)' : 'Ladybug queen (oversized)', build: () => hum(buildSoldier(k)) })) },
-  // the size question in one picture: a soldier, the ordinary beetle, and the oversized queen
-  { name: 'Size check', items: [{ name: 'Knight · ladybug · queen', build: () => {
+  { name: 'Beasts', items: [
+    ...LADYBUG_KINDS.map((k) => ({ name: k === 'ladybug' ? 'Ladybug (soldier-sized)' : 'Ladybug queen (oversized)', build: () => hum(buildSoldier(k)) })),
+    // the plant the woods grow: rooted, so the whole of it is stem and head (the animation in the
+    // game turns the head, opens the lips and lights the throat — see enemyAnim below)
+    { name: 'Spitflower (rooted)', build: () => hum(buildSpitter()) },
+  ] },
+  // the size question in one picture: a soldier, the ordinary beetle, the oversized queen, and the flower
+  { name: 'Size check', items: [{ name: 'Knight · ladybug · queen · spitflower', build: () => {
     const line = new THREE.Group();
     const stand = (h: Humanoid, x: number) => { h.root.position.x = x; line.add(h.root); };
     stand(buildSoldier('sword'), -1.5);
     stand(buildSoldier('ladybug'), 0.4);
     stand(buildSoldier('ladybug_queen'), 2.3);
-    return { obj: line, footprint: 6 };
+    stand(buildSpitter(), 4.6);
+    return { obj: line, footprint: 9 };
   } }] },
   { name: 'Villagers', items: [...Object.keys(VILLAGER_LOOKS).map((id) => ({ name: id[0].toUpperCase() + id.slice(1), build: () => hum(buildVillager(VILLAGER_LOOKS[id])) })), { name: 'Dog', build: () => hum(buildDog()) }] },
   { name: 'Houses', items: world.houses.map((h, i) => ({ name: `House ${i + 1} (${h.w}×${h.d}${h.sign && h.sign !== 'none' ? ', ' + h.sign : ''})`, build: () => { const spec: HouseSpec = { ...h, x: -h.w / 2, z: -h.d / 2 }; return { obj: buildHouse(spec), footprint: Math.max(h.w, h.d) + 2 }; } })) },
@@ -65,6 +71,7 @@ const catalog: Cat[] = [
   { name: 'Pickups & projectiles', items: [
     { name: 'Heart', build: () => ({ obj: buildHeart() }) }, { name: 'Rupee (green)', build: () => ({ obj: buildRupee(false) }) }, { name: 'Rupee (blue)', build: () => ({ obj: buildRupee(true) }) },
     { name: 'Arrow', build: () => ({ obj: buildArrow() }) }, { name: 'Javelin', build: () => ({ obj: buildJavelinProjectile() }) }, { name: 'Moblin spear', build: () => ({ obj: buildMoblinSpearProjectile() }) },
+    { name: 'Energy ball (spat)', build: () => ({ obj: buildEnergyBall() }) },
   ] },
   { name: 'Bridges', items: [{ name: 'All bridges (world)', build: () => { const g = new THREE.Group(); for (const o of world.createBridgeMeshes()) g.add(o); const b = world.bridges[0]; g.position.set(-(b.x0 + b.x1 + 1) / 2, 0, -(b.z0 + b.z1 + 1) / 2); const w = new THREE.Group(); w.add(g); return { obj: w, footprint: 12 }; } }] },
 ];
@@ -185,13 +192,26 @@ function animate(dt: number) {
     return;
   }
   const m = current.humanoid;
-  if (!animCb.checked) { m.legL.rotation.x = m.legR.rotation.x = 0; m.body.position.y = 0; return; }
+  if (!animCb.checked) {
+    m.legL.rotation.x = m.legR.rotation.x = 0; m.body.position.y = 0;
+    if (m.throat) (m.throat.material as THREE.MeshBasicMaterial).opacity = 0.06;
+    return;
+  }
   animT += dt * 9;
-  const swing = Math.sin(animT);
-  m.legL.rotation.x = swing * 0.7; m.legR.rotation.x = -swing * 0.7;
-  m.body.position.y = Math.abs(swing) * 0.04;
-  if (m.ponytail) m.ponytail.rotation.x = swing * 0.2 + 0.15;
-  m.armL.rotation.x = swing * 0.3;
+  // A spitflower shares the humanoid rig (see models.ts) but has no legs to swing and no trunk to
+  // bob: what it has is a stem, and that is animated in its own branch below instead. The slots the
+  // other models spend on legs hold its leaf fans, and those stay exactly where they were drawn.
+  const rooted = !!m.stalk && !!m.maw;
+  if (!rooted) {
+    const swing = Math.sin(animT);
+    m.legL.rotation.x = swing * 0.7; m.legR.rotation.x = -swing * 0.7;
+    m.body.position.y = Math.abs(swing) * 0.04;
+    if (m.ponytail) m.ponytail.rotation.x = swing * 0.2 + 0.15;
+    m.armL.rotation.x = swing * 0.3;
+  } else {
+    m.legL.rotation.x = m.legR.rotation.x = 0;
+    m.body.position.y = 0;
+  }
   // the ladybugs: breathe their wing covers open and shut (with the hindwings beating under them)
   // so the shell and the wings beneath it can actually be looked at here
   if (m.elytronL && m.elytronR) {
@@ -201,6 +221,28 @@ function animate(dt: number) {
     const beat = open * 0.55 + Math.sin(animT * 1.4) * 0.45;
     if (m.hindwingL) m.hindwingL.rotation.z = beat;
     if (m.hindwingR) m.hindwingR.rotation.z = -beat;
+  }
+  // the spitflower: sway the stem, and run the whole charge tell on a slow loop — the lips open, the
+  // ring of petals spreads and the throat (with the glands on the lips) fills with light, then it all
+  // snaps shut again the way it does when the enemy spits (see Enemy.animate)
+  if (rooted) {
+    const stalk = m.stalk!;
+    // one whole charge cycle of the enemy's (wind-up, spit, recover, cooldown ≈ 4.4s), so the tell
+    // can be watched here as it is in the woods
+    const charge = 0.5 + 0.5 * Math.sin(animT * 0.16);
+    m.body.rotation.y = Math.sin(animT * 0.09) * 0.5;
+    let wsum = 0;
+    for (let i = 0; i < stalk.length; i++) wsum += (i + 1) * (i + 1);
+    for (let i = 0; i < stalk.length; i++) {
+      stalk[i].rotation.x = (0.35 * ((i + 1) * (i + 1))) / (wsum || 1) + Math.sin(animT * 0.7 + i * 0.6) * 0.02;
+      stalk[i].rotation.z = Math.sin(animT * 0.55 + i * 0.5) * 0.03;
+    }
+    m.head.rotation.x = 0.12 - 0.1 * charge;
+    if (m.armL) m.armL.rotation.x = -0.55 * charge;
+    if (m.armR) m.armR.rotation.x = 0.55 * charge;
+    if (m.petals) m.petals.scale.set(1 + 0.2 * charge, 1 + 0.2 * charge, 1);
+    const glow = m.throat?.material as THREE.MeshBasicMaterial | undefined;
+    if (glow) glow.opacity = 0.06 + 0.85 * charge;
   }
 }
 
