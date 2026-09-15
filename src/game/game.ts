@@ -702,7 +702,7 @@ export class Game implements GameCtx {
       sw.hit.add(e);
       this.audio.hit();
       this.spawnEffect(fxSpark(e.pos.x, 0.8, e.pos.z).at(e.pos.x, e.pos.z));
-      if (e.hurt(sw.dmg, p.x, p.z)) this.onEnemyDied(e);
+      if (e.hurt(sw.dmg, p.x, p.z, sw.heavy)) this.onEnemyDied(e);
     }
     for (const b of this.bushes) {
       if (!b.alive) continue;

@@ -233,6 +233,9 @@ export const LADYBUG_SIZE: Record<LadybugKind, { plan: number; y: number }> = {
   ladybug_queen: { plan: 1.03, y: 0.94 },
 };
 
+/** how far the wing covers swing open, radians — `poseLadybug` drives the elytra up to this */
+export const LADYBUG_OPEN = 1.25;
+
 /**
  * How far a beetle's wing-clap carries, in tiles, and how wide the cone of wind is, in radians.
  * The model draws its ground preview cone from these, and the enemy AI (entities.ts) uses them for
@@ -476,6 +479,11 @@ export function buildSoldier(kind: EnemyKind): Humanoid {
 const SHELL_HW = 1.12, SHELL_H = 0.84, SHELL_LEN = 1.24;  // scale of a 0.5-radius quarter-dome
 const SHELL_DROP = 0.42;                                   // dome height: where the shell's rim sits
 const HINGE_Y = 1.02, HINGE_Z = -0.06;                     // the dorsal midline the wing covers hinge on
+// the flight wings hinge at the thorax under the pronotum, low and forward: folded, they lie flat
+// under the belly and the front of the cases (the fit test holds the line), and poseLadybug eases
+// out of these tucked angles for the gust
+const WING_Y = 0.46, WING_Z = 0.08;
+const WING_FOLD_YAW = 0.42, WING_FOLD_TILT = 0.26;
 const HIP_Y = 0.46;                                        // leg pivot height
 /** four spots per wing cover, in the dome's own (unit-sphere) space — mirrored for the other half */
 const SHELL_SPOTS: [number, number, number][] = [
@@ -510,7 +518,10 @@ export function buildLadybug(kind: LadybugKind = 'ladybug'): Humanoid {
   const spotMat = toon('#1a1418');
   const bodyMat = toon('#2b2329');
   const legMat = toon('#3a3036');
-  const wingMat = new THREE.MeshToonMaterial({ color: '#8e7f8c', transparent: true, opacity: 0.45, side: THREE.DoubleSide, depthWrite: false });
+  // the flight-wing membranes: pale and see-through, like the gust that comes out of them — hidden
+  // under the closed shell, and fanned wide out of it and beating while the shell is open for the charge
+  const wingMat = new THREE.MeshToonMaterial({ color: '#e2ebf6', transparent: true, opacity: 0.55, side: THREE.DoubleSide, depthWrite: false });
+  const wingEdgeMat = new THREE.MeshToonMaterial({ color: '#f4e8cd', transparent: true, opacity: 0.75, side: THREE.DoubleSide, depthWrite: false });
   const eyeMat = toon('#f8f4e8');
   const pupilMat = toon('#141018');
 
@@ -559,14 +570,17 @@ export function buildLadybug(kind: LadybugKind = 'ladybug'): Humanoid {
   const elytronL = shellHalf(1), elytronR = shellHalf(-1);
   body.add(elytronL, elytronR);
 
-  // hindwings: folded flat under the shell, beating hard for the wing-clap
+  // hindwings: the flight wings, hinged at the thorax under the pronotum as a real beetle's are,
+  // and lying folded back flat under the belly and the front of the cases at rest (the fit test
+  // holds the line). When the covers crack open for the charge, poseLadybug sweeps them wide out
+  // to the sides and the membranes beat: that IS the wing-clap read. A paler leading edge so each
+  // membrane reads as a wing and not a sheet.
   const hindwing = (side: 1 | -1) => {
     const g = new THREE.Group();
-    g.position.set(0.05 * side, HINGE_Y - 0.14, HINGE_Z - 0.05);
-    const wing = part(UNIT_BOX, wingMat, [0.22 * side, -0.02, -0.14], [0.36, 0.02, 0.62]);
-    wing.rotation.z = 0.1 * side;
-    wing.rotation.y = -0.22 * side;
-    g.add(wing);
+    g.position.set(0.07 * side, WING_Y, WING_Z);
+    g.rotation.set(0, WING_FOLD_YAW * side, -WING_FOLD_TILT * side); // tucked down and in, under its case
+    g.add(part(UNIT_SPHERE, wingMat, [0.16 * side, 0, -0.30], [0.40, 0.07, 1.00]));  // the membrane
+    g.add(part(UNIT_BOX, wingEdgeMat, [0.0275 * side, 0, -0.17], [0.07, 0.06, 0.33])); // the leading edge
     return g;
   };
   const hindwingL = hindwing(1), hindwingR = hindwing(-1);
@@ -614,6 +628,43 @@ export function buildLadybug(kind: LadybugKind = 'ladybug'): Humanoid {
   // queen is left at the size she was drawn, a stride longer than the heroine
   root.scale.set(size.plan, size.y, size.plan);
   return { root, body, head, armR, armL, handR, handL, legR, legL, elytronL, elytronR, hindwingL, hindwingR, gustArc, gustArcUnit: range / size.plan, materials: collectMaterials(root) };
+}
+
+/**
+ * Pose a ladybug's rig. `open` is how far the wings are out (0 = folded away under the cases,
+ * 1 = spread and beating), `beat` the wing-beat phase in radians (it only shows while the wings
+ * are open), `step` the leg gait phase (0 when it stands still) and `t` a slow clock for the
+ * antennae and the breathing. Both the live enemy (entities.ts) and the model viewer drive it, so
+ * what the viewer shows is exactly what the game plays.
+ */
+export function poseLadybug(h: Humanoid, open: number, beat: number, step: number, t: number) {
+  const el = h.elytronL, er = h.elytronR, wl = h.hindwingL, wr = h.hindwingR;
+  if (!el || !er || !wl || !wr) return;
+  const o = Math.min(1, Math.max(0, open));
+  // the shiver of the beat runs through the whole shell
+  const b = Math.sin(beat) * o;
+  // six legs scuttling on their two tripod groups, a faint idle wiggle when it stands still
+  h.legL.rotation.x = step * 0.22;
+  h.legR.rotation.x = -step * 0.22;
+  h.body.position.y = Math.sin(t * 2.2) * 0.012 + Math.abs(step) * 0.035 + o * 0.05 + Math.abs(b) * 0.03;
+  h.body.rotation.set(-o * 0.10 + b * 0.02, step * 0.06, step * 0.05);
+  // the wing cases hinge up and part along the back, trembling through the last of the spread
+  const tremble = Math.sin(t * 44) * 0.035 * Math.max(0, (o - 0.7) / 0.3);
+  el.rotation.set(-o * 0.16, -o * 0.14, 0.05 + o * (LADYBUG_OPEN - 0.05) + tremble);
+  er.rotation.set(-o * 0.16, o * 0.14, -(0.05 + o * (LADYBUG_OPEN - 0.05) + tremble));
+  // The flight wings unfold from under the cases and fan out to the sides — from the game's
+  // top-down camera a wing swung out wide reads far better than one stood up on edge — then beat
+  // down into the gust.
+  const fan = o * 1.50 - WING_FOLD_YAW;                            // tucked in under the case, then swept wide out
+  const sweep = o * 0.22 + Math.sin(beat * 0.5) * 0.1 * o;          // the tips cup up a little as they beat
+  const flap = b * 0.5;                                             // the beat itself, in the wing's dihedral
+  wl.rotation.set(sweep, -fan, -WING_FOLD_TILT + o * 0.74 + flap);
+  wr.rotation.set(sweep, fan, WING_FOLD_TILT - o * 0.74 - flap);
+  // antennae and head: curious at a stroll, whipped about while the wings come out, staring down the blast
+  const twitch = 2.3 + o * 5.2;
+  h.armL.rotation.x = -0.5 + Math.sin(t * twitch) * 0.14 * (1 + o);
+  h.armR.rotation.x = -0.5 + Math.sin(t * twitch + 1.1) * 0.14 * (1 + o);
+  h.head.rotation.x = o * 0.14 + step * 0.03;
 }
 
 // ---------------------------------------------------------------- props
