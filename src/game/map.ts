@@ -2,6 +2,7 @@ import { MAP_W, MAP_H } from './constants';
 import { WorldState, CHUNK_T, CHUNKS_X, CHUNKS_Z } from './worldstate';
 import { drawText } from './hud';
 import type { World } from './world';
+import { CROPS, type VillageState } from './village';
 
 /**
  * World map screen (Tab / N): a full terrain view of the world at tile resolution — one pixel per
@@ -12,6 +13,7 @@ import type { World } from './world';
  *
  *   - the patch each guard post holds (a faint ring), camps as little tents, the village bounds
  *   - every soldier at its world position (red = on post, amber = a replacement marching in)
+ *   - the farm: worked beds in soil/green/ripe, the farmhand as a green pip, the day's summary
  *   - the player
  *
  * The chunk grid stays as a whisper — it's the resolution of the background world simulation —
@@ -27,6 +29,10 @@ const SOLDIER_ENROUTE = '#f8a030';
 /** the ring drawn around each post's patch: what the soldiers there are guarding */
 const PATCH = 'rgba(240,72,56,0.35)';
 const PLAYER = '#58f0f8';
+/** the farmhand, and the farm's beds: bare soil, green crop, ripe crop */
+const FARMER = '#8ce070';
+const SOIL = '#8a5c33';
+const CROP = '#5cc44a';
 
 export interface MapView {
   /** player position in world tiles */
@@ -41,7 +47,7 @@ export class WorldMap {
   /** cached MAP_W x MAP_H terrain bitmap (built once from the world) */
   private base: HTMLCanvasElement;
 
-  constructor(canvas: HTMLCanvasElement, private state: WorldState, world: World) {
+  constructor(canvas: HTMLCanvasElement, private state: WorldState, world: World, private village?: VillageState) {
     // same backing canvas as the HUD: the map draws after (over) the HUD while open
     this.g = canvas.getContext('2d')!;
     this.base = document.createElement('canvas');
@@ -67,13 +73,17 @@ export class WorldMap {
     g.fillStyle = 'rgba(6,10,14,0.86)';
     g.fillRect(0, 0, W, H);
 
-    // fit the tile map, centred (leave a text row top + bottom). Integer scales blit
-    // nearest-neighbour (crisp pixels); a fractional fit below 2x is drawn with smoothing so the
-    // map still fills the screen — a soft, paper-map look with crisp markers on top.
-    const fit = Math.min((W - 16) / MAP_W, (H - 36) / MAP_H);
+    // Fit the tile map, centred, with room for the text: two rows above it (posts, title) and four
+    // below (the farm's day, the legend, the close hint). Integer scales blit nearest-neighbour
+    // (crisp pixels); a fractional fit below 2x is drawn with smoothing so the map still fills the
+    // screen — a soft, paper-map look with crisp markers on top.
+    const TITLE_ROWS = 22, FOOT_ROWS = 34;
+    const fit = Math.min((W - 16) / MAP_W, (H - TITLE_ROWS - FOOT_ROWS) / MAP_H);
     const scale = fit >= 2 ? Math.floor(fit) : fit;
     const mw = Math.round(MAP_W * scale), mh = Math.round(MAP_H * scale);
-    const x0 = Math.floor((W - mw) / 2), y0 = Math.floor((H - mh + 10) / 2);
+    const x0 = Math.floor((W - mw) / 2);
+    // never lower than the centred look, never so low that the text below runs off the canvas
+    const y0 = Math.max(TITLE_ROWS, Math.min(Math.floor((H - mh) / 2) - 2, H - FOOT_ROWS - mh));
 
     // frame
     g.fillStyle = '#f8f0d8';
@@ -136,6 +146,25 @@ export class WorldMap {
       }
     }
 
+    // the village's beds: what the farmhand has under the hoe, in the crop's colour
+    if (this.village) {
+      for (const t of this.village.tiles.values()) {
+        if (t.state === 'fallow') continue;
+        const [px, py] = this.px(t.x + 0.5, t.z + 0.5, x0, y0, scale);
+        g.fillStyle = t.state === 'ripe' ? CROPS[t.crop].colour : t.state === 'sown' ? CROP : SOIL;
+        g.fillRect(px, py, Math.max(1, Math.round(scale)), Math.max(1, Math.round(scale)));
+      }
+
+      // the farmhand at work
+      for (const w of this.village.workers) {
+        const [px, py] = this.px(w.x, w.z, x0, y0, scale);
+        g.fillStyle = '#000';
+        g.fillRect(px - 1, py - 1, 3, 3);
+        g.fillStyle = FARMER;
+        g.fillRect(px, py, 1, 1);
+      }
+    }
+
     // player marker (blinking)
     if (Math.floor(v.time * 3) % 2 === 0) {
       const [px, py] = this.px(v.px, v.pz, x0, y0, scale);
@@ -149,8 +178,10 @@ export class WorldMap {
     const title = 'WORLD MAP';
     drawText(g, title, Math.floor(W / 2 - title.length * 2), Math.max(2, y0 - 12), '#f8f0d8');
     const sub = `${state.posts.length} POSTS - ${alive} SOLDIERS (${enroute} MARCHING IN) - ${fallen} FALLEN`;
-    drawText(g, sub, Math.floor(W / 2 - sub.length * 2), y0 + mh + 4, '#9aa8b8');
-    const legend = 'RED ON POST  AMBER MARCHING IN  TAN CAMP';
+    drawText(g, sub, Math.floor(W / 2 - sub.length * 2), Math.max(2, y0 - 20), '#9aa8b8');
+    const farm = this.village ? this.village.summary() : 'THE FIELDS ARE UNTENDED';
+    drawText(g, farm, Math.floor(W / 2 - farm.length * 2), y0 + mh + 4, '#8ce070');
+    const legend = 'RED ON POST  AMBER MARCHING IN  GREEN FARMBED';
     drawText(g, legend, Math.floor(W / 2 - legend.length * 2), y0 + mh + 12, '#c8b088');
     const hint = v.gamepad ? 'R3: CLOSE' : 'TAB: CLOSE';
     drawText(g, hint, Math.floor(W / 2 - hint.length * 2), y0 + mh + 20, '#f8d848');

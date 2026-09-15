@@ -1,10 +1,11 @@
 import * as THREE from 'three';
-import { FACING_ANGLE, FACING_VEC, MAX_HP, inArc, lerp, normAngle, facingFrom, facingDelta, randomFacing, FACING_HALF_STEP, type Facing } from './constants';
+import { FACING_ANGLE, FACING_VEC, MAX_HP, clamp, inArc, lerp, normAngle, facingFrom, facingDelta, randomFacing, FACING_HALF_STEP, type Facing } from './constants';
 import type { AudioEngine } from './audio';
 import type { Input } from './input';
 import { ATTACK_KEYS, SHIELD_KEYS } from './input';
 import type { EnemyKind, Vec2, World, NpcSpec } from './world';
 import type { Post, WorldSoldier } from './worldstate';
+import type { FarmWorker, VillageState } from './village';
 import {
   buildArrow, buildHeart, buildHeroine, buildJavelinProjectile, buildMoblinSpearProjectile, buildRupee, buildSoldier, part,
   UNIT_BOX, UNIT_OCTA, UNIT_SPHERE, type Humanoid, buildVillager, buildDog, VILLAGER_LOOKS,
@@ -22,6 +23,8 @@ export interface GameCtx {
   tryHitPlayer(dmg: number, sx: number, sz: number, opts?: { projectile?: boolean }): 'hit' | 'blocked' | 'immune';
   /** true while a dialogue box is open (player + NPCs freeze) */
   talking: boolean;
+  /** the village simulation: crops, the farmhand, the village calendar */
+  village: VillageState;
 }
 
 const angleTo = (dx: number, dz: number) => Math.atan2(dx, dz);
@@ -955,6 +958,20 @@ export class Npc {
     this.t += dt;
     this.bubble.visible = near && !this.game.talking;
     if (this.bubble.visible) { this.bubble.position.y = (this.isDog ? 1.0 : 1.75) + Math.sin(this.t * 6) * 0.05; this.bubble.rotation.y = -this.facingAngle; }
+    // a farmhand is driven by the village simulation, not by the wander AI: mirror his position
+    // and act out the job he is on
+    const job = this.game.village.workerFor(this.spec.id);
+    if (job) {
+      if (!this.game.talking) {
+        this.pos.x = job.x;
+        this.pos.z = job.z;
+        this.facing = job.facing;
+        if (job.state === 'walk') this.animT += dt * 12;
+      }
+      this.animateFarmhand(job);
+      this.sync();
+      return;
+    }
     let moving = false;
     const wander = this.spec.wander ?? 0;
     if (!this.game.talking && wander > 0) {
@@ -986,6 +1003,108 @@ export class Npc {
     }
     this.animate(moving);
     this.sync();
+  }
+
+  /**
+   * The farmhand at work. The village simulation owns where he is and what he is doing; this acts
+   * it out — the hoe up over the shoulder and down into the bed, the sweep of the sowing hand, the
+   * tipped watering can, the stoop over a ripe crop, the basket emptied into the barrow. The jobs
+   * land on the contact frame the simulation applies them on, so the dirt, the seed and the water
+   * arrive exactly when the tool does.
+   */
+  private animateFarmhand(w: FarmWorker) {
+    const m = this.model;
+    const can = m.tool;
+    // neutral stand, then the work pose: every joint touched below is set outright
+    m.body.rotation.set(0, 0, 0);
+    m.body.position.y = Math.sin(this.t * 2) * 0.008; // breathing
+    m.armL.rotation.set(0, 0, 0);
+    m.armR.rotation.set(0, 0, 0);
+    m.head.rotation.set(0, 0, 0);
+    if (can) can.rotation.set(0, 0, 0);
+
+    if (this.game.talking) return; // he stops, hoe in hand, to talk to her
+
+    if (w.state === 'walk') {
+      const sw = Math.sin(this.animT);
+      const loaded = w.basket > 0;
+      m.legL.rotation.x = sw * 0.6;
+      m.legR.rotation.x = -sw * 0.6;
+      m.body.position.y = Math.abs(Math.sin(this.animT)) * 0.03;
+      // the hoe arm barely swings; the off hand balances the load
+      m.armR.rotation.set(loaded ? 0.5 : -sw * 0.25, 0, 0.12);
+      m.armL.rotation.set(loaded ? -0.55 + sw * 0.1 : sw * 0.4, loaded ? 0.35 : 0, -0.1);
+      return;
+    }
+
+    if (w.state !== 'work' || !w.task) {
+      // standing about (or resting at his door): hands on the hoe
+      m.armR.rotation.set(0.18, 0, 0.12);
+      m.armL.rotation.set(0.1, 0, -0.12);
+      m.legL.rotation.x = 0;
+      m.legR.rotation.x = 0;
+      return;
+    }
+
+    const p = w.workDur > 0 ? clamp(w.workT / w.workDur, 0, 1) : 1;
+    m.legL.rotation.x = 0;
+    m.legR.rotation.x = 0;
+    switch (w.task) {
+      case 'till': {
+        // up over the shoulder, then the whole body drops into the chop
+        const up = smooth(Math.min(1, p / 0.55));
+        const chop = clamp((p - 0.55) / 0.2, 0, 1);
+        const back = clamp((p - 0.75) / 0.25, 0, 1);
+        const arm = -1.9 * up + 2.5 * chop - 0.6 * back;
+        m.armR.rotation.set(arm, -0.25 - 0.25 * chop, 0.18);
+        m.armL.rotation.set(-0.5 * up + 0.9 * chop, 0.25, -0.2);
+        m.body.rotation.x = 0.3 * chop - 0.12 * back;
+        m.body.position.y -= 0.07 * chop;
+        m.head.rotation.x = -0.12 * chop;
+        break;
+      }
+      case 'sow': {
+        // bend to the bed and sweep the seed out of the off hand
+        const bend = Math.sin(Math.min(1, p * 1.25) * Math.PI);
+        const sweep = Math.sin(p * Math.PI * 2);
+        m.armL.rotation.set(-1.15, -0.7 + sweep * 0.7, 0.15);
+        m.armR.rotation.set(0.45, 0, 0.35);
+        m.body.rotation.x = 0.3 * bend;
+        m.head.rotation.x = 0.2 * bend;
+        break;
+      }
+      case 'water': {
+        // the can comes up, tips, and pours until the bed is soaked
+        const up = smooth(Math.min(1, p / 0.6));
+        const tip = clamp((p - 0.58) / 0.12, 0, 1) * (1 - clamp((p - 0.9) / 0.1, 0, 1));
+        m.armL.rotation.set(-0.6 - 0.9 * up, -0.35 * up, 0.1);
+        m.armR.rotation.set(0.5, 0, 0.4);
+        if (can) can.rotation.x = 1.0 * tip;
+        m.body.rotation.x = 0.14 * up;
+        m.head.rotation.x = 0.1 * up;
+        break;
+      }
+      case 'harvest': {
+        // stoop, pull the crop out of the soil, straighten up with it
+        const down = p < 0.5 ? p / 0.5 : Math.max(0, 1 - (p - 0.5) / 0.35);
+        const lift = clamp((p - 0.5) / 0.5, 0, 1);
+        m.body.rotation.x = 0.55 * down - 0.12 * lift;
+        m.armL.rotation.set(-0.95 * down - 0.5 * lift, -0.3, -0.15);
+        m.armR.rotation.set(-0.95 * down - 0.4 * lift, 0.3, 0.15);
+        m.head.rotation.x = 0.3 * down;
+        m.body.position.y -= 0.06 * down;
+        break;
+      }
+      case 'stow': {
+        // tip the basket over the barrow and shake it out
+        const tip = Math.sin(p * Math.PI);
+        m.body.rotation.x = 0.4 * tip;
+        m.armL.rotation.set(-1.05 * tip, -0.5 * tip, 0.1);
+        m.armR.rotation.set(-1.05 * tip, 0.5 * tip, -0.1);
+        m.head.rotation.x = 0.25 * tip;
+        break;
+      }
+    }
   }
 
   private animate(moving: boolean) {
@@ -1209,6 +1328,124 @@ export function fxLeaves(x: number, z: number): Effect {
     parts.push({ m, vx: Math.cos(a) * (1.2 + (i % 3) * 0.4), vz: Math.sin(a) * (1.2 + (i % 2) * 0.4), vy: 2 + (i % 3) * 0.6 });
   }
   return e;
+}
+
+// ------------------------------------------------------------------ the farm's own effects
+const clodMat = new THREE.MeshBasicMaterial({ color: 0x6b4626 });
+const clodMatL = new THREE.MeshBasicMaterial({ color: 0x8a5c33 });
+const seedMat = new THREE.MeshBasicMaterial({ color: 0xe0c878 });
+const pourMat = new THREE.MeshBasicMaterial({ color: 0xbfe8ff, transparent: true, opacity: 0.85, depthWrite: false });
+const ringMat = new THREE.MeshBasicMaterial({ color: 0x9fd8ff, transparent: true, opacity: 0.5, depthWrite: false, side: THREE.DoubleSide });
+
+/** The hoe bites the bed: clods of earth kicked up out of the soil. */
+export function fxDirt(x: number, z: number): Effect {
+  const parts: { m: THREE.Mesh; a: number; v: number; h: number }[] = [];
+  const e = new Effect(0.5, (p) => {
+    for (const pt of parts) {
+      const r = pt.v * (1 - (1 - p) * (1 - p));
+      pt.m.position.set(Math.cos(pt.a) * r, Math.max(0.03, 0.1 + pt.h * p - 2.6 * p * p), Math.sin(pt.a) * r * 0.6);
+      const sc = (1 - p) * 0.15;
+      pt.m.scale.set(sc, sc, sc);
+      pt.m.rotation.x += 0.3;
+      pt.m.rotation.z += 0.2;
+    }
+  });
+  for (let i = 0; i < 8; i++) {
+    const m = part(UNIT_BOX, i % 2 ? clodMat : clodMatL, [0, 0.1, 0], [0.15, 0.15, 0.15]);
+    e.group.add(m);
+    parts.push({ m, a: (i / 8) * Math.PI * 2 + 0.4, v: 0.3 + (i % 3) * 0.16, h: 0.7 + (i % 4) * 0.3 });
+  }
+  e.group.position.set(x, 0, z);
+  return e.at(x, z);
+}
+
+/** A sweep of seed leaving the farmhand's hand and landing in the bed (world coords for both). */
+export function fxSeeds(fx: number, fz: number, x: number, z: number): Effect {
+  const sx = fx - x, sz = fz - z;
+  const parts: { m: THREE.Mesh; spread: number; side: number }[] = [];
+  const e = new Effect(0.8, (p) => {
+    for (const pt of parts) {
+      const q = clamp(p * 1.4 - pt.spread, 0, 1);
+      const arc = Math.sin(q * Math.PI) * 0.3;
+      pt.m.position.set(
+        sx + (pt.side * 0.16 - sx) * q,
+        0.85 + (0.06 - 0.85) * q + arc,
+        sz + (0.05 - sz) * q,
+      );
+      const sc = q >= 1 ? 0 : 0.07;
+      pt.m.scale.set(sc, sc, sc);
+      pt.m.rotation.x += 0.3;
+      pt.m.rotation.z += 0.25;
+    }
+  });
+  for (let i = 0; i < 7; i++) {
+    const m = part(UNIT_BOX, seedMat, [0, 0.8, 0], [0.07, 0.07, 0.07]);
+    e.group.add(m);
+    parts.push({ m, spread: i * 0.05, side: (i % 3) - 1 });
+  }
+  e.group.position.set(x, 0, z);
+  return e.at(x, z);
+}
+
+/** The watering can tipped over the bed: drops falling from the spout for `dur` seconds. */
+export function fxWaterPour(fx: number, fz: number, x: number, z: number, dur: number): Effect {
+  const sx = fx - x, sz = fz - z;
+  const drops: { m: THREE.Mesh; phase: number; tx: number; tz: number }[] = [];
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.14, 0.22, 16).rotateX(-Math.PI / 2), ringMat.clone());
+  ring.position.y = 0.03;
+  const e = new Effect(dur, (_p, t) => {
+    for (const d of drops) {
+      const cyc = (t / 0.3 + d.phase) % 1;
+      const q = Math.min(1, cyc * 1.4);
+      d.m.position.set(
+        sx + (d.tx - sx) * q,
+        0.8 + (0.06 - 0.8) * q + Math.sin(q * Math.PI) * 0.1,
+        sz + (d.tz - sz) * q,
+      );
+      const s = 0.055 * (1 - Math.max(0, (cyc - 0.75) / 0.25));
+      d.m.scale.set(s, s * 1.7, s);
+    }
+    const pulse = (t * 3) % 1;
+    ring.scale.set(1 + pulse * 1.8, 1, 1 + pulse * 1.8);
+    (ring.material as THREE.MeshBasicMaterial).opacity = 0.5 * (1 - pulse);
+  });
+  e.group.add(ring);
+  for (let i = 0; i < 6; i++) {
+    const m = part(UNIT_SPHERE, pourMat, [0, 0.8, 0], [0.06, 0.06, 0.06]);
+    e.group.add(m);
+    const a = (i / 6) * Math.PI * 2;
+    drops.push({ m, phase: i * 0.17, tx: Math.cos(a) * 0.22, tz: Math.sin(a) * 0.14 });
+  }
+  e.group.position.set(x, 0, z);
+  return e.at(x, z);
+}
+
+/** A ripe crop pulled out of the soil: it springs up, spins and is gone into the basket. */
+export function fxHarvest(x: number, z: number, colour: string): Effect {
+  const mat = new THREE.MeshBasicMaterial({ color: new THREE.Color(colour), transparent: true });
+  const crop = part(UNIT_SPHERE, mat, [0, 0.2, 0], [0.32, 0.32, 0.32]);
+  const bits: { m: THREE.Mesh; a: number }[] = [];
+  const e = new Effect(0.6, (p) => {
+    crop.position.y = 0.2 + Math.sin(p * Math.PI) * 0.45 + p * 0.5;
+    crop.rotation.set(p * 2.2, p * 3.4, 0);
+    const sc = 0.32 * (1 - p * 0.45);
+    crop.scale.set(sc, sc, sc);
+    mat.opacity = 1 - p * p;
+    for (const b of bits) {
+      const r = 0.2 + p * 0.5;
+      b.m.position.set(Math.cos(b.a) * r, 0.25 + p * 0.4, Math.sin(b.a) * r * 0.6);
+      const s = (1 - p) * 0.09;
+      b.m.scale.set(s, s, s);
+    }
+  });
+  e.group.add(crop);
+  for (let i = 0; i < 4; i++) {
+    const m = part(UNIT_BOX, leafMat, [0, 0.25, 0], [0.1, 0.03, 0.09]);
+    e.group.add(m);
+    bits.push({ m, a: (i / 4) * Math.PI * 2 + 0.5 });
+  }
+  e.group.position.set(x, 0, z);
+  return e.at(x, z);
 }
 
 export function fxAlert(x: number, z: number): Effect {

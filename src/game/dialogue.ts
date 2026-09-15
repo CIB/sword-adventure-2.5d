@@ -33,6 +33,8 @@ export interface TalkCtx {
   heal(): void;
   reward(rupees: number): void;
   toast(msg: string): void;
+  /** the village's farm, so the farmhand can talk about the field he is standing in */
+  farm: { day: number; phase: string; cultivated: number; ripe: number; basket: number; harvestedToday: number };
 }
 
 const KILL_GOAL = 5, BUSH_GOAL = 6, SONG_PRICE = 10;
@@ -134,11 +136,17 @@ export const NPC_TALK: Record<string, Talker> = {
   }),
 
   // ------------------------------------------------------------------ farmer
-  farmer: () => ({
-    name: 'HOLLIS',
-    color: '#c8f0a0',
-    pages: ['Turnips, turnips, turnips. The knights don\'t eat them, at least. They don\'t eat anything anymore.', 'The river east of here used to be shallow. Since the Crown went missing it runs high and the old ford drowned. Use the bridges.'],
-  }),
+  farmer: (_q, ctx) => {
+    const f = ctx.farm;
+    const pages: string[] = [];
+    if (!f.cultivated) pages.push('Field\'s bare this morning. Give me an hour and there\'ll be rows in it.');
+    else if (f.ripe > 1) pages.push(`${f.ripe} beds ready to pull, and ${f.harvestedToday} baskets in the barrow already. Ha! That\'s a good day.`);
+    else if (f.phase === 'evening' || f.phase === 'night') pages.push(`${f.cultivated} beds under the hoe and the light going. Time I put the tools up.`);
+    else pages.push(`${f.cultivated} beds under the hoe, and the sun on my neck. Water\'s the whole trick, you know.`);
+    pages.push('Turnips, turnips, turnips. The knights don\'t eat them, at least. They don\'t eat anything anymore.');
+    pages.push('The river east of here used to be shallow. Since the Crown went missing it runs high and the old ford drowned. Use the bridges.');
+    return { name: 'HOLLIS', color: '#c8f0a0', pages };
+  },
 
   innkeeper: () => ({
     name: 'ROSAMUND', color: '#f0c890',

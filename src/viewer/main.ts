@@ -7,8 +7,9 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import {
   buildHeroine, buildSoldier, buildVillager, buildDog, VILLAGER_LOOKS, buildTrees, buildBush, buildBerryBush, buildRock, buildStump,
   buildFence, buildHouse, buildProp, buildHeart, buildRupee, buildArrow, buildJavelinProjectile, buildMoblinSpearProjectile,
-  buildFernGeo, buildTallGrassGeo, buildBriarGeo, buildLilyGeo, buildBoulderGeo, vegObject, type Humanoid,
+  buildFernGeo, buildTallGrassGeo, buildBriarGeo, buildLilyGeo, buildBoulderGeo, vegObject, buildWateringCan, buildCropGeo, type Humanoid,
 } from '../game/models';
+import { CROPS, type CropKind } from '../game/village';
 import type { PropKind, HouseSpec, EnemyKind } from '../game/world';
 import { World } from '../game/world';
 import { GrassSystem } from '../game/grass';
@@ -46,6 +47,13 @@ const catalog: Cat[] = [
     { name: 'Lily pads', build: () => ({ obj: vegObject(buildLilyGeo()) }) },
     { name: 'Fence post', build: () => ({ obj: buildFence() }) },
     { name: 'Grass (animated)', build: () => ({ obj: grass.buildPatch(36, 22, 12, 12), footprint: 12 }) },
+  ] },
+  { name: 'Farming', items: [
+    { name: 'Watering can', build: () => ({ obj: buildWateringCan() }) },
+    ...(['turnip', 'cabbage', 'pumpkin', 'wheat'] as CropKind[]).flatMap((k) => [0, 1, 2, 3].map((stage) => ({
+      name: `${k[0].toUpperCase() + k.slice(1)} — ${stage < 3 ? `stage ${stage + 1}` : `ripe (${CROPS[k].label})`}`,
+      build: () => ({ obj: vegObject(buildCropGeo(k, stage)) }),
+    }))),
   ] },
   { name: 'Props', items: PROPS.map((k) => ({ name: k[0].toUpperCase() + k.slice(1), build: () => ({ obj: buildProp({ kind: k, x: 0, z: 0 }), footprint: k === 'tower' || k === 'windmill' ? 6 : k === 'statue' ? 3 : k === 'tent' || k === 'stall' ? 4 : k === 'deadtree' ? 2.5 : 2 }) })) },
   { name: 'Pickups & projectiles', items: [

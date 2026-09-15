@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { TreeSpec, HouseSpec, EnemyKind, PropSpec } from './world';
-import { RNG } from './constants';
+import { RNG, hash2 } from './constants';
+import type { CropKind } from './village';
 
 // ---------------------------------------------------------------- materials
 let gradientMap: THREE.DataTexture | null = null;
@@ -88,6 +89,8 @@ export interface Humanoid {
   weapon?: THREE.Group;
   shield?: THREE.Group;
   ponytail?: THREE.Group;
+  /** off-hand tool the character can tip (the farmhand's watering can) */
+  tool?: THREE.Group;
   materials: THREE.MeshToonMaterial[];
 }
 
@@ -1239,6 +1242,8 @@ export interface VillagerLook {
   hat?: 'none' | 'straw' | 'cap' | 'bandana' | 'kerchief' | 'feather' | 'flower';
   hairStyle?: 'short' | 'long' | 'bald' | 'bun' | 'beard';
   scale?: number; kid?: boolean; item?: 'cane' | 'lute' | 'harp' | 'hoe' | 'broom' | 'basket';
+  /** left hand: the farmhand carries a watering can alongside the hoe */
+  can?: boolean;
   dress?: boolean; sash?: string;
 }
 
@@ -1248,7 +1253,7 @@ export const VILLAGER_LOOKS: Record<string, VillagerLook> = {
   kid: { skin: '#f6c8a0', hair: '#f5cf46', top: '#ff8a3d', bottom: '#3a5fd0', hat: 'none', hairStyle: 'short', kid: true },
   granny: { skin: '#f0c4a0', hair: '#d8d8e0', top: '#2f8f5a', bottom: '#7a4f2a', hat: 'kerchief', hairStyle: 'bun', item: 'broom' },
   bard: { skin: '#f6c8a0', hair: '#e0703a', top: '#6f86d6', bottom: '#6f86d6', accent: '#f2e6b0', hat: 'flower', hairStyle: 'long', item: 'harp', dress: true, sash: '#e85a9a' },
-  farmer: { skin: '#e8a878', hair: '#4a2c14', top: '#8ad34a', bottom: '#6b4a2c', hat: 'straw', hairStyle: 'short', item: 'hoe' },
+  farmer: { skin: '#e8a878', hair: '#4a2c14', top: '#8ad34a', bottom: '#6b4a2c', hat: 'straw', hairStyle: 'short', item: 'hoe', can: true },
   innkeeper: { skin: '#f3bd92', hair: '#7a3a1a', top: '#c8862a', bottom: '#5a3a2c', accent: '#f6f1e6', hat: 'none', hairStyle: 'bun' },
   smith: { skin: '#d89868', hair: '#2a1a10', top: '#5a5a66', bottom: '#3a3a3a', accent: '#8a5a2b', hat: 'bandana', hairStyle: 'beard' },
   goodwife: { skin: '#f6c8a0', hair: '#4a2c14', top: '#d05a8a', bottom: '#f0e2c0', hat: 'kerchief', hairStyle: 'long', item: 'basket' },
@@ -1336,9 +1341,164 @@ export function buildVillager(look: VillagerLook): Humanoid {
     case 'broom': handR.add(part(UNIT_CYL, m.wood, [0, -0.1, 0.05], [0.05, 1.1, 0.05])); handR.add(part(UNIT_CONE, toon('#e8c86a'), [0, -0.68, 0.05], [0.24, 0.3, 0.16]).rotateX(Math.PI)); break;
     case 'basket': handL.add(part(UNIT_CYL, toon('#c48b4f'), [0, -0.08, 0.1], [0.34, 0.24, 0.34])); break;
   }
+  let tool: THREE.Group | undefined;
+  if (look.can) { tool = buildWateringCan(); handL.add(tool); }
   const s = look.scale ?? (look.kid ? 0.72 : 1);
   root.scale.set(CHAR_SCALE.x * s, CHAR_SCALE.y * s, CHAR_SCALE.z * s);
-  return { root, body, head, armR, armL, handR, handL, legR, legL, materials: collectMaterials(root) };
+  return { root, body, head, armR, armL, handR, handL, legR, legL, tool, materials: collectMaterials(root) };
+}
+
+/**
+ * The farmhand's watering can: a stubby body with a brass base band, a spout with a rose on the
+ * end and a bow handle the hand closes around. Modelled hanging from the hand, so the pour is just
+ * the can tipping forward about its own pivot.
+ */
+export function buildWateringCan(): THREE.Group {
+  const steel = toon('#a8b4c0'), steelD = toon('#6f7c88'), brass = toon('#c9a24a');
+  const g = new THREE.Group();
+  g.add(part(UNIT_CYL, steel, [0, -0.17, 0.0], [0.3, 0.3, 0.3]));        // body
+  g.add(part(UNIT_CYL, steelD, [0, -0.03, 0.0], [0.26, 0.06, 0.26]));    // lid
+  g.add(part(UNIT_CYL, brass, [0, -0.31, 0.0], [0.31, 0.04, 0.31]));     // base band
+  const spout = part(UNIT_CYL, steel, [0, -0.14, 0.2], [0.07, 0.34, 0.07]);
+  spout.rotation.x = 0.8;                                                 // spout cants up and out
+  g.add(spout);
+  g.add(part(UNIT_CYL, steelD, [0, -0.05, 0.34], [0.11, 0.05, 0.11]));   // rose
+  g.add(part(UNIT_BOX, steelD, [0, 0.05, 0.0], [0.05, 0.22, 0.05]));     // handle bow
+  g.add(part(UNIT_BOX, steelD, [0, 0.14, 0.0], [0.18, 0.04, 0.05]));
+  return g;
+}
+
+// ---------------------------------------------------------------- crops (the village farm)
+/**
+ * Crop plants, one merged vertex-coloured geometry per (crop, growth stage), built the way the
+ * undergrowth is: primitive shapes stamped with `color` and merged into a single buffer, so the
+ * farm view can draw a whole field in a handful of instanced draw calls. `aWindFactor` is stamped
+ * from each vertex's height, so the roots stay planted while the leaves lean into the same wind
+ * the grass and the bushes run on.
+ */
+function mergeParts(parts: THREE.BufferGeometry[]): THREE.BufferGeometry {
+  return mergeGeometries(parts.map((g) => (g.index ? g.toNonIndexed()! : g)))!;
+}
+
+function windify(geo: THREE.BufferGeometry, maxY: number): THREE.BufferGeometry {
+  const pos = geo.getAttribute('position');
+  const wind = new Float32Array(pos.count);
+  for (let i = 0; i < pos.count; i++) wind[i] = Math.min(1, Math.pow(Math.max(0, pos.getY(i)) / maxY, 1.2));
+  geo.setAttribute('aWindFactor', new THREE.Float32BufferAttribute(wind, 1));
+  return geo;
+}
+
+/** a leaf blade: a squashed sphere, pitched up and swung round the plant */
+function leaf(len: number, wide: number, pitch: number, yaw: number, x = 0, y = 0, z = 0): THREE.BufferGeometry {
+  const g = new THREE.SphereGeometry(0.5, 7, 5).scale(wide, len, wide * 0.45);
+  g.rotateZ(pitch);
+  g.rotateY(yaw);
+  g.translate(x, y, z);
+  return g;
+}
+
+export function buildCropGeo(kind: CropKind, stage: number): THREE.BufferGeometry {
+  switch (kind) {
+    case 'turnip': return windify(mergeParts(turnipParts(stage)), 0.55 + stage * 0.08);
+    case 'cabbage': return windify(mergeParts(cabbageParts(stage)), 0.5 + stage * 0.06);
+    case 'pumpkin': return windify(mergeParts(pumpkinParts(stage)), 0.4 + stage * 0.1);
+    case 'wheat': return windify(mergeParts(wheatParts(stage)), 0.4 + stage * 0.2);
+  }
+}
+
+/** turnips: a rosette of greens that swells into a fat root sitting proud of the soil */
+function turnipParts(stage: number): THREE.BufferGeometry[] {
+  const parts: THREE.BufferGeometry[] = [];
+  const leaves = 3 + stage;
+  const len = 0.16 + stage * 0.075;
+  const greens = ['#4fae46', '#5cb84a', '#6cc44f'];
+  for (let i = 0; i < leaves; i++) {
+    const yaw = (i / leaves) * Math.PI * 2 + hash2(i, stage, 11) * 0.8;
+    const pitch = -(0.5 + hash2(i, stage, 12) * 0.5);
+    const g = leaf(len, 0.14, pitch, yaw);
+    g.translate(0, len * 0.5 + 0.02, 0);
+    parts.push(withColor(g, greens[i % greens.length]));
+  }
+  if (stage >= 3) {
+    parts.push(withColor(new THREE.SphereGeometry(0.5, 10, 8).scale(0.4, 0.34, 0.4).translate(0, 0.16, 0), '#efe9f6'));
+    parts.push(withColor(new THREE.CylinderGeometry(0.13, 0.18, 0.07, 8).translate(0, 0.32, 0), '#c3a0d8'));
+  }
+  return parts;
+}
+
+/** cabbages: leaves wrapping tighter as the heart forms, until the pale head shows */
+function cabbageParts(stage: number): THREE.BufferGeometry[] {
+  const parts: THREE.BufferGeometry[] = [];
+  const layers = 1 + stage;
+  for (let i = 0; i < layers; i++) {
+    const r = 0.16 + i * 0.055 + stage * 0.012;
+    const g = new THREE.SphereGeometry(0.5, 9, 7).scale(r * 2, r * 1.5, r * 2);
+    g.translate(0, r * 0.72, 0);
+    const ripe = stage >= 3 && i === layers - 1;
+    parts.push(withColor(g, ripe ? '#b6e88a' : i % 2 ? '#5cb84c' : '#43943f'));
+  }
+  // the oldest leaves flop out over the soil
+  for (let i = 0; i < 3; i++) {
+    const yaw = (i / 3) * Math.PI * 2 + 0.6;
+    const g = leaf(0.22 + stage * 0.02, 0.12, -1.15, yaw, Math.cos(yaw) * 0.16, 0.05, Math.sin(yaw) * 0.16);
+    parts.push(withColor(g, '#3d8a3a'));
+  }
+  return parts;
+}
+
+/** pumpkins: a low vine of broad leaves that finally sets down an orange fruit */
+function pumpkinParts(stage: number): THREE.BufferGeometry[] {
+  const parts: THREE.BufferGeometry[] = [];
+  const leaves = 2 + stage;
+  for (let i = 0; i < leaves; i++) {
+    const yaw = (i / leaves) * Math.PI * 2 + hash2(i, stage, 31) * 0.9;
+    const r = 0.2 + stage * 0.03 + hash2(i, stage, 33) * 0.08;
+    const g = leaf(0.2 + stage * 0.02, 0.14, -1.25 - hash2(i, stage, 32) * 0.3, yaw, Math.cos(yaw) * r, 0.04, Math.sin(yaw) * r);
+    parts.push(withColor(g, i % 2 ? '#3f8f3f' : '#4fae46'));
+  }
+  if (stage === 0) {
+    parts.push(withColor(new THREE.CylinderGeometry(0.02, 0.03, 0.1, 5).translate(0, 0.05, 0), '#6aa84a'));
+  } else {
+    const r = 0.09 + stage * 0.075;
+    const ripe = stage >= 3;
+    parts.push(withColor(new THREE.SphereGeometry(0.5, 10, 8).scale(r * 2, r * 1.55, r * 2).translate(0, r * 0.78, 0), ripe ? '#ef8a28' : '#7fb84a'));
+    // the fruit's ribs: slimmer spheres sat proud of the body
+    for (let i = 0; i < 3; i++) {
+      const yaw = (i / 3) * Math.PI;
+      const rib = new THREE.SphereGeometry(0.5, 8, 6).scale(r * 0.55, r * 1.5, r * 1.15);
+      rib.rotateY(yaw);
+      rib.translate(0, r * 0.78, 0);
+      parts.push(withColor(rib, ripe ? '#f7a244' : '#8cc457'));
+    }
+    if (ripe) parts.push(withColor(new THREE.CylinderGeometry(0.035, 0.05, 0.13, 6).translate(0, r * 1.5, 0), '#6b4a2c'));
+  }
+  return parts;
+}
+
+/** wheat: a tuft of stalks that stiffens and turns gold, ears nodding at the top */
+function wheatParts(stage: number): THREE.BufferGeometry[] {
+  const parts: THREE.BufferGeometry[] = [];
+  const stalks = 4 + stage;
+  const h = 0.28 + stage * 0.17;
+  const gold = stage >= 3;
+  const stalk = gold ? '#d8b84a' : ['#6aa84a', '#7cb84f', '#96c655'][Math.min(2, stage)];
+  const ear = gold ? '#e8d070' : '#a8d060';
+  for (let i = 0; i < stalks; i++) {
+    const yaw = hash2(i, stage, 41) * Math.PI * 2;
+    const r = 0.08 + hash2(i, stage, 42) * 0.24;
+    const x = Math.cos(yaw) * r, z = Math.sin(yaw) * r;
+    const lean = (hash2(i, stage, 43) - 0.5) * 0.4;
+    const g = new THREE.CylinderGeometry(0.012, 0.022, h, 4);
+    g.translate(0, h / 2, 0);
+    g.rotateZ(lean);
+    g.translate(x, 0, z);
+    parts.push(withColor(g, stalk));
+    const head = new THREE.SphereGeometry(0.5, 6, 5).scale(0.055, 0.11 + stage * 0.02, 0.055);
+    head.rotateZ(lean);
+    head.translate(x - Math.sin(lean) * h, h * 0.95, z);
+    parts.push(withColor(head, ear));
+  }
+  return parts;
 }
 
 export function buildDog(): Humanoid {

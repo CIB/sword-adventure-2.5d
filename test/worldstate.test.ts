@@ -14,6 +14,7 @@ const g2d = () => ({
 import { World } from '../src/game/world';
 import { WorldState, CHUNK_T, CHUNKS_X, CHUNKS_Z } from '../src/game/worldstate';
 import { WorldMap } from '../src/game/map';
+import { VillageState } from '../src/game/village';
 import { MAP_W, MAP_H, Tile } from '../src/game/constants';
 
 let failures = 0;
@@ -24,6 +25,8 @@ const check = (name: string, cond: boolean, extra = '') => {
 
 const world = new World();
 const ws = new WorldState(world);
+const village = new VillageState(world);
+for (let t = 0; t < 40; t += 1 / 30) village.tick(1 / 30); // the farmhand breaks some ground first
 
 // ---- grid shape
 check('chunk grid covers the map exactly', CHUNKS_X * CHUNK_T === MAP_W && CHUNKS_Z * CHUNK_T === MAP_H);
@@ -390,9 +393,16 @@ const mkCtx = (w: number, h: number) => {
 {
   const { ctx, ops } = mkCtx(417, 235);
   const canvas = { width: 417, height: 235, getContext: () => ctx } as unknown as HTMLCanvasElement;
-  const map = new WorldMap(canvas, ws, world);
+  const map = new WorldMap(canvas, ws, world, village);
   map.draw({ px: 9.5, pz: 9.5, time: 0, gamepad: false });
   check('map draws something', ops.length > 300);
+  // the farm overlay: one soil/green/ripe pixel per bed the farmhand has touched
+  const worked = [...village.tiles.values()].filter((t) => t.state !== 'fallow');
+  const painted = ops.filter((o) => o.style === '#8a5c33' || o.style === '#5cc44a').length;
+  check('map paints the worked beds', worked.length > 0 && painted === worked.filter((t) => t.state === 'tilled' || t.state === 'sown').length, `${painted} beds`);
+  check('map prints the farm\'s day', ops.some((o) => o.style === '#8ce070'));
+  check('the farm\'s day is in the farmhand\'s green, not the legend\'s tan', ops.some((o) => o.style === '#8ce070' && o.y > 200));
+  check('map marks the farmhand', ops.some((o) => o.style === '#8ce070' && o.w === 1 && o.h === 1));
   // the terrain bitmap is blitted, filling the frame (fractional fit under 2x, smoothing on)
   const blit = ops.find((o) => o.image);
   check('map blits the tile terrain', !!blit, blit ? `${blit.w}x${blit.h}` : 'no image');
@@ -415,10 +425,24 @@ const mkCtx = (w: number, h: number) => {
   // a large canvas gets the crisp integer-scale path
   const { ctx, ops } = mkCtx(900, 500);
   const canvas = { width: 900, height: 500, getContext: () => ctx } as unknown as HTMLCanvasElement;
-  const map = new WorldMap(canvas, ws, world);
+  const map = new WorldMap(canvas, ws, world, village);
   map.draw({ px: 100, pz: 100, time: 0, gamepad: false });
   const blit = ops.find((o) => o.image);
   check('large canvas uses integer pixel scale', !!blit && blit.w === MAP_W * 2 && blit.h === MAP_H * 2 && (ctx as any).imageSmoothingEnabled === false);
+}
+{
+  // the text block (posts above the map, the farm's day and the legend below it) has to stay on the
+  // canvas at every HUD shape, not just the default 320x240
+  const shapes: [number, number][] = [[320, 240], [278, 208], [417, 235], [400, 300], [900, 500], [512, 288]];
+  let worst = '';
+  for (const [w, h] of shapes) {
+    const { ctx, ops } = mkCtx(w, h);
+    const canvas = { width: w, height: h, getContext: () => ctx } as unknown as HTMLCanvasElement;
+    new WorldMap(canvas, ws, world, village).draw({ px: 40, pz: 40, time: 0, gamepad: false });
+    const over = ops.filter((o) => o.h <= 2 && o.w <= 2 && (o.y < 0 || o.y + o.h > h || o.x < 0 || o.x + o.w > w));
+    if (over.length) worst += ` ${w}x${h}:${over.length}@${over[0].x},${over[0].y}`;
+  }
+  check('map text fits the canvas at every HUD shape', !worst, worst.trim());
 }
 
 console.log(failures ? `\n${failures} FAILURES` : '\nALL TESTS PASSED');

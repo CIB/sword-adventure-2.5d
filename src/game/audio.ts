@@ -160,6 +160,12 @@ export class AudioEngine {
   block() { this.tone('square', 2400, 0.05, 0.13); this.tone('square', 1700, 0.1, 0.1, { when: (this.ctx?.currentTime ?? 0) + 0.03 }); this.noise(0.04, 0.2, 'highpass', 4000); }
   grassCut() { this.noise(0.09, 0.16, 'bandpass', 2600, { q: 0.8, attack: 0.005 }); }
   bushCut() { this.noise(0.16, 0.32, 'bandpass', 1300, { q: 1, attack: 0.01 }); }
+  /** farm work: the hoe thudding into soil, seed shaken out of the hand, water poured on a bed */
+  dig() { this.noise(0.12, 0.3, 'lowpass', 460, { f1: 190, attack: 0.004 }); this.tone('triangle', 150, 0.09, 0.09, { f1: 90 }); }
+  sow() { this.noise(0.2, 0.15, 'bandpass', 3200, { f1: 1700, q: 1.1, attack: 0.03 }); }
+  pour() { this.noise(0.55, 0.14, 'bandpass', 1400, { f1: 620, q: 0.7, attack: 0.08 }); }
+  /** a crop comes ripe: the quietest possible two-note lift */
+  chime() { const t = this.ctx?.currentTime ?? 0; this.tone('triangle', 1046, 0.09, 0.06, { when: t }); this.tone('triangle', 1568, 0.18, 0.05, { when: t + 0.09 }); }
   charged() { const t = this.ctx?.currentTime ?? 0; [880, 1108, 1318, 1760].forEach((f, i) => this.tone('square', f, 0.06, 0.09, { when: t + i * 0.045 })); }
   spin() { this.noise(0.38, 0.3, 'highpass', 700, { f1: 3500 }); this.tone('square', 300, 0.32, 0.07, { f1: 950 }); }
   alert() { const t = this.ctx?.currentTime ?? 0; this.tone('square', 1200, 0.05, 0.09, { when: t }); this.tone('square', 1600, 0.09, 0.09, { when: t + 0.05 }); }

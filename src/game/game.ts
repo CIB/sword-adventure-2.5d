@@ -7,7 +7,7 @@ import {
 import { World, type Vec2, type TileObj } from './world';
 import { AudioEngine } from './audio';
 import { Input, PAUSE_KEYS, MUTE_KEYS, ATTACK_KEYS, TALK_KEYS, ROTATE_CCW_KEYS, ROTATE_CW_KEYS, FULLSCREEN_KEYS, HELP_KEYS, MAP_KEYS, rotateView } from './input';
-import { Player, Enemy, Npc, Projectile, Pickup, Effect, fxSpark, fxPuff, fxLeaves, type GameCtx } from './entities';
+import { Player, Enemy, Npc, Projectile, Pickup, Effect, fxSpark, fxPuff, fxLeaves, fxDirt, fxSeeds, fxWaterPour, fxHarvest, type GameCtx } from './entities';
 import { NPC_TALK, newQuestState, type Conversation, type QuestState, type TalkCtx } from './dialogue';
 import {
   buildTrees, buildBush, buildBerryBush, buildStump, buildRock, buildFence, buildHouse, buildProp, getGroundGradientMap, buildVillager, buildDog, VILLAGER_LOOKS,
@@ -17,6 +17,8 @@ import { GrassSystem } from './grass';
 import { updateFoliage, makeVegInstancesWind } from './foliage';
 import { Hud } from './hud';
 import { WorldState, type Post } from './worldstate';
+import { CROPS, VillageState, type FarmWorker, type VillageEvent } from './village';
+import { FarmView } from './farm';
 import { WorldMap } from './map';
 
 export type Phase = 'title' | 'playing' | 'paused' | 'gameover';
@@ -72,6 +74,10 @@ export class Game implements GameCtx {
   world = new World();
   /** persistent world state (chunks + the guard-post world system) — the world sim's data model */
   worldState: WorldState;
+  /** the village simulation: the farm, its farmhand and the village calendar */
+  village: VillageState;
+  /** the farm's instanced soil and crops */
+  private farm: FarmView;
   /** tile-resolution world map (Tab / N) drawn from the world state + the terrain bitmap */
   private worldMap: WorldMap;
   /** world map screen open (gameplay keeps running underneath; it's an overlay, not a pause) */
@@ -123,7 +129,8 @@ export class Game implements GameCtx {
     this.input = input;
     this.hud = new Hud(hudCanvas);
     this.worldState = new WorldState(this.world);
-    this.worldMap = new WorldMap(hudCanvas, this.worldState, this.world);
+    this.village = new VillageState(this.world);
+    this.worldMap = new WorldMap(hudCanvas, this.worldState, this.world, this.village);
 
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(1);
@@ -163,6 +170,10 @@ export class Game implements GameCtx {
 
     this.waveTex = this.world.createWaveTexture();
     this.buildStatic();
+
+    // the village's own layer: tilled soil and crops, rebuilt as the farmhand works
+    this.farm = new FarmView(this.village, this.world);
+    this.scene.add(this.farm.root);
 
     const ps = this.world.playerStart;
     this.player = new Player(this, ps.x, ps.z);
@@ -321,6 +332,64 @@ export class Game implements GameCtx {
     }
   }
 
+  /**
+   * The village step: the crops grow, the farmhand works his rounds, and the events he generates
+   * (a hoe biting the soil, seed leaving his hand, the can tipped over a bed, a crop pulled out of
+   * it) are drawn and sounded here. The simulation is the authority for where he is; his NPC entity
+   * mirrors it (see Npc.update).
+   */
+  private updateVillage(dt: number) {
+    this.village.tick(dt, this.player.pos);
+    const events = this.village.drainEvents();
+    this.farm.update(dt, events);
+    for (const ev of events) this.farmEvent(ev);
+  }
+
+  /** one simulation event, drawn: the tool landed, so the dirt/seed/water goes where it landed */
+  private farmEvent(ev: VillageEvent) {
+    const w = ev.who ? this.village.workerFor(ev.who) : null;
+    switch (ev.kind) {
+      case 'dirt':
+        this.spawnEffect(fxDirt(ev.x, ev.z));
+        this.audio.dig();
+        break;
+      case 'seeds': {
+        const h = this.handPoint(w);
+        this.spawnEffect(fxSeeds(h.x, h.z, ev.x, ev.z));
+        this.audio.sow();
+        break;
+      }
+      case 'water': {
+        const h = this.handPoint(w);
+        this.spawnEffect(fxWaterPour(h.x, h.z, ev.x, ev.z, w ? Math.max(0.4, w.workDur * 0.35) : 0.55));
+        this.audio.pour();
+        break;
+      }
+      case 'harvest':
+        this.spawnEffect(fxHarvest(ev.x, ev.z, ev.crop ? CROPS[ev.crop].colour : '#ffffff'));
+        this.audio.blip();
+        break;
+      case 'stow':
+        this.spawnEffect(fxPuff(ev.x, ev.z));
+        this.audio.blip();
+        break;
+      case 'sprout':
+        this.spawnEffect(fxSpark(ev.x, 0.25, ev.z, 0.5).at(ev.x, ev.z));
+        break;
+      case 'ripe':
+        this.spawnEffect(fxSpark(ev.x, 0.45, ev.z, 0.9).at(ev.x, ev.z));
+        this.audio.chime();
+        break;
+    }
+  }
+
+  /** where the farmhand's hands are, so seed and water start from him and not from mid-air */
+  private handPoint(w: FarmWorker | null): Vec2 {
+    if (!w) return this.player.pos;
+    const f = FACING_VEC[w.facing];
+    return { x: w.x + f[0] * 0.3, z: w.z + f[1] * 0.3 };
+  }
+
   /** drop the live entity standing in for one world-state soldier */
   private releaseSoldier(post: Post, index: number) {
     for (const e of this.enemies) if (e.post === post && e.memberIndex === index) e.dispose();
@@ -362,12 +431,15 @@ export class Game implements GameCtx {
   // ------------------------------------------------------------------ dialogue
   private talkCtx(): TalkCtx {
     const p = this.player;
+    const v = this.village.stats();
+    const st = { day: v.day, phase: v.phase, cultivated: v.cultivated, ripe: v.ripe, basket: v.basket, harvestedToday: v.harvestedToday };
     return {
       rupees: p.rupees,
       spendRupees: (n) => { if (p.rupees < n) return false; p.rupees -= n; this.audio.rupee(); return true; },
       heal: () => { p.hp = MAX_HP; this.audio.heart(); },
       reward: (n) => { p.rupees = Math.min(999, p.rupees + n); this.audio.rupee(); this.toast('+' + n + ' RUPEES'); },
       toast: (m) => this.toast(m),
+      farm: st,
     };
   }
 
@@ -499,6 +571,7 @@ export class Game implements GameCtx {
     const ps = this.world.playerStart;
     this.player.reset(ps.x, ps.z);
     this.worldState.reset(); // a fresh run is a fresh world: new guards on every post, nothing carried over
+    this.village.reset(); // and a fresh morning: bare beds, empty barrow, the farmhand back at his door
     this.cam = { x: ps.x, z: ps.z - 1 };
     this.deathTimer = 0;
     this.talking = false; this.convo = null;
@@ -517,6 +590,7 @@ export class Game implements GameCtx {
     cancelAnimationFrame(this.raf);
     this.audio.stopMusic();
     this.grass.dispose();
+    this.farm.dispose();
     this.renderer.dispose();
   }
 
@@ -585,6 +659,7 @@ export class Game implements GameCtx {
     }
     void pp;
 
+    this.updateVillage(dt);
     this.updateWorld(dt);
     this.player.update(dt, input);
     for (const e of this.enemies) e.update(dt);
