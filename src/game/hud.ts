@@ -99,6 +99,8 @@ export interface HudState {
   dialogue?: boolean;
   toast?: string;
   canTalk?: boolean;
+  /** a ripe (or gone-to-seed) crop is within reach of the E key */
+  canPick?: boolean;
   /** true when a gamepad is in use — button labels replace key labels */
   gamepad?: boolean;
 }
@@ -305,7 +307,11 @@ export class Hud {
     const g = this.g, W = this.w, H = this.h;
     const pad = !!s.gamepad;
     g.clearRect(0, 0, W, H);
-    if (!s.dialogue && s.canTalk && Math.floor(s.time * 2) % 2 === 0) this.text(pad ? 'A - TALK' : 'E - TALK', W / 2 - 16, H - 14, '#f8f8f8');
+    // one hint slot above the bottom edge: a person to talk to wins over a crop to pick
+    if (!s.dialogue && Math.floor(s.time * 2) % 2 === 0) {
+      if (s.canTalk) this.text(pad ? 'A - TALK' : 'E - TALK', W / 2 - 16, H - 14, '#f8f8f8');
+      else if (s.canPick) this.text(pad ? 'X - PICK' : 'E - PICK', W / 2 - 16, H - 14, '#c8f0a0');
+    }
     if (s.toast) this.text(s.toast, W / 2 - s.toast.length * 4, H / 2 - 30, '#f8d848', 2);
     // charge meter (spin attack)
     this.frame(8, 8, 12, 38, '#f0f0f0', '#101820');

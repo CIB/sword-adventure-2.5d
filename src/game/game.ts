@@ -6,7 +6,7 @@ import {
 } from './constants';
 import { World, type Vec2, type TileObj } from './world';
 import { AudioEngine } from './audio';
-import { Input, PAUSE_KEYS, MUTE_KEYS, ATTACK_KEYS, TALK_KEYS, ROTATE_CCW_KEYS, ROTATE_CW_KEYS, FULLSCREEN_KEYS, HELP_KEYS, MAP_KEYS, rotateView } from './input';
+import { Input, PAUSE_KEYS, MUTE_KEYS, ATTACK_KEYS, TALK_KEYS, USE_KEYS, ROTATE_CCW_KEYS, ROTATE_CW_KEYS, FULLSCREEN_KEYS, HELP_KEYS, MAP_KEYS, rotateView } from './input';
 import { Player, Enemy, Npc, Projectile, Pickup, Effect, fxSpark, fxPuff, fxLeaves, type GameCtx } from './entities';
 import { NPC_TALK, newQuestState, type Conversation, type QuestState, type TalkCtx } from './dialogue';
 import {
@@ -17,6 +17,8 @@ import { GrassSystem } from './grass';
 import { updateFoliage, makeVegInstancesWind } from './foliage';
 import { Hud } from './hud';
 import { WorldState, type Post } from './worldstate';
+import { VillageState, CROPS, isRipe, type VillageEvent } from './village';
+import { FarmView } from './farm';
 import { WorldMap } from './map';
 
 export type Phase = 'title' | 'playing' | 'paused' | 'gameover';
@@ -72,6 +74,10 @@ export class Game implements GameCtx {
   world = new World();
   /** persistent world state (chunks + the guard-post world system) — the world sim's data model */
   worldState: WorldState;
+  /** the village farm: every bed tile in the plots is simulated ground, and the farmer works them */
+  village: VillageState;
+  /** what the farm looks like — instanced crops, wet soil, the farmer's rig (see farm.ts) */
+  private farm: FarmView;
   /** tile-resolution world map (Tab / N) drawn from the world state + the terrain bitmap */
   private worldMap: WorldMap;
   /** world map screen open (gameplay keeps running underneath; it's an overlay, not a pause) */
@@ -95,6 +101,10 @@ export class Game implements GameCtx {
   private convoChars = 0; // typewriter progress on the current page
   private toastMsg = '';
   private toastT = 0;
+  /** a "row is ripe" toast per day at most — the farm should never compete with itself for the screen */
+  private ripeToast = false;
+  /** a gate on farm tool sounds, so a fast row of watering is not a machine gun of splashes */
+  private farmSoundT = 0;
   private spinners: THREE.Object3D[] = [];
   /** windmill sails: spun about their local Z axis (the 'spin' objects turn about Y) */
   private millSpinners: THREE.Object3D[] = [];
@@ -123,6 +133,8 @@ export class Game implements GameCtx {
     this.input = input;
     this.hud = new Hud(hudCanvas);
     this.worldState = new WorldState(this.world);
+    this.village = new VillageState(this.world, this.world.farmPlots);
+    this.farm = new FarmView({ scene: this.scene, world: this.world, village: this.village, spawnEffect: (e) => this.spawnEffect(e) });
     this.worldMap = new WorldMap(hudCanvas, this.worldState, this.world);
 
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
@@ -168,6 +180,9 @@ export class Game implements GameCtx {
     this.player = new Player(this, ps.x, ps.z);
     this.player.facing = 4; // north
     for (const n of this.world.npcs) this.npcs.push(new Npc(this, n));
+    // the farmer's body belongs to the village simulation from here on (see FarmerRig)
+    const farmer = this.npcs.find((n) => n.spec.id === 'farmer');
+    if (farmer) this.farm.bindFarmer(farmer);
     this.cam = { x: ps.x, z: ps.z - 1 };
     this.placeCamera(0);
   }
@@ -368,7 +383,70 @@ export class Game implements GameCtx {
       heal: () => { p.hp = MAX_HP; this.audio.heart(); },
       reward: (n) => { p.rupees = Math.min(999, p.rupees + n); this.audio.rupee(); this.toast('+' + n + ' RUPEES'); },
       toast: (m) => this.toast(m),
+      // the farm, as a conversation can use it: read the fields, buy the produce, buy the seeds
+      village: this.village,
+      takeBasket: () => this.village.takeBasket(),
+      buySeeds: (crop, price, plot) => {
+        if (!this.spendRupeesQuiet(price)) return false;
+        this.audio.rupee();
+        this.village.grantSeeds(crop, 8);
+        if (plot !== undefined) this.village.unlockPlot(plot);
+        this.toast(plot !== undefined ? 'THE VILLAGE TAKES ON A NEW FIELD' : CROPS[crop].name + ' SEEDS FOR THE FARM');
+        return true;
+      },
     };
+  }
+
+  /** rupees out, no chime (the caller picks the sound that fits the moment) */
+  private spendRupeesQuiet(n: number): boolean {
+    const p = this.player;
+    if (p.rupees < n) return false;
+    p.rupees -= n;
+    return true;
+  }
+
+  /**
+   * The village farm made something happen. The view gets all of it (particles at the tile, the sound of
+   * a hoe or a can when the player is close enough to hear it); the player gets the two moments worth a
+   * toast — a row coming ripe, and the day turning over.
+   */
+  private onVillageEvents(evs: VillageEvent[]) {
+    this.farm.onEvents(evs);
+    const v = this.village;
+    const p = this.player.pos;
+    // you hear the farm when you are on it, and a hoe every tenth of a second would be a racket: the
+    // tool sounds share one small gate, so a busy row reads as work rather than as a stutter
+    const near = (x: number, z: number) => Math.hypot(x - p.x, z - p.z) < 10;
+    for (const ev of evs) {
+      const heard = this.farmSoundT <= 0 && near(ev.x, ev.z);
+      if (heard) this.farmSoundT = 0.3;
+      switch (ev.kind) {
+        case 'sow': if (heard) this.audio.seedDrop(); break;
+        case 'water': if (heard) this.audio.pour(); break;
+        case 'till': case 'clear': if (heard) this.audio.hoeDig(); break;
+        case 'harvest': if (heard) this.audio.pick(); break;
+        case 'ripe': {
+          if (!near(ev.x, ev.z) || this.ripeToast) break;
+          const tile = v.tileAt(Math.floor(ev.x), Math.floor(ev.z));
+          const plot = tile ? v.plots[tile.plot] : null;
+          this.ripeToast = true;
+          this.toast((ev.crop ? CROPS[ev.crop].plural : 'CROPS') + ' RIPE' + (plot ? ' IN THE ' + plot.name.toUpperCase() : ''));
+          break;
+        }
+        case 'deliver':
+          if (ev.rupees > 0 && near(ev.x, ev.z)) { this.audio.rupee(); this.toast('GRANARY +' + ev.rupees + ' RUPEES'); }
+          break;
+        case 'unlock':
+          this.ripeToast = false;
+          this.toast('COLTS MEADOW GOES INTO ROTATION');
+          break;
+        case 'day':
+          // the day belongs to the farm, so the notice is for whoever is standing in it
+          this.ripeToast = false;
+          if (Math.hypot(v.farmer.x - p.x, v.farmer.z - p.z) < 18) this.toast('DAY ' + ev.n1 + ' IN THISTLEDOWN');
+          break;
+      }
+    }
   }
 
   toast(msg: string) { this.toastMsg = msg; this.toastT = 2.2; }
@@ -391,6 +469,45 @@ export class Game implements GameCtx {
     this.talking = true;
     this.quests.talked.add(best.spec.id);
     this.audio.talk();
+  }
+
+  /**
+   * Pick what is ripe under the player's boots (or clear what has gone to seed). The village's farm is
+   * simulated ground, so this is not a scripted pickup: it calls the same verb the farmer's hoe calls,
+   * which is why the tile pops, the produce flies over and the row needs resowing afterwards.
+   */
+  /** the tile the player is standing at / facing that is worth his hands: ripe, or gone to seed */
+  private pickTarget() {
+    const p = this.player;
+    const f = FACING_VEC[p.facing];
+    // the tile he faces first, then the one he is standing on — the rows are one tile wide and close
+    for (const d of [0.75, 0]) {
+      const t = this.village.tileAt(Math.floor(p.pos.x + f[0] * d), Math.floor(p.pos.z + f[1] * d));
+      if (t && (isRipe(t) || t.wilted)) return t;
+    }
+    return null;
+  }
+
+  private tryPick(): boolean {
+    const t = this.pickTarget();
+    if (!t) return false;
+    const p = this.player;
+    const at = { x: p.pos.x, z: p.pos.z };
+    if (t.wilted) {
+      this.village.clearTile(t, at);
+      this.audio.grassCut();
+      this.toast('CLEARED A GONE-TO-SEED CROP');
+      return true;
+    }
+    const got = this.village.harvestTile(t, at);
+    if (!got) return false;
+    this.audio.pick();
+    if (p.hp < MAX_HP) {
+      p.hp = Math.min(MAX_HP, p.hp + 1);
+      this.audio.heart();
+      this.toast('FRESH ' + CROPS[got.crop].name + ' - +1 LIFE');
+    } else this.toast('FRESH ' + CROPS[got.crop].name);
+    return true;
   }
 
   private updateDialogue(dt: number) {
@@ -496,6 +613,9 @@ export class Game implements GameCtx {
       if (b.stump) { this.scene.remove(b.stump); b.stump = undefined; }
     }
     this.grass.resetCuts();
+    this.village.reset(); // a new run is a new season: fresh fields, the farmer back at his cart
+    this.farm.invalidate();
+    this.ripeToast = false;
     const ps = this.world.playerStart;
     this.player.reset(ps.x, ps.z);
     this.worldState.reset(); // a fresh run is a fresh world: new guards on every post, nothing carried over
@@ -568,10 +688,20 @@ export class Game implements GameCtx {
     for (const sp of this.spinners) sp.rotation.y += dt * 1.5;
     for (const ms of this.millSpinners) ms.rotation.z += dt * 0.9;
     if (this.toastT > 0) this.toastT -= dt;
+    if (this.farmSoundT > 0) this.farmSoundT -= dt;
 
     // NPCs (they idle/wander even mid-conversation freeze of the player)
     const pp = this.player.pos;
     for (const n of this.npcs) n.update(dt, !this.player.dead && n.canTalk());
+
+    // the village farm: crops grow, the farmer works his rows. It runs on the game clock, so it stops
+    // with a pause or a conversation and never behind your back while the title screen is up
+    if (!this.talking) {
+      this.village.tick(dt);
+      const evs = this.village.takeEvents();
+      if (evs.length) this.onVillageEvents(evs);
+      this.farm.update(dt);
+    }
 
     if (this.talking) {
       this.updateDialogue(dt);
@@ -583,6 +713,8 @@ export class Game implements GameCtx {
       this.tryTalk();
       if (this.talking !== before) { this.player.holding = false; this.player.charged = false; this.player.chargeT = 0; return; }
     }
+    // nothing to say to anyone: the fields are the other thing worth pressing E at
+    if (input.justPressed(USE_KEYS) && !this.player.attacking && this.tryPick()) return;
     void pp;
 
     this.updateWorld(dt);
@@ -784,6 +916,7 @@ export class Game implements GameCtx {
       dialogue: !!this.convo,
       toast: this.toastT > 0 ? this.toastMsg : '',
       canTalk: !this.talking && this.phase === 'playing' && this.npcs.some((n) => n.canTalk()),
+      canPick: !this.talking && this.phase === 'playing' && !!this.pickTarget(),
       gamepad: this.input.gamepadActive,
     });
     if (this.mapOpen && (this.phase === 'playing' || this.phase === 'paused')) {

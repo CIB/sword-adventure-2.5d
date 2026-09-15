@@ -160,6 +160,15 @@ export class AudioEngine {
   block() { this.tone('square', 2400, 0.05, 0.13); this.tone('square', 1700, 0.1, 0.1, { when: (this.ctx?.currentTime ?? 0) + 0.03 }); this.noise(0.04, 0.2, 'highpass', 4000); }
   grassCut() { this.noise(0.09, 0.16, 'bandpass', 2600, { q: 0.8, attack: 0.005 }); }
   bushCut() { this.noise(0.16, 0.32, 'bandpass', 1300, { q: 1, attack: 0.01 }); }
+  // ------------------------------------------------------------ the village farm
+  /** a hoe biting into soil: a low, dull crunch with dirt in it */
+  hoeDig() { this.noise(0.15, 0.2, 'bandpass', 720, { q: 1.1, f1: 240 }); this.tone('triangle', 190, 0.09, 0.07, { f1: 90 }); }
+  /** three seeds dropped into a furrow */
+  seedDrop() { const t = this.ctx?.currentTime ?? 0; for (let i = 0; i < 3; i++) this.tone('triangle', 660 + i * 150, 0.045, 0.05, { when: t + i * 0.05 }); }
+  /** a watering can's pour: a soft, filtered rush that tails off */
+  pour() { this.noise(0.55, 0.13, 'bandpass', 2300, { q: 0.6, f1: 620, attack: 0.06 }); }
+  /** picking a ripe crop off the plant: a bright little pluck */
+  pick() { const t = this.ctx?.currentTime ?? 0; this.tone('square', 1180, 0.05, 0.06, { when: t }); this.tone('triangle', 1760, 0.07, 0.05, { when: t + 0.045 }); }
   charged() { const t = this.ctx?.currentTime ?? 0; [880, 1108, 1318, 1760].forEach((f, i) => this.tone('square', f, 0.06, 0.09, { when: t + i * 0.045 })); }
   spin() { this.noise(0.38, 0.3, 'highpass', 700, { f1: 3500 }); this.tone('square', 300, 0.32, 0.07, { f1: 950 }); }
   alert() { const t = this.ctx?.currentTime ?? 0; this.tone('square', 1200, 0.05, 0.09, { when: t }); this.tone('square', 1600, 0.09, 0.09, { when: t + 0.05 }); }

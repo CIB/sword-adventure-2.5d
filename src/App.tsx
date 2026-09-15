@@ -218,7 +218,7 @@ export default function App() {
                 <div>J · SWORD (HOLD: SPIN)</div>
                 <div className="text-gray-400">(OR ARROWS + Z / X)</div>
                 <div>K · SHIELD</div>
-                <div className="text-gray-400">E · TALK</div>
+                <div className="text-gray-400">E · TALK · PICK RIPE CROPS</div>
                 <div className="text-gray-400">Q / R · ROTATE VIEW</div>
                 <div className="text-gray-400">TAB · WORLD MAP</div>
                 <div className="text-gray-400">ENTER · PAUSE · M · MUTE</div>
@@ -257,8 +257,8 @@ export default function App() {
         {help && phase !== 'title' && !dialogue && (
           <div className="absolute left-0 right-0 bottom-0 text-center text-[8px] md:text-[10px] leading-relaxed tracking-wider text-gray-200 bg-black/55 px-2 py-1 pointer-events-none">
             {gamepad
-              ? 'STICK/D-PAD MOVE · A SWORD (HOLD FOR SPIN ATTACK) · B SHIELD · X TALK · L/R ROTATE VIEW · R3 MAP · START PAUSE · Y FULLSCREEN · SELECT HIDE THIS · L3 MUTE'
-              : 'WASD MOVE · J SWORD (HOLD FOR SPIN ATTACK) · K SHIELD · E TALK · Q/R ROTATE VIEW · TAB MAP · ENTER PAUSE · F FULLSCREEN · H HIDE THIS · M MUTE'}
+              ? 'STICK/D-PAD MOVE · A SWORD (HOLD FOR SPIN ATTACK) · B SHIELD · X TALK / PICK CROPS · L/R ROTATE VIEW · R3 MAP · START PAUSE · Y FULLSCREEN · SELECT HIDE THIS · L3 MUTE'
+              : 'WASD MOVE · J SWORD (HOLD FOR SPIN ATTACK) · K SHIELD · E TALK / PICK CROPS · Q/R ROTATE VIEW · TAB MAP · ENTER PAUSE · F FULLSCREEN · H HIDE THIS · M MUTE'}
           </div>
         )}
       </div>

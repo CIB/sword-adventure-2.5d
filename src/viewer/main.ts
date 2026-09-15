@@ -9,6 +9,8 @@ import {
   buildFence, buildHouse, buildProp, buildHeart, buildRupee, buildArrow, buildJavelinProjectile, buildMoblinSpearProjectile,
   buildFernGeo, buildTallGrassGeo, buildBriarGeo, buildLilyGeo, buildBoulderGeo, vegObject, type Humanoid,
 } from '../game/models';
+import { cropGeo, furrowGeo, wiltGeo, produceGeo, buildWateringCan, buildSeedPouch, buildBasket } from '../game/crops';
+import { CROPS, CROP_IDS, cropStages, type CropId } from '../game/village';
 import type { PropKind, HouseSpec, EnemyKind } from '../game/world';
 import { World } from '../game/world';
 import { GrassSystem } from '../game/grass';
@@ -20,6 +22,21 @@ type Entry = { name: string; build: () => { obj: THREE.Object3D; humanoid?: Huma
 type Cat = { name: string; items: Entry[] };
 
 const hum = (h: Humanoid) => ({ obj: h.root, humanoid: h });
+/** a patch of the real thing: tilled tiles with a crop on each, jittered the way farm.ts does it */
+const cropField = (id: CropId, stage: number, w = 5, d = 3) => {
+  const g = new THREE.Group();
+  const soil = vegObject(furrowGeo()), plant = vegObject(cropGeo(CROPS[id], stage));
+  for (let z = 0; z < d; z++) for (let x = 0; x < w; x++) {
+    const s = new THREE.Mesh(soil.geometry, soil.material as THREE.Material);
+    s.position.set(x - w / 2, 0.001, z - d / 2);
+    g.add(s);
+    const p = new THREE.Mesh(plant.geometry, plant.material as THREE.Material);
+    p.position.set(x - w / 2 + (x % 3) * 0.05, 0.02, z - d / 2 + (z % 2) * 0.08);
+    p.rotation.y = (x * 7 + z * 3) % 6;
+    g.add(p);
+  }
+  return { obj: g, footprint: Math.max(w, d) + 2 };
+};
 const PROPS: PropKind[] = ['well', 'sign', 'stall', 'bench', 'weathercock', 'lamp', 'barrel', 'crate', 'flowerpot', 'hedge', 'log', 'menhir', 'cart', 'hay', 'scarecrow', 'campfire', 'tent', 'banner', 'tower', 'ruinwall', 'pillar', 'crown', 'windmill', 'anvil', 'forge', 'cauldron', 'grave', 'deadtree', 'reeds', 'rosebush', 'beehive', 'wheelbarrow', 'statue', 'mushroom', 'amberrock'];
 const world = new World();
 const grass = new GrassSystem(world);
@@ -46,6 +63,36 @@ const catalog: Cat[] = [
     { name: 'Lily pads', build: () => ({ obj: vegObject(buildLilyGeo()) }) },
     { name: 'Fence post', build: () => ({ obj: buildFence() }) },
     { name: 'Grass (animated)', build: () => ({ obj: grass.buildPatch(36, 22, 12, 12), footprint: 12 }) },
+  ] },
+  { name: 'Village farm', items: [
+    // one strip per crop: seed to ripe, planted in a row of real tilled ground, so the growth curve can
+    // be read at a glance (and the geometry checked against the soil it will sit on in game)
+    ...CROP_IDS.map((id) => ({
+      name: `${CROPS[id].name[0]}${CROPS[id].name.slice(1).toLowerCase()} (all stages)`,
+      build: () => {
+        const g = new THREE.Group();
+        const n = cropStages(id);
+        for (let i = 0; i < n; i++) {
+          const spot = new THREE.Mesh(furrowGeo(), new THREE.MeshToonMaterial({ vertexColors: true }));
+          spot.position.set(i * 0.92 - (n - 1) * 0.46, 0.001, 0);
+          g.add(spot);
+          const plant = vegObject(cropGeo(CROPS[id], i));
+          plant.position.set(i * 0.92 - (n - 1) * 0.46, 0.02, 0);
+          g.add(plant);
+        }
+        const gone = vegObject(wiltGeo());
+        gone.position.set(0.05, 0.02, 1.1);
+        g.add(gone);
+        return { obj: g, footprint: n + 1 };
+      },
+    })),
+    ...CROP_IDS.map((id) => ({ name: `${CROPS[id].name.toLowerCase()} produce`, build: () => ({ obj: vegObject(produceGeo(CROPS[id])) }) })),
+    { name: 'Tilled soil (one tile)', build: () => ({ obj: vegObject(furrowGeo()), footprint: 2 }) },
+    { name: 'Wilted crop', build: () => ({ obj: vegObject(wiltGeo()) }) },
+    { name: 'Watering can', build: () => ({ obj: buildWateringCan(), footprint: 1 }) },
+    { name: 'Seed pouch', build: () => ({ obj: buildSeedPouch(), footprint: 1.2 }) },
+    { name: 'Produce basket (full)', build: () => { const b = buildBasket(Object.values(CROPS)); b.slots.forEach((m) => { m.visible = true; }); return { obj: b.group }; } },
+    { name: 'Field (turnips, ripe)', build: () => cropField('turnip', cropStages('turnip') - 1) },
   ] },
   { name: 'Props', items: PROPS.map((k) => ({ name: k[0].toUpperCase() + k.slice(1), build: () => ({ obj: buildProp({ kind: k, x: 0, z: 0 }), footprint: k === 'tower' || k === 'windmill' ? 6 : k === 'statue' ? 3 : k === 'tent' || k === 'stall' ? 4 : k === 'deadtree' ? 2.5 : 2 }) })) },
   { name: 'Pickups & projectiles', items: [

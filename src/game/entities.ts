@@ -897,6 +897,15 @@ export class Enemy {
 }
 
 // ======================================================================= NPC
+/**
+ * A system that owns an NPC's body: it writes `pos`, `facing` and `moving` every frame and installs a
+ * `pose` hook for the animation a walk cycle cannot carry. The village farmer is the first user —
+ * `village.ts` decides where he works and what he is doing, `farm.ts` poses the tool in his hands.
+ */
+export interface NpcController {
+  update(dt: number, npc: Npc): void;
+}
+
 export class Npc {
   pos: Vec2;
   home: Vec2;
@@ -906,6 +915,12 @@ export class Npc {
   t = 0;
   wanderT = 0;
   dir: Vec2 = { x: 0, z: 0 };
+  /** true while the body is putting one foot in front of the other (a controller writes it) */
+  moving = false;
+  /** an outside system drives this NPC instead of the wander schedule (see NpcController) */
+  controller: NpcController | null = null;
+  /** last word on the pose, after the base animation: a controller's override of the joints */
+  pose: ((m: Humanoid, npc: Npc, dt: number) => void) | null = null;
   bubble: THREE.Group;
   readonly isDog: boolean;
   readonly HW = 0.28;
@@ -956,6 +971,17 @@ export class Npc {
     this.bubble.visible = near && !this.game.talking;
     if (this.bubble.visible) { this.bubble.position.y = (this.isDog ? 1.0 : 1.75) + Math.sin(this.t * 6) * 0.05; this.bubble.rotation.y = -this.facingAngle; }
     let moving = false;
+    if (this.controller) {
+      // A system owns this NPC's body: it writes position, facing and `moving`. The conversation freeze
+      // holds him where he is (a farmer mid-swing stops swinging when you walk up and say hello), and
+      // `facePlayer` has already turned him round, so what you see is a man waiting for you to finish.
+      if (!this.game.talking) {
+        this.controller.update(dt, this);
+        this.animate(this.moving, dt);
+      }
+      this.sync();
+      return;
+    }
     const wander = this.spec.wander ?? 0;
     if (!this.game.talking && wander > 0) {
       this.wanderT -= dt;
@@ -984,11 +1010,11 @@ export class Npc {
         if (moved < speed * dt * 0.3) this.wanderT = 0; else { moving = true; this.animT += moved * 9; }
       }
     }
-    this.animate(moving);
+    this.animate(moving, dt);
     this.sync();
   }
 
-  private animate(moving: boolean) {
+  private animate(moving: boolean, dt = 0) {
     const m = this.model;
     const sw = moving ? Math.sin(this.animT) : 0;
     if (this.isDog) {
@@ -1008,6 +1034,8 @@ export class Npc {
     else if (id === 'kid') { m.armL.rotation.set(-sw * 0.6 - 0.1, 0, -0.35); m.armR.rotation.set(sw * 0.6 - 0.1, 0, 0.35); m.body.position.y += moving ? 0 : Math.abs(Math.sin(this.t * 4)) * 0.03; }
     else if (id === 'shopkeeper') { m.armL.rotation.set(-1.0, 0, -0.3); m.armR.rotation.set(-1.0 + Math.sin(this.t * 1.5) * 0.1, 0, 0.3); }
     else { m.armL.rotation.set(sw * 0.4, 0, -0.1); m.armR.rotation.set(-sw * 0.4, 0, 0.1); }
+    // the controller gets the last word: its tool pose wins over the id-specific idle above
+    if (this.pose) this.pose(this.model, this, dt);
   }
 
   private sync() {

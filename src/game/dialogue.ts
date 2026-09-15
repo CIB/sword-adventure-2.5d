@@ -2,22 +2,31 @@
  * Village dialogue + quest data.
  *
  * Each NPC has a `talk` function that receives the current quest state and returns the lines to show
- * (an array of pages) plus an optional side effect once the conversation ends.
+ * (an array of pages) plus an optional side effect once the conversation ends. The village's farm is
+ * part of what they have to say: the farmer talks about the field he is standing in, and the state he
+ * reports is the real one (see `village.ts`), so a conversation is a window onto the simulation rather
+ * than a script read over it.
  */
-export type QuestId = 'shells' | 'bard' | 'granny';
+import { CROPS, type CropId, type FarmerAct, type VillageState } from './village';
+
+export type QuestId = 'shells' | 'bard' | 'granny' | 'seeds';
 export type QuestStage = 'hidden' | 'offered' | 'active' | 'done';
 
 export interface QuestState {
   shells: QuestStage;   // Elder: defeat 5 soldiers
   bard: QuestStage;     // Bard: bring 10 rupees for a song (lore)
   granny: QuestStage;   // Granny: cut 6 bushes in the meadow
+  seeds: QuestStage;    // Farmer + shopkeeper: put a fallow field back into rotation
   kills: number;
   bushes: number;
   rupeesSpent: number;
   talked: Set<string>;
 }
 
-export const newQuestState = (): QuestState => ({ shells: 'hidden', bard: 'hidden', granny: 'hidden', kills: 0, bushes: 0, rupeesSpent: 0, talked: new Set() });
+export const newQuestState = (): QuestState => ({
+  shells: 'hidden', bard: 'hidden', granny: 'hidden', seeds: 'hidden',
+  kills: 0, bushes: 0, rupeesSpent: 0, talked: new Set(),
+});
 
 export interface Conversation {
   name: string;
@@ -33,12 +42,38 @@ export interface TalkCtx {
   heal(): void;
   reward(rupees: number): void;
   toast(msg: string): void;
+  /** the village farm, live: what the fields look like right now */
+  village: VillageState;
+  /** lift the farmer's basket off him (he would have walked it to the cart) */
+  takeBasket(): { n: number; crop: CropId | null; value: number } | null;
+  /** buy a sack of seed for the village; a `plot` id puts that field back into rotation */
+  buySeeds(crop: CropId, price: number, plot?: number): boolean;
 }
 
 const KILL_GOAL = 5, BUSH_GOAL = 6, SONG_PRICE = 10;
-export const QUEST_GOALS = { KILL_GOAL, BUSH_GOAL, SONG_PRICE };
+/** a basket off the farmer's arm: cheaper than Bram's cooking, but only when the fields have given in */
+export const PRODUCE_PRICE = 12;
+/** the seed sack that takes Colts Meadow back into rotation */
+export const SEED_SACK_PRICE = 40;
+export const QUEST_GOALS = { KILL_GOAL, BUSH_GOAL, SONG_PRICE, PRODUCE_PRICE, SEED_SACK_PRICE };
 
 type Talker = (q: QuestState, ctx: TalkCtx) => Conversation;
+/**
+ * What the farmer is doing, in his own mouth. The simulation says which action he is in the middle of;
+ * these are the lines he'd give you if you walked up while it was happening.
+ */
+const ACT_LINE: Record<FarmerAct, string> = {
+  walk: 'just walking the rows. Every tile on them wants something different.',
+  till: 'breaking new ground - more of it than my back agrees with.',
+  sow: 'putting seed in. Turnips don\'t plant themselves, whatever the boy says.',
+  water: 'watering. Dry ground is dead ground and I won\'t have either.',
+  harvest: 'picking. These are past sweet for the pot and better for the pan.',
+  clear: 'clearing what I left too long. A ripe thing doesn\'t wait for a tired man.',
+  fetch: 'off to the cart for water and seed. That\'s the work - a loop, and you walk it.',
+  rest: 'a moment\'s breath. My grandmother\'s stone is smoother than my spine.',
+  idle: 'nothing wanting me this minute. It never lasts.',
+};
+
 
 export const NPC_TALK: Record<string, Talker> = {
   // ------------------------------------------------------------------ elder
@@ -115,14 +150,26 @@ export const NPC_TALK: Record<string, Talker> = {
   },
 
   // ------------------------------------------------------------------ shopkeeper
-  shopkeeper: (_q, ctx) => ({
-    name: 'BRAM',
-    color: '#ffd28a',
-    pages: ctx.rupees >= 20
+  shopkeeper: (q, ctx) => {
+    const v = ctx.village;
+    const locked = v ? v.plots.findIndex((p) => p.locked && !p.unlocked) : -1;
+    const meal = ctx.rupees >= 20
       ? ['Welcome to Bram\'s Sundries! Fresh apples, dried fish, and one very old shield polish.', 'A hearty meal for 20 rupees? It\'ll put the roses back in your cheeks.']
-      : ['Welcome to Bram\'s Sundries! ...Ah. Your purse looks as light as mine.', 'Come back with 20 rupees and I\'ll fix you a meal that heals every bruise.'],
-    onEnd: (_qs, c) => { if (c.rupees >= 20 && c.spendRupees(20)) { c.heal(); c.toast('HEALED!'); } },
-  }),
+      : ['Welcome to Bram\'s Sundries! ...Ah. Your purse looks as light as mine.', 'Come back with 20 rupees and I\'ll fix you a meal that heals every bruise.'];
+    // the seed sack: Bram sells the village its seed, and the player pays for it. A field comes with it.
+    const seeds = locked >= 0 && q.seeds !== 'done'
+      ? ['You\'ve heard Hollis at it, I\'d warrant. Colts Meadow\'s been fallow since the Crown went - too much ground for one man\'s back.', SEED_SACK_PRICE + ' rupees for a sack of pumpkin seed and I\'ll write the meadow into his plan for the spring.']
+      : [];
+    return {
+      name: 'BRAM',
+      color: '#ffd28a',
+      pages: [...meal, ...seeds],
+      onEnd: (_qs, c) => {
+        if (c.rupees >= 20 && c.spendRupees(20)) { c.heal(); c.toast('HEALED!'); }
+        if (locked >= 0 && q.seeds !== 'done' && c.buySeeds('pumpkin', SEED_SACK_PRICE, locked)) _qs.seeds = 'done';
+      },
+    };
+  },
 
   // ------------------------------------------------------------------ kid
   kid: (q) => ({
@@ -134,11 +181,56 @@ export const NPC_TALK: Record<string, Talker> = {
   }),
 
   // ------------------------------------------------------------------ farmer
-  farmer: () => ({
-    name: 'HOLLIS',
-    color: '#c8f0a0',
-    pages: ['Turnips, turnips, turnips. The knights don\'t eat them, at least. They don\'t eat anything anymore.', 'The river east of here used to be shallow. Since the Crown went missing it runs high and the old ford drowned. Use the bridges.'],
-  }),
+  // Hollis talks about the only thing he thinks about, and the sim is what he is thinking about: every
+  // number below is read off his fields at the moment he is asked. He also sells you what is in his
+  // basket, if he has picked anything and you have the coin for it.
+  farmer: (q, ctx) => {
+    const name = 'HOLLIS', color = '#c8f0a0';
+    const v = ctx.village;
+    const pages: string[] = [];
+    if (!v) return { name, color, pages: ['Turnips, turnips, turnips. The knights don\'t eat them, at least. They don\'t eat anything anymore.'] };
+    pages.push('Mornin\', miss - ' + ACT_LINE[v.farmer.act]);
+    const ready = v.readyCount(), thirsty = v.thirstyCount(), open = v.openCount(), fallow = v.fallowCount(), wilt = v.wiltedCount();
+    const field: string[] = [];
+    if (ready) field.push(ready + (ready === 1 ? ' row is' : ' rows are') + ' ripe and I\'ve ' + v.farmer.basketN + ' in the basket');
+    if (thirsty) field.push(thirsty + ' more thirsting; I\'ll have them watered before they sulk');
+    if (open) field.push(open + ' tiles broken bare, waiting on seed');
+    if (fallow) field.push(fallow + ' still gone to thistle - a man only has so many days in him');
+    if (wilt) field.push(wilt + ' I left too long, and I\'ll not speak of that to you');
+    // his report goes on as many pages as it needs: a man with 31 rows of thistle in front of him does
+    // not say it in one breath, and the dialogue box is only so wide
+    if (!field.length) pages.push('Day ' + v.day + ' on this ground, and every row of it is where it wants to be. Odd enough to make me suspicious.');
+    else {
+      pages.push('Day ' + v.day + ' on this ground. ' + field.slice(0, 2).join(', ') + '.');
+      if (field.length > 2) pages.push(field.slice(2).join(', ') + '.');
+    }
+    pages.push(v.farmer.basketN > 0
+      ? PRODUCE_PRICE + ' rupees for whatever\'s in the basket and you\'ll eat better than at the inn. Say the word and it\'s yours.'
+      : 'Nothing come up yet to sell you. A field doesn\'t hurry because a traveller\'s hungry - you know that better than most.');
+    const locked = v.plots.findIndex((p) => p.locked && !p.unlocked);
+    if (locked >= 0 && q.seeds === 'hidden') {
+      pages.push('Colts Meadow west of the lane\'s gone to thistle. Forty rupees of pumpkin seed off Bram and we\'d have it in rows before the month\'s out. ...I\'m telling you, not asking you to lend me mine.');
+    } else if (locked >= 0) {
+      pages.push('Bram\'s got the seed if you\'ve the rupees. I\'d not dally on it - ground\'s only good while it\'s warm.');
+    } else if (q.seeds === 'done') {
+      pages.push('That pumpkin seed\'s in the ground and coming faster than I expected. A pumpkin on a sprawl, aye - it works, and it\'ll keep all winter.');
+    }
+    if (!q.talked.has('farmer')) pages.push('The river east of here used to be shallow. Since the Crown went missing it runs high and the old ford drowned. Use the bridges, and use my rows if you\'re tired - nothing in them will bite you.');
+    return {
+      name, color, pages,
+      onEnd: (qs, c) => {
+        qs.seeds = qs.seeds === 'hidden' ? 'offered' : qs.seeds;
+        const vv = c.village;
+        if (vv && vv.farmer.basketN > 0 && c.rupees >= PRODUCE_PRICE && c.spendRupees(PRODUCE_PRICE)) {
+          const got = c.takeBasket();
+          if (got) {
+            c.heal();
+            c.toast('FARMER\'S BASKET: ' + got.n + ' ' + (got.crop ? CROPS[got.crop].plural : 'CROPS'));
+          }
+        }
+      },
+    };
+  },
 
   innkeeper: () => ({
     name: 'ROSAMUND', color: '#f0c890',
@@ -148,10 +240,17 @@ export const NPC_TALK: Record<string, Talker> = {
     name: 'GARRICK THE SMITH', color: '#c8c8d8',
     pages: ['Hmph. That blade of yours could take an edge. Come back when you\'ve dulled it on a few of those tin soldiers.', 'The knights\' armour is old Royal steel. Strike when they lift their arm - the plates gap under the shoulder.'],
   }),
-  goodwife: () => ({
-    name: 'HILDA', color: '#f0b0d0',
-    pages: ['Turnips and cabbages, cabbages and turnips. Hollis won\'t grow anything else!', 'My boy keeps sneaking down to the orchard. If you see him, tell him supper\'s on.'],
-  }),
+  goodwife: (_q, ctx) => {
+    const v = ctx.village;
+    const pages = ['Turnips and cabbages, cabbages and turnips. Hollis won\'t grow anything else!'];
+    if (v) {
+      if (v.plots.some((p) => p.locked && p.unlocked)) pages.push('Now pumpkins. The man\'s taken over the whole meadow and nobody thought to ask me.');
+      else if (v.readyCount() > 0) pages.push(v.readyCount() + ' rows ripe and a look on him like a crowned king. Buy some - he\'ll stand there telling you about it all day.');
+      else if (v.thirstyCount() > 0) pages.push('He\'s watering again. You\'d think rain was a rumour he\'d heard once, as a boy.');
+    }
+    pages.push('My boy keeps sneaking down to the orchard. If you see him, tell him supper\'s on.');
+    return { name: 'HILDA', color: '#f0b0d0', pages };
+  },
   boy: () => ({
     name: 'WILL', color: '#a0d0f0',
     pages: ['Psst! The smith has a real forge! He let me hold the hammer once. Just once.', 'Don\'t tell Mum, but there\'s a knight who stands by the pond south of the gate every night. Just... standing.'],

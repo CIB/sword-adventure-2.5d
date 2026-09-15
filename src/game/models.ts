@@ -552,7 +552,7 @@ export function buildRosebush(): THREE.Group {
 
 // ---------------------------------------------------------------- undergrowth (vertex-coloured, instanced)
 /** Paint a flat vertex colour across a geometry so several parts can be merged into one material. */
-function withColor(geo: THREE.BufferGeometry, hex: string, k = 1): THREE.BufferGeometry {
+export function withColor(geo: THREE.BufferGeometry, hex: string, k = 1): THREE.BufferGeometry {
   const c = new THREE.Color(hex).multiplyScalar(k);
   const n = geo.attributes.position.count;
   const arr = new Float32Array(n * 3);
@@ -1332,7 +1332,12 @@ export function buildVillager(look: VillagerLook): Humanoid {
       body.add(h);
       break;
     }
-    case 'hoe': handR.add(part(UNIT_CYL, m.wood, [0, 0.2, 0.05], [0.05, 1.3, 0.05])); handR.add(part(UNIT_BOX, toon('#8e8e88'), [0, 0.82, 0.16], [0.06, 0.06, 0.3])); break;
+    case 'hoe': {
+      // a named group so a system that hands this villager another tool (the farm farmer) can hide it
+      const tool = new THREE.Group(); tool.name = 'tool';
+      tool.add(part(UNIT_CYL, m.wood, [0, 0.2, 0.05], [0.05, 1.3, 0.05])); tool.add(part(UNIT_BOX, toon('#8e8e88'), [0, 0.82, 0.16], [0.06, 0.06, 0.3]));
+      handR.add(tool); break;
+    }
     case 'broom': handR.add(part(UNIT_CYL, m.wood, [0, -0.1, 0.05], [0.05, 1.1, 0.05])); handR.add(part(UNIT_CONE, toon('#e8c86a'), [0, -0.68, 0.05], [0.24, 0.3, 0.16]).rotateX(Math.PI)); break;
     case 'basket': handL.add(part(UNIT_CYL, toon('#c48b4f'), [0, -0.08, 0.1], [0.34, 0.24, 0.34])); break;
   }

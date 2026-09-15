@@ -18,6 +18,11 @@ export const ROTATE_CCW_KEYS = ['KeyQ', 'Comma'];
 export const ROTATE_CW_KEYS = ['KeyR', 'Period'];
 /** Talk / advance dialogue. The attack keys also work so a Zelda-style "A to talk" feels natural. */
 export const TALK_KEYS = ['KeyE', 'KeyC', 'KeyJ', 'KeyZ', 'Space', 'Enter'];
+/**
+ * Use / interact with the world rather than a person: picking a ripe crop off the village's plants
+ * (gamepad X, like talking — deliberately not the attack keys, so a swing is never eaten by a harvest).
+ */
+export const USE_KEYS = ['KeyE', 'KeyC'];
 
 /**
  * Gamepad → virtual key codes (standard mapping, e.g. Xbox layout / Android handhelds like the Ayn Thor).

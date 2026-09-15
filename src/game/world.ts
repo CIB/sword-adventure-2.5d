@@ -11,6 +11,25 @@ export type PropKind = 'well' | 'sign' | 'stall' | 'bench' | 'weathercock' | 'la
   | 'windmill' | 'anvil' | 'forge' | 'cauldron' | 'grave' | 'deadtree' | 'reeds' | 'rosebush' | 'beehive' | 'wheelbarrow' | 'statue' | 'mushroom' | 'amberrock';
 export interface PropSpec { kind: PropKind; x: number; z: number; rot?: number }
 export interface NpcSpec { id: string; x: number; z: number; facing?: 0 | 1 | 2 | 3; wander?: number }
+/** the crops the village grows — kept as a local union so `world.ts` never depends on `village.ts` */
+export type FarmCrop = 'turnip' | 'potato' | 'tomato' | 'pumpkin';
+/**
+ * A working farm plot in the village: a rect of `Tile.Bed` ground, the crop it grows, and the cart
+ * stand the farmer rests at and unloads produce on. `village.ts` turns the rect into simulated soil —
+ * tilled, sown, watered, harvested — and everything it touches is carved out of the decorative bed
+ * texture so the 3D crops are the only plants on it. `locked` plots are real ground the village has
+ * not taken on yet (the shopkeeper's seed sack opens them).
+ */
+export interface FarmPlotSpec {
+  id: number;
+  name: string;
+  crop: FarmCrop;
+  /** the plot's bed ground, tile-inclusive rect */
+  x0: number; z0: number; x1: number; z1: number;
+  /** where the seed crates and water butt stand (a walkable spot, in world units) */
+  cart: [number, number];
+  locked?: boolean;
+}
 /** how tightly a post's guards hold their ground */
 export type PostStyle = 'cluster' | 'spread';
 /**
@@ -96,6 +115,7 @@ export class World {
   /** tiles carrying undergrowth: ferns / tall grass / briars / boulders (keeps flowers & co. clear) */
   vegCell = new Uint8Array(MAP_W * MAP_H);
   houses: HouseSpec[] = [
+
     { x: 4, z: 3, w: 5, d: 3, roof: '#b73c3c', wall: '#e8d6a8', sign: 'none' },       // elder's house
     { x: 12, z: 2, w: 5, d: 3, roof: '#3a5fd0', wall: '#e8d6a8', sign: 'none' },      // Marin & Tarin style cottage
     { x: 2, z: 9, w: 4, d: 3, roof: '#8a3fc4', wall: '#f0e2c0', sign: 'none' },       // library-ish
@@ -116,6 +136,20 @@ export class World {
   playerStart: Vec2 = { x: 9.5, z: 9.5 };
   /** Village bounds (tiles, inclusive) - enemies stay out */
   village = { x0: 1, z0: 1, x1: 32, z1: 29 };
+  /**
+   * The village's working farms (see `village.ts`). The south field and the kitchen garden by the lane
+   * are the farmer's; the third plot is overgrown ground the shopkeeper's seed sack puts back into
+   * rotation. All of it is inside the fence, so a run through the fields is never a run through a battle.
+   */
+  farmPlots: FarmPlotSpec[] = [
+    { id: 0, name: 'South Field', crop: 'turnip', x0: 2, z0: 19, x1: 7, z1: 27, cart: [9.5, 21.5] },
+    { id: 1, name: 'Kitchen Garden', crop: 'tomato', x0: 12, z0: 18, x1: 19, z1: 20, cart: [9.5, 21.5] },
+    { id: 2, name: 'Colts Meadow', crop: 'pumpkin', x0: 3, z0: 13, x1: 6, z1: 15, cart: [9.5, 21.5], locked: true },
+  ];
+  /** 1 on every bed tile inside a farm plot: live, simulated soil (drawn by farm.ts, not by the texture) */
+  farmCell = new Uint8Array(MAP_W * MAP_H);
+  /** every farm tile in the world, as [x, z, plot] (built alongside `farmCell`) */
+  farmTiles: [number, number, number][] = [];
   private rng = new RNG(20240607);
 
   constructor() {
@@ -656,6 +690,19 @@ export class World {
       if (pr.kind === 'tower' || pr.kind === 'windmill') for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) occupied[this.idx(tx + dx, tz + dz)] = 1;
     }
 
+    // 10a. the village's working farm: which bed ground is live, simulated soil --------------------------
+    // Marked after props have claimed their tiles, so a scarecrow or a fence post standing in a plot
+    // simply takes that tile out of the farm. `village.ts` builds the same list from the same rule
+    // (bed ground, not solid), which is why the two never disagree about what is farmed.
+    for (const p of this.farmPlots) {
+      for (let z = p.z0; z <= p.z1; z++) for (let x = p.x0; x <= p.x1; x++) {
+        const i = this.idx(x, z);
+        if (this.tiles[i] !== Tile.Bed || occupied[i] !== 2) continue;
+        this.farmCell[i] = 1;
+        this.farmTiles.push([x, z, p.id]);
+      }
+    }
+
     // 10b. undergrowth (CDDA-style): ferns in the woods, tall grass in the meadows, briars on the moor,
     // boulders on the rock, lily pads in still water
     const vegFree = (x: number, z: number, minRiver: number) => {
@@ -713,9 +760,12 @@ export class World {
     for (let z = 0; z < h; z++) for (let x = 0; x < w; x++) {
       const i = this.idx(x, z);
       const t = this.tiles[i];
-      const s = t === Tile.Water || t === Tile.Cliff || this.treeCell[i] === 1 || this.houseCell[i] === 1 || occupied[i] >= 1;
+      // the village's farm rows are ground you walk: crops stay short, and the farmer works standing
+      // in them (see village.ts), so bed soil the farm claimed is neither solid nor tall
+      const plot = this.farmCell[i] === 1;
+      const s = t === Tile.Water || t === Tile.Cliff || this.treeCell[i] === 1 || this.houseCell[i] === 1 || (occupied[i] >= 1 && !plot);
       this.solid[i] = s ? 1 : 0;
-      this.tall[i] = (t === Tile.Cliff || this.treeCell[i] === 1 || this.houseCell[i] === 1 || occupied[i] === 1) ? 1 : 0;
+      this.tall[i] = (t === Tile.Cliff || this.treeCell[i] === 1 || this.houseCell[i] === 1 || (occupied[i] === 1 && !plot)) ? 1 : 0;
     }
 
     for (const np of this.npcs) if (this.isSolidTile(Math.floor(np.x), Math.floor(np.z))) { const p = this.nearestFree(np.x, np.z); np.x = p.x; np.z = p.z; }
@@ -1019,8 +1069,9 @@ export class World {
       { kind: 'anvil', x: 26.5, z: 15.5 }, { kind: 'forge', x: 29.5, z: 16.5 },
       // rose bushes by the inn and the south gate
       { kind: 'rosebush', x: 22.5, z: 6.5 }, { kind: 'rosebush', x: 27.5, z: 6.5 }, { kind: 'rosebush', x: 13.5, z: 27.5 },
-      // farm yard: wheelbarrow and beehive by the home meadow
+      // farm yard: wheelbarrow, seed crate and the water butt the farmer fills his can at
       { kind: 'wheelbarrow', x: 10.5, z: 22.5 }, { kind: 'beehive', x: 22.5, z: 39.5 },
+      { kind: 'barrel', x: 8.5, z: 21.5 }, { kind: 'crate', x: 11.5, z: 21.5 },
     ];
     this.npcs = [
       { id: 'elder', x: 6.5, z: 7.5, facing: 0, wander: 0 },
@@ -1028,7 +1079,8 @@ export class World {
       { id: 'kid', x: 10.5, z: 10.5, facing: 1, wander: 2.5 },
       { id: 'granny', x: 5.5, z: 12.5, facing: 1, wander: 0 },
       { id: 'bard', x: 8.5, z: 11.0, facing: 1, wander: 0 },
-      { id: 'farmer', x: 11.5, z: 3.5, facing: 3, wander: 1.5 },
+      // the farmer lives on his fields: village.ts drives him (see FarmPlotSpec.cart), so he does not wander
+      { id: 'farmer', x: 9.5, z: 21.5, facing: 2, wander: 0 },
       { id: 'dog', x: 12.5, z: 9.5, facing: 3, wander: 3 },
       { id: 'innkeeper', x: 25.5, z: 6.6, facing: 0, wander: 0 },
       { id: 'smith', x: 27.5, z: 16.5, facing: 3, wander: 1 },
@@ -1208,7 +1260,8 @@ export class World {
       } else if (t === Tile.Cobble) {
         r = 178; g = 166; b = 142;
       } else if (t === Tile.Bed) {
-        r = 130; g = 90; b = 54;
+        // the village's working plots read a shade lighter and warmer than a decorative flower bed
+        if (this.farmCell[i]) { r = 150; g = 106; b = 62; } else { r = 130; g = 90; b = 54; }
       } else if (t === Tile.Cliff) {
         r = 130; g = 96; b = 64;
       } else {
@@ -1468,18 +1521,36 @@ export class World {
         });
         if (hash2(tx, tz, 77) < 0.3) { g.fillStyle = C.grassD; g.fillRect(ox + Math.floor(hash2(tx, tz, 78) * (T - 2)), oz + Math.floor(hash2(tx, tz, 79) * (T - 2)), 1, 2); }
       } else if (t === Tile.Bed) {
-        // tilled soil rows with little plants (Millbrook grows golden wheat)
-        const wheat = bw.farm > 0.5;
-        g.fillStyle = wheat ? '#7a5230' : C.soil; g.fillRect(ox, oz, T, T);
-        for (let y = 2; y < T; y += 5) { g.fillStyle = wheat ? '#9a6e46' : C.soilL; g.fillRect(ox, oz + y, T, 1); g.fillStyle = '#5a3a1e'; g.fillRect(ox, oz + y + 3, T, 1); }
-        for (let i = 0; i < 4; i++) {
-          const x = ox + 2 + (i * 5) % (T - 3), y = oz + 3 + Math.floor(hash2(tx, tz, i) * 3) * 5;
-          const c = hash2(tx, tz, i + 8) < 0.5 ? (wheat ? '#d8b84a' : C.leaf) : (wheat ? '#c8a23f' : C.leafL);
-          g.fillStyle = c; g.fillRect(x - 1, y, 3, 1); g.fillRect(x, y - 1, 1, 3);
-          if (wheat) { g.fillStyle = '#e8d070'; g.fillRect(x, y - 1, 1, 1); } // grain head
-          else if (hash2(tx, tz, i + 16) < 0.3) { g.fillStyle = '#ff6a3d'; g.fillRect(x, y, 1, 1); }
+        if (this.farmCell[this.idx(tx, tz)] === 1) {
+          // the village's live farm ground: rough, unworked soil with weeds, clods and the odd stone.
+          // Furrows, plants and the dark of a watered tile are all 3D (see farm.ts), so the texture
+          // paints nothing green here — a baked sprout would fight the simulation for the same pixels.
+          g.fillStyle = '#6b4a2c'; g.fillRect(ox, oz, T, T);
+          for (let i = 0; i < 7; i++) {
+            const x = ox + Math.floor(hash2(tx, tz, i) * (T - 2)), y = oz + Math.floor(hash2(tx, tz, i + 11) * (T - 2));
+            g.fillStyle = i % 2 ? '#7d5836' : '#563619'; g.fillRect(x, y, 2, 1);
+          }
+          for (let i = 0; i < 3; i++) { // weeds and last season's stubble
+            const x = ox + 2 + Math.floor(hash2(tx, tz, i + 31) * (T - 5)), y = oz + 3 + Math.floor(hash2(tx, tz, i + 41) * (T - 6));
+            g.fillStyle = i % 2 ? '#6f8a3f' : '#55702f';
+            g.fillRect(x, y, 1, 2); g.fillRect(x - 1, y + 1, 1, 1); g.fillRect(x + 1, y, 1, 1);
+          }
+          if (hash2(tx, tz, 51) < 0.35) { g.fillStyle = '#8a8478'; g.fillRect(ox + 3 + Math.floor(hash2(tx, tz, 52) * (T - 7)), oz + 4 + Math.floor(hash2(tx, tz, 53) * (T - 9)), 2, 1); }
+          g.fillStyle = '#4a2f18'; g.fillRect(ox, oz, T, 1); g.fillRect(ox, oz, 1, T);
+        } else {
+          // tilled soil rows with little plants (Millbrook grows golden wheat)
+          const wheat = bw.farm > 0.5;
+          g.fillStyle = wheat ? '#7a5230' : C.soil; g.fillRect(ox, oz, T, T);
+          for (let y = 2; y < T; y += 5) { g.fillStyle = wheat ? '#9a6e46' : C.soilL; g.fillRect(ox, oz + y, T, 1); g.fillStyle = '#5a3a1e'; g.fillRect(ox, oz + y + 3, T, 1); }
+          for (let i = 0; i < 4; i++) {
+            const x = ox + 2 + (i * 5) % (T - 3), y = oz + 3 + Math.floor(hash2(tx, tz, i) * 3) * 5;
+            const c = hash2(tx, tz, i + 8) < 0.5 ? (wheat ? '#d8b84a' : C.leaf) : (wheat ? '#c8a23f' : C.leafL);
+            g.fillStyle = c; g.fillRect(x - 1, y, 3, 1); g.fillRect(x, y - 1, 1, 3);
+            if (wheat) { g.fillStyle = '#e8d070'; g.fillRect(x, y - 1, 1, 1); } // grain head
+            else if (hash2(tx, tz, i + 16) < 0.3) { g.fillStyle = '#ff6a3d'; g.fillRect(x, y, 1, 1); }
+          }
+          g.fillStyle = '#5a3a1e'; g.fillRect(ox, oz, T, 1); g.fillRect(ox, oz, 1, T);
         }
-        g.fillStyle = '#5a3a1e'; g.fillRect(ox, oz, T, 1); g.fillRect(ox, oz, 1, T);
       }
       // feather this tile's edges into differently-coloured natural neighbours: a wavy, dithered
       // gradient band (pure neighbour colour at the seam, stepping back into own with dither).
