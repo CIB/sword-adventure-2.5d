@@ -173,6 +173,50 @@ check('the ground tell is measured in tiles of world, not in beetle lengths',
     `moved ${Math.abs(player.pos.z - pz0).toFixed(2)} tiles, hp ${player.hp}, ${hits.length} hit(s)`);
 }
 
+// A sword blow mid-charge: the beetle has braced for the clap, so a plain swing only nudges it
+// and does not cancel the charge — the clap comes anyway. Only the charged spin breaks it off.
+{
+  const { ctx, player, hits } = makeCtx(44.5, 41.5);
+  const bug = new Enemy(ctx, 'ladybug', 44.5, 39.1);
+  bug.facing = 0; // due south, at the player
+  ctx.enemies.push(bug);
+  bug.state = 'windup'; bug.stateT = 0.5; // shell partway open
+  const pz0 = player.pos.z;
+  bug.hurt(1, player.pos.x, player.pos.z); // a plain swing lands on the charging shell
+  check('a plain swing does not cancel the charge', bug.state === 'windup' && bug.stateT > 0.4,
+    `state=${bug.state} t=${bug.stateT.toFixed(2)}`);
+  check('...and the braced beetle takes a lighter shove', Math.hypot(bug.knock.x, bug.knock.z) < 4 && bug.knockT < 0.22,
+    `shove ${Math.hypot(bug.knock.x, bug.knock.z).toFixed(1)} for ${bug.knockT.toFixed(2)}s (a loose beetle takes 6.5 for 0.22s)`);
+  // let the charge finish, the clap land, and her throw play out
+  for (let i = 0; i < Math.round(1.5 / DT); i++) {
+    bug.update(DT); player.update(DT, NO_INPUT);
+  }
+  check('the clap comes anyway, on the charge that was never cancelled',
+    hits.length === 1 && player.hp === MAX_HP - bug.st.dmg && player.pos.z > pz0 + 0.5,
+    `hp ${player.hp} of ${MAX_HP}, ${hits.length} hit(s), moved ${(player.pos.z - pz0).toFixed(2)} tiles`);
+}
+
+// The charge stance, measured head-on against a loose beetle — and the one blow that still breaks
+// the charge off: the charged spin.
+{
+  const { ctx, player } = makeCtx(44.5, 41.5);
+  const braced = new Enemy(ctx, 'ladybug', 44.5, 39.1);
+  braced.state = 'windup'; braced.stateT = 0.5;
+  const loose = new Enemy(ctx, 'ladybug', 46.5, 39.1);
+  ctx.enemies.push(braced, loose);
+  braced.hurt(1, player.pos.x, player.pos.z);
+  loose.hurt(1, player.pos.x, player.pos.z);
+  const kb = Math.hypot(braced.knock.x, braced.knock.z), kl = Math.hypot(loose.knock.x, loose.knock.z);
+  check('a charging beetle takes less than half the shove a loose one does',
+    kb > 0 && kl > 6 && kl < 7 && kb < kl / 2, `charging ${kb.toFixed(1)} vs loose ${kl.toFixed(1)}`);
+  check('...and it is back on its feet sooner', braced.knockT < loose.knockT,
+    `${braced.knockT.toFixed(2)}s vs ${loose.knockT.toFixed(2)}s`);
+  check('...and its charge is still going', braced.state === 'windup' && loose.state === 'chase',
+    `braced=${braced.state} loose=${loose.state}`);
+  braced.hurt(1, player.pos.x, player.pos.z, true); // the charged spin
+  check('the charged spin does break the charge off', braced.state === 'chase', `state=${braced.state}`);
+}
+
 // Everything in the cone goes, not just the heroine: soldiers are blown off their feet, and an arrow
 // in the air is turned around and sent back where it came from.
 {

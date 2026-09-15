@@ -196,11 +196,11 @@ export class Player {
     this.game.spawnEffect(fxSpinWave(this, SPIN_DUR, SPIN_RADIUS).at(this.pos.x, this.pos.z));
   }
 
-  /** Arc (world angles) swept by the sword since the last frame */
-  getSweep(): { from: number; to: number; r: number; dmg: number; hit: Set<object> } | null {
+  /** Arc (world angles) swept by the sword since the last frame (`heavy` = the charged spin, not a plain swing) */
+  getSweep(): { from: number; to: number; r: number; dmg: number; heavy: boolean; hit: Set<object> } | null {
     if (!this.sweepActive) return null;
     // the model is mirrored (left-handed), so the blade's world angle is facing - sweep
-    return { from: normAngle(this.facingAngle - this.sweepPrev), to: normAngle(this.facingAngle - this.sweepCur), r: this.sweepR, dmg: this.sweepDmg, hit: this.sweepHit };
+    return { from: normAngle(this.facingAngle - this.sweepPrev), to: normAngle(this.facingAngle - this.sweepCur), r: this.sweepR, dmg: this.sweepDmg, heavy: this.state === 'spin', hit: this.sweepHit };
   }
 
   hurt(dmg: number, sx: number, sz: number) {
@@ -376,6 +376,10 @@ const LADYBUG_CHARGE = 1.1;
 const LADYBUG_OPEN = 1.25;
 /** the shove a point-blank gust puts on the heroine (falls off with distance), tiles/second */
 const GUST_PUSH = 13;
+/** a beetle in its charge has braced for the clap: how hard a sword blow pushes it back, and for
+    how long it stays off balance (a beetle standing loose takes 6.5 of shove for 0.22 seconds) */
+const LADYBUG_CHARGING_KNOCK = 2.5;
+const LADYBUG_CHARGING_KNOCK_T = 0.12;
 
 /** how far a guard on a tight post (bridge, camp) may drift from its own spot, in tiles */
 const TIGHT_LEASH = 2.2;
@@ -847,8 +851,8 @@ export class Enemy {
     this.knockT = 0.18;
   }
 
-  /** returns true when the enemy died */
-  hurt(dmg: number, sx: number, sz: number): boolean {
+  /** returns true when the enemy died. `heavy` marks the charged spin, as opposed to a plain sword swing */
+  hurt(dmg: number, sx: number, sz: number, heavy = false): boolean {
     if (!this.alive) return false;
     // Moblin Shield Guard — frontal block while shield is up (LA Switch remake: big shield halts movement and absorbs hits, breaks after 3)
     if (this.kind === 'moblin' && this.moblinGuardBroken <= 0) {
@@ -880,8 +884,12 @@ export class Enemy {
     let dx = this.pos.x - sx, dz = this.pos.z - sz;
     const d = Math.hypot(dx, dz) || 1;
     dx /= d; dz /= d;
-    this.knock = { x: dx * 6.5, z: dz * 6.5 };
-    this.knockT = 0.22;
+    // A ladybug in its charge has braced for the clap: the same sword blow that flings a loose
+    // beetle around only nudges the charging one back, and for less time.
+    const charging = isLadybug(this.kind) && this.state === 'windup';
+    const force = charging ? LADYBUG_CHARGING_KNOCK : 6.5;
+    this.knock = { x: dx * force, z: dz * force };
+    this.knockT = charging ? LADYBUG_CHARGING_KNOCK_T : 0.22;
     this.flashT = 0.15;
     setEmissive(this.model.materials, true);
     if (this.model.weapon) this.model.weapon.visible = true;
@@ -890,6 +898,9 @@ export class Enemy {
       this.game.scene.remove(this.model.root);
       return true;
     }
+    // A plain swing does not cancel the charge at all: the shell keeps coming open and the clap
+    // goes out whatever lands on it. Only the charged spin (or death) breaks it off.
+    if (charging && !heavy) return false;
     this.state = this.melee ? 'chase' : 'ranged';
     this.cooldown = Math.max(this.cooldown, 0.5);
     return false;
