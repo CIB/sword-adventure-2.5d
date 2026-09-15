@@ -183,6 +183,16 @@ function animate(dt: number) {
   m.body.position.y = Math.abs(swing) * 0.04;
   if (m.ponytail) m.ponytail.rotation.x = swing * 0.2 + 0.15;
   m.armL.rotation.x = swing * 0.3;
+  // the giant ladybug: breathe its wing covers open and shut (with the hindwings beating under them)
+  // so the shell and the wings beneath it can actually be looked at here
+  if (m.elytronL && m.elytronR) {
+    const open = 0.05 + (0.5 + 0.5 * Math.sin(animT * 0.25)) * 1.2;
+    m.elytronL.rotation.z = open;
+    m.elytronR.rotation.z = -open;
+    const beat = open * 0.55 + Math.sin(animT * 1.4) * 0.45;
+    if (m.hindwingL) m.hindwingL.rotation.z = beat;
+    if (m.hindwingR) m.hindwingR.rotation.z = -beat;
+  }
 }
 
 // ------------------------------------------------------------------ UI
