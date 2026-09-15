@@ -1,13 +1,14 @@
 import * as THREE from 'three';
-import { FACING_ANGLE, FACING_VEC, MAX_HP, inArc, lerp, normAngle, facingFrom, facingDelta, randomFacing, FACING_HALF_STEP, type Facing } from './constants';
+import { FACING_ANGLE, FACING_VEC, MAX_HP, clamp, inArc, lerp, normAngle, facingFrom, facingDelta, randomFacing, FACING_HALF_STEP, type Facing } from './constants';
 import type { AudioEngine } from './audio';
 import type { Input } from './input';
 import { ATTACK_KEYS, SHIELD_KEYS } from './input';
 import type { EnemyKind, Vec2, World, NpcSpec } from './world';
 import type { Post, WorldSoldier } from './worldstate';
+import { ACTIONS, type VillageState, type CropKind } from './village';
 import {
-  buildArrow, buildHeart, buildHeroine, buildJavelinProjectile, buildMoblinSpearProjectile, buildRupee, buildSoldier, part,
-  UNIT_BOX, UNIT_OCTA, UNIT_SPHERE, type Humanoid, buildVillager, buildDog, VILLAGER_LOOKS,
+  buildArrow, buildHeart, buildHeroine, buildJavelinProjectile, buildMoblinSpearProjectile, buildRupee, buildSoldier, part, toon,
+  UNIT_BOX, UNIT_OCTA, UNIT_SPHERE, type Humanoid, buildVillager, buildDog, buildWateringCan, VILLAGER_LOOKS,
 } from './models';
 
 export interface GameCtx {
@@ -911,7 +912,7 @@ export class Npc {
   readonly HW = 0.28;
   readonly HH = 0.24;
 
-  constructor(private game: GameCtx, public spec: NpcSpec) {
+  constructor(protected game: GameCtx, public spec: NpcSpec) {
     this.pos = { x: spec.x, z: spec.z };
     this.home = { x: spec.x, z: spec.z };
     this.facing = ((spec.facing ?? 0) * 2) as Facing; // specs use the classic 4 directions
@@ -988,7 +989,7 @@ export class Npc {
     this.sync();
   }
 
-  private animate(moving: boolean) {
+  protected animate(moving: boolean) {
     const m = this.model;
     const sw = moving ? Math.sin(this.animT) : 0;
     if (this.isDog) {
@@ -1010,9 +1011,166 @@ export class Npc {
     else { m.armL.rotation.set(sw * 0.4, 0, -0.1); m.armR.rotation.set(-sw * 0.4, 0, 0.1); }
   }
 
-  private sync() {
+  protected sync() {
     this.model.root.position.set(this.pos.x, this.game.world.surfaceAt(this.pos.x, this.pos.z), this.pos.z);
     this.model.root.rotation.y = this.facingAngle;
+  }
+}
+
+// ======================================================================= FARMER
+const smoothstep = (a: number, b: number, t: number) => { const p = Math.min(1, Math.max(0, (t - a) / (b - a))); return p * p * (3 - 2 * p); };
+
+/**
+ * The village farmer: a live view of VillageState.farmer. The village sim owns where he is and
+ * what he's doing (walking the rows, sowing, watering, pulling a ripe crop, leaning on his hoe);
+ * this entity mirrors that and plays the matching animation with the hoe, the watering can and
+ * whatever he just pulled out of the ground. He is still an Npc — the player can talk to him —
+ * and while he is being talked to he faces her and stands easy.
+ */
+export class Farmer extends Npc {
+  /** the hoe, re-parented into its own group so it can be swung in the hand */
+  private hoe: THREE.Group;
+  private can: THREE.Group;
+  /** the tip of the can's spout: where the water comes out (world position via matrixWorld) */
+  spout = new THREE.Object3D();
+  private produce: Record<CropKind, THREE.Group>;
+  private chatting = false;
+  private lastX: number; private lastZ: number;
+
+  constructor(game: GameCtx, spec: NpcSpec, private village: VillageState) {
+    super(game, spec);
+    const m = this.model;
+    this.hoe = new THREE.Group();
+    for (const c of [...m.handR.children]) if (c.type === 'Mesh') { m.handR.remove(c); this.hoe.add(c); }
+    m.handR.add(this.hoe);
+    this.can = buildWateringCan();
+    this.can.visible = false;
+    this.spout.position.set(0, -0.07, 0.28);
+    this.can.add(this.spout);
+    m.handL.add(this.can);
+    const veg = (crop: CropKind) => {
+      const g = new THREE.Group();
+      if (crop === 'turnip') {
+        g.add(part(UNIT_SPHERE, toon('#e8d8f0'), [0, -0.12, 0.06], [0.28, 0.24, 0.28]));
+        g.add(part(UNIT_SPHERE, toon('#9a4fb8'), [0, -0.02, 0.06], [0.24, 0.14, 0.24]));
+        for (const x of [-0.06, 0.04]) g.add(part(UNIT_BOX, toon('#5cbf4a'), [x, 0.1, 0.06], [0.06, 0.22, 0.06]));
+      } else {
+        g.add(part(UNIT_SPHERE, toon('#4faa5a'), [0, -0.08, 0.06], [0.36, 0.26, 0.36]));
+        g.add(part(UNIT_SPHERE, toon('#c8e8a0'), [0, -0.03, 0.06], [0.24, 0.24, 0.24]));
+      }
+      g.visible = false;
+      m.handL.add(g);
+      return g;
+    };
+    this.produce = { turnip: veg('turnip'), cabbage: veg('cabbage') };
+    const f = village.farmer;
+    this.pos.x = f.x; this.pos.z = f.z; this.facing = f.facing;
+    this.lastX = f.x; this.lastZ = f.z;
+    this.sync();
+  }
+
+  facePlayer() {
+    super.facePlayer();
+    this.chatting = true;
+  }
+
+  update(dt: number, near: boolean) {
+    this.t += dt;
+    this.bubble.visible = near && !this.game.talking;
+    if (this.bubble.visible) { this.bubble.position.y = 1.75 + Math.sin(this.t * 6) * 0.05; this.bubble.rotation.y = -this.facingAngle; }
+    if (!this.game.talking) this.chatting = false;
+    const f = this.village.farmer;
+    // mirror the sim: position always; facing unless he's turned to talk to the player
+    this.pos.x = f.x; this.pos.z = f.z;
+    if (!this.chatting) this.facing = f.facing;
+    const moved = Math.hypot(f.x - this.lastX, f.z - this.lastZ);
+    this.lastX = f.x; this.lastZ = f.z;
+    const moving = moved > 1e-4;
+    if (moving) this.animT += moved * 9;
+    this.pose(moving);
+    this.sync();
+  }
+
+  private pose(moving: boolean) {
+    const m = this.model, f = this.village.farmer;
+    const sw = moving ? Math.sin(this.animT) : 0;
+    m.legL.rotation.x = sw * 0.6; m.legR.rotation.x = -sw * 0.6;
+    m.body.position.y = moving ? Math.abs(Math.sin(this.animT)) * 0.03 : Math.sin(this.t * 2) * 0.008;
+    m.body.rotation.x = 0; m.head.rotation.set(0, 0, 0);
+    this.can.visible = false; this.can.rotation.x = 0;
+    for (const k of Object.keys(this.produce) as CropKind[]) this.produce[k].visible = false;
+    // the hoe carried over the shoulder, the free hand swinging or hanging
+    const carry = () => { m.armR.rotation.set(-0.5, 0, 0.15); this.hoe.rotation.x = 0; };
+    const task = this.chatting ? 'idle' : f.task;
+    switch (task) {
+      case 'walk': carry(); m.armL.rotation.set(sw * 0.45, 0, -0.1); break;
+      case 'rest': {
+        // leaning on the hoe, butt on the ground, looking out over the field
+        m.armR.rotation.set(-0.42, 0, 0.1); this.hoe.rotation.x = 0.18;
+        m.armL.rotation.set(0.1, 0, -0.12);
+        m.body.rotation.x = 0.06; m.head.rotation.y = Math.sin(this.t * 0.7) * 0.35;
+        break;
+      }
+      case 'sow': {
+        const t = f.t, a = ACTIONS.sow;
+        const strike = a.marks[0].t; // the hoe bites at this moment
+        if (t < strike + 0.25) {
+          // wind up over the head, then bring the blade down into the soil
+          const up = smoothstep(0, strike * 0.6, t), down = smoothstep(strike * 0.6, strike + 0.05, t);
+          const k = up - down * 0.95;
+          m.armR.rotation.set(-0.5 + (-2.6 + 0.5) * k + down * (-0.9 + 0.5), 0, 0.1);
+          this.hoe.rotation.x = up * (Math.PI / 2) + down * (Math.PI / 2);
+          m.body.rotation.x = -0.15 * up + 0.45 * down;
+          m.armL.rotation.set(-0.3 * up, 0, -0.1);
+        } else {
+          // shoulder the hoe and broadcast seed with the free hand: two sweeps across the plot
+          const settle = smoothstep(strike + 0.25, strike + 0.55, t);
+          m.armR.rotation.set(-0.9 + (-0.5 + 0.9) * settle, 0, 0.1); this.hoe.rotation.x = Math.PI * (1 - settle);
+          m.body.rotation.x = 0.45 * (1 - settle) + 0.12 * settle;
+          const c0 = a.marks[1].t - 0.35, c1 = a.marks[2].t + 0.25;
+          const p = Math.min(1, Math.max(0, (t - c0) / (c1 - c0)));
+          const lift = smoothstep(c0 - 0.15, c0, t) * (1 - smoothstep(c1, c1 + 0.3, t));
+          m.armL.rotation.set(-0.95 * lift, Math.sin(p * Math.PI * 2 - Math.PI / 2) * 0.8 * lift, -0.1 - 0.5 * lift);
+        }
+        break;
+      }
+      case 'water': {
+        // ported from #20 visuals — steel/brass can comes up, tips, pours till bed soaked (visuals only)
+        const a = ACTIONS.water;
+        this.can.visible = true;
+        this.hoe.rotation.x = 0;
+        const p = a.dur > 0 ? Math.min(1, f.t / a.dur) : 1;
+        const up = smooth(Math.min(1, p / 0.6));
+        const tip = clamp((p - 0.58) / 0.12, 0, 1) * (1 - clamp((p - 0.9) / 0.1, 0, 1));
+        m.armL.rotation.set(-0.6 - 0.9 * up, -0.35 * up, 0.1);
+        m.armR.rotation.set(0.5, 0, 0.4);
+        this.can.rotation.x = 1.0 * tip;
+        m.body.rotation.x = 0.14 * up;
+        m.head.rotation.x = 0.1 * up;
+        break;
+      }
+      case 'harvest': {
+        const t = f.t, a = ACTIONS.harvest, pull = a.marks[0].t;
+        carry();
+        // bend down to the plant, grip it, heave it out and hold it up
+        const bend = smoothstep(0, pull * 0.6, t) * (1 - smoothstep(pull - 0.05, pull + 0.2, t));
+        const hold = smoothstep(pull - 0.05, pull + 0.2, t) * (1 - smoothstep(a.dur - 0.3, a.dur, t));
+        // (held out in front of the chest, not overhead: from the oblique camera an overhead hand
+        // vanishes under the straw hat's brim)
+        m.body.rotation.x = 0.75 * bend - 0.05 * hold;
+        m.armL.rotation.set(-0.9 * bend - 1.35 * hold, 0, -0.15);
+        m.armR.rotation.set(-0.5 - 0.4 * bend, 0, 0.15);
+        m.head.rotation.x = -0.4 * bend;
+        const crop = f.job >= 0 ? this.village.farm[f.job].crop : null;
+        if (crop && t >= pull) this.produce[crop].visible = true;
+        break;
+      }
+      default: {
+        // standing easy (or chatting): hoe grounded, weight on one leg
+        m.armR.rotation.set(-0.42, 0, 0.1); this.hoe.rotation.x = 0.18;
+        m.armL.rotation.set(0.05, 0, -0.1);
+      }
+    }
   }
 }
 
@@ -1207,6 +1365,121 @@ export function fxLeaves(x: number, z: number): Effect {
     const m = part(UNIT_BOX, leafMat, [x, 0.4, z], [0.12, 0.03, 0.1]);
     e.group.add(m);
     parts.push({ m, vx: Math.cos(a) * (1.2 + (i % 3) * 0.4), vz: Math.sin(a) * (1.2 + (i % 2) * 0.4), vy: 2 + (i % 3) * 0.6 });
+  }
+  return e;
+}
+
+// ---- farm effects (the visible moments of the village sim's farmer)
+const seedMat = new THREE.MeshBasicMaterial({ color: 0xe8d8a0 });
+const dropMat = new THREE.MeshBasicMaterial({ color: 0x8ec0f5, transparent: true, opacity: 0.85, depthWrite: false });
+const soilMat = new THREE.MeshBasicMaterial({ color: 0x7a5230 });
+const wetMat = new THREE.MeshBasicMaterial({ color: 0x3a2a18, transparent: true, opacity: 0.35, depthWrite: false });
+
+/** a handful of seed cast from a hand toward the plot, bouncing to rest in the furrows */
+export function fxSeeds(hx: number, hy: number, hz: number, tx: number, tz: number, rand: () => number): Effect {
+  const parts: { m: THREE.Mesh; x0: number; z0: number; vx: number; vz: number; vy: number; land: number }[] = [];
+  const e = new Effect(0.7, (_p, t) => {
+    for (const s of parts) {
+      const tt = Math.min(t, s.land);
+      const y = hy + s.vy * tt - 7 * tt * tt;
+      // after landing: settle on the soil, a tiny hop
+      const rest = t > s.land ? Math.max(0, Math.sin((t - s.land) * 14) * 0.03 * (1 - (t - s.land) * 2)) : 0;
+      s.m.position.set(s.x0 + s.vx * tt, Math.max(0.012, t > s.land ? 0.012 + rest : y), s.z0 + s.vz * tt);
+      s.m.rotation.x += 0.3; s.m.rotation.y += 0.2;
+    }
+  });
+  for (let i = 0; i < 7; i++) {
+    const m = part(UNIT_BOX, seedMat, [hx, hy, hz], [0.07, 0.05, 0.06]);
+    e.group.add(m);
+    // aim each seed at a different spot on the plot
+    const ax = tx + 0.5 + (rand() - 0.5) * 0.8, az = tz + 0.5 + (rand() - 0.5) * 0.8;
+    const land = 0.28 + rand() * 0.2;
+    // solve the vertical throw so the seed touches ground at `land`; horizontal speed to arrive there
+    const vy = (7 * land * land - hy) / land;
+    parts.push({ m, x0: hx, z0: hz, vx: (ax - hx) / land, vz: (az - hz) / land, vy, land });
+  }
+  return e;
+}
+
+/** water from the can: a stream of droplets falling from the spout, and a darkening of the soil */
+export function fxWater(spout: THREE.Object3D, tx: number, tz: number, surfaceY: number, dur: number, rand: () => number): Effect {
+  const drops: { m: THREE.Mesh; born: number; x: number; y: number; z: number; vx: number; vz: number }[] = [];
+  const patch = part(UNIT_BOX, wetMat, [tx + 0.5, surfaceY + 0.008, tz + 0.5], [0.001, 0.002, 0.001]);
+  const v = new THREE.Vector3();
+  let emitT = 0, seq = 0;
+  const e = new Effect(dur + 0.6, (_p, t, g) => {
+    // the pour lasts `dur`; the stream keeps falling a moment after the can rights itself
+    if (t < dur) {
+      emitT += 1 / 60;
+      while (emitT > 0.028) {
+        emitT -= 0.028;
+        spout.getWorldPosition(v);
+        const d = drops[seq % 26] ?? (() => {
+          const m = part(UNIT_BOX, dropMat, [0, 0, 0], [0.06, 0.09, 0.06]);
+          g.add(m);
+          const nd = { m, born: 0, x: 0, y: 0, z: 0, vx: 0, vz: 0 };
+          drops.push(nd);
+          return nd;
+        })();
+        d.born = t; d.x = v.x; d.y = v.y; d.z = v.z;
+        // push the stream forward toward the plot — old code was near-vertical and puddled at his feet
+        const txc = tx + 0.5, tzc = tz + 0.5;
+        const fdx = txc - v.x, fdz = tzc - v.z;
+        const base = 1.4; // tuned so a 0.9m drop lands ~0.7 tiles forward
+        d.vx = fdx * base + (rand() - 0.5) * 0.5;
+        d.vz = fdz * base + (rand() - 0.5) * 0.5;
+        seq++;
+      }
+    }
+    for (const d of drops) {
+      const a = t - d.born;
+      const y = d.y - 4.5 * a * a;
+      if (y <= surfaceY) { d.m.visible = false; continue; }
+      d.m.visible = true;
+      d.m.position.set(d.x + d.vx * a, y, d.z + d.vz * a);
+    }
+    // the soil darkens as it takes the water and stays dark a moment
+    const k = Math.min(1, t / (dur * 0.7));
+    patch.scale.set(0.9 * k, 0.01, 0.9 * k);
+    (patch.material as THREE.MeshBasicMaterial).opacity = 0.35 * (1 - Math.max(0, (t - dur) / 0.6));
+  });
+  e.group.add(patch);
+  return e;
+}
+
+/** the hoe biting the soil: a puff of clods */
+export function fxSoil(tx: number, tz: number, rand: () => number): Effect {
+  const parts: { m: THREE.Mesh; vx: number; vz: number; vy: number }[] = [];
+  const e = new Effect(0.5, (_p, t) => {
+    for (const pt of parts) {
+      pt.m.position.set(tx + 0.5 + pt.vx * t, Math.max(0.03, 0.08 + pt.vy * t - 7 * t * t), tz + 0.5 + pt.vz * t);
+      pt.m.rotation.x += 0.25;
+    }
+  });
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2 + rand();
+    const m = part(UNIT_BOX, soilMat, [tx + 0.5, 0.08, tz + 0.5], [0.08, 0.06, 0.07]);
+    e.group.add(m);
+    parts.push({ m, vx: Math.cos(a) * (0.5 + rand() * 0.5), vz: Math.sin(a) * (0.5 + rand() * 0.5), vy: 1.4 + rand() * 1.2 });
+  }
+  return e;
+}
+
+/** a ripe crop coming out of the ground: a spray of soil and torn leaves */
+export function fxHarvest(tx: number, tz: number, rand: () => number): Effect {
+  const parts: { m: THREE.Mesh; vx: number; vz: number; vy: number }[] = [];
+  const e = new Effect(0.55, (_p, t) => {
+    for (const pt of parts) {
+      pt.m.position.set(tx + 0.5 + pt.vx * t, Math.max(0.03, 0.1 + pt.vy * t - 7 * t * t), tz + 0.5 + pt.vz * t);
+      pt.m.rotation.x += 0.2; pt.m.rotation.z += 0.15;
+    }
+  });
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2 + rand();
+    const leaf = i % 3 === 0;
+    const m = part(UNIT_BOX, leaf ? leafMat : soilMat, [tx + 0.5, 0.1, tz + 0.5], leaf ? [0.1, 0.03, 0.08] : [0.07, 0.06, 0.07]);
+    e.group.add(m);
+    parts.push({ m, vx: Math.cos(a) * (0.4 + rand() * 0.6), vz: Math.sin(a) * (0.4 + rand() * 0.6), vy: 1.6 + rand() * 1.4 });
   }
   return e;
 }

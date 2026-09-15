@@ -634,6 +634,81 @@ export function buildLilyGeo(): THREE.BufferGeometry {
   return mergeGeometries(parts)!;
 }
 
+// ---------------------------------------------------------------- crops (village farm)
+/**
+ * One growth stage of a crop as a single vertex-coloured geometry covering a whole plot (a 3x2
+ * grid of plants on a tile), in the plot's local frame (tile centre at the origin). The stages
+ * follow the sim's CROP_STAGES: 0 seeded (a few seed dots), 1 sprout, 2 leafy, 3 ripe.
+ */
+export function buildCropGeo(crop: 'turnip' | 'cabbage', stage: number): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  // plant positions in the plot: three across, two rows, a touch of jitter so the rows aren't rigid
+  const spots: [number, number, number][] = [];
+  for (let r = 0; r < 2; r++) for (let c = 0; c < 3; c++) {
+    const k = r * 3 + c;
+    spots.push([-0.3 + c * 0.3 + (((k * 7) % 5) - 2) * 0.02, -0.2 + r * 0.4 + (((k * 3) % 5) - 2) * 0.02, 0.85 + ((k * 11) % 4) * 0.08]);
+  }
+  const leafC = crop === 'turnip' ? ['#5cbf4a', '#8ce070'] : ['#4faa5a', '#7fd08a'];
+  const sprout = crop === 'turnip' ? '#8ce070' : '#7fd08a';
+  const pad = (g: THREE.BufferGeometry) => g.index ? g.toNonIndexed() : g;
+  for (const [x, z, s] of spots) {
+    if (stage <= 0) {
+      // seeds pressed into the furrow
+      parts.push(withColor(pad(new THREE.BoxGeometry(0.06, 0.03, 0.05)).translate(x, 0.015, z), '#e8d8a0'));
+      continue;
+    }
+    if (stage === 1) {
+      // a pair of seed leaves on a short stem
+      const h = 0.14 * s;
+      parts.push(withColor(pad(new THREE.BoxGeometry(0.03, h, 0.03)).translate(x, h / 2, z), '#4a9a40'));
+      for (const side of [-1, 1]) parts.push(withColor(pad(new THREE.BoxGeometry(0.1, 0.02, 0.06)).rotateZ(side * 0.5).translate(x + side * 0.05, h, z), sprout));
+      continue;
+    }
+    if (crop === 'turnip') {
+      // turnip: a rosette of upright leaves; the ripe one shows a purple-white root shouldering out of the soil
+      const n = stage === 2 ? 4 : 6;
+      const lh = (stage === 2 ? 0.22 : 0.3) * s;
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * Math.PI * 2 + s;
+        const leaf = new THREE.ConeGeometry(0.05, lh, 4);
+        leaf.translate(0, lh / 2, 0); leaf.rotateZ(0.45); leaf.rotateY(a); leaf.translate(x, 0.02, z);
+        parts.push(withColor(pad(leaf), leafC[i % 2]));
+      }
+      if (stage >= 3) {
+        parts.push(withColor(pad(new THREE.SphereGeometry(0.11 * s, 8, 6)).scale(1, 0.7, 1).translate(x, 0.04, z), '#e8d8f0'));
+        parts.push(withColor(pad(new THREE.SphereGeometry(0.08 * s, 8, 5)).scale(1, 0.6, 1).translate(x, 0.1, z), '#9a4fb8'));
+      }
+    } else {
+      // cabbage: a flat whorl of outer leaves, and a tight pale head once ripe
+      const r = (stage === 2 ? 0.1 : 0.14) * s;
+      parts.push(withColor(pad(new THREE.SphereGeometry(r, 8, 6)).scale(1.4, 0.45, 1.4).translate(x, r * 0.35, z), leafC[0]));
+      parts.push(withColor(pad(new THREE.SphereGeometry(r * 0.8, 8, 6)).scale(1.2, 0.5, 1.2).translate(x + 0.02, r * 0.5, z - 0.02), leafC[1]));
+      if (stage >= 3) parts.push(withColor(pad(new THREE.SphereGeometry(r * 0.7, 8, 6)).translate(x, r * 0.75, z), '#c8e8a0'));
+    }
+  }
+  return mergeGeometries(parts)!;
+}
+
+/**
+ * The farmhand's watering can — ported from #20 visuals (steel + brass band).
+ * Stubby body with brass base band, spout with rose, bow handle. Holds from hand
+ * so pour is just tipping forward.
+ */
+export function buildWateringCan(): THREE.Group {
+  const steel = toon('#a8b4c0'), steelD = toon('#6f7c88'), brass = toon('#c9a24a');
+  const g = new THREE.Group();
+  g.add(part(UNIT_CYL, steel, [0, -0.17, 0.0], [0.3, 0.3, 0.3]));        // body
+  g.add(part(UNIT_CYL, steelD, [0, -0.03, 0.0], [0.26, 0.06, 0.26]));    // lid
+  g.add(part(UNIT_CYL, brass, [0, -0.31, 0.0], [0.31, 0.04, 0.31]));     // base band
+  const spout = part(UNIT_CYL, steel, [0, -0.14, 0.2], [0.07, 0.34, 0.07]);
+  spout.rotation.x = 0.8;
+  g.add(spout);
+  g.add(part(UNIT_CYL, steelD, [0, -0.05, 0.34], [0.11, 0.05, 0.11]));   // rose
+  g.add(part(UNIT_BOX, steelD, [0, 0.05, 0.0], [0.05, 0.22, 0.05]));     // handle bow
+  g.add(part(UNIT_BOX, steelD, [0, 0.14, 0.0], [0.18, 0.04, 0.05]));
+  return g;
+}
+
 /** Big faceted boulder with a moss cap. */
 export function buildBoulderGeo(): THREE.BufferGeometry {
   const parts: THREE.BufferGeometry[] = [];

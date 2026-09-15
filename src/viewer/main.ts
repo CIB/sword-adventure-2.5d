@@ -7,7 +7,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import {
   buildHeroine, buildSoldier, buildVillager, buildDog, VILLAGER_LOOKS, buildTrees, buildBush, buildBerryBush, buildRock, buildStump,
   buildFence, buildHouse, buildProp, buildHeart, buildRupee, buildArrow, buildJavelinProjectile, buildMoblinSpearProjectile,
-  buildFernGeo, buildTallGrassGeo, buildBriarGeo, buildLilyGeo, buildBoulderGeo, vegObject, type Humanoid,
+  buildFernGeo, buildTallGrassGeo, buildBriarGeo, buildLilyGeo, buildBoulderGeo, buildCropGeo, buildWateringCan, vegObject, type Humanoid,
 } from '../game/models';
 import type { PropKind, HouseSpec, EnemyKind } from '../game/world';
 import { World } from '../game/world';
@@ -46,6 +46,10 @@ const catalog: Cat[] = [
     { name: 'Lily pads', build: () => ({ obj: vegObject(buildLilyGeo()) }) },
     { name: 'Fence post', build: () => ({ obj: buildFence() }) },
     { name: 'Grass (animated)', build: () => ({ obj: grass.buildPatch(36, 22, 12, 12), footprint: 12 }) },
+  ] },
+  { name: 'Farm', items: [
+    ...(['turnip', 'cabbage'] as const).flatMap((c) => ['seeded', 'sprout', 'leafy', 'ripe'].map((st, i) => ({ name: `${c[0].toUpperCase() + c.slice(1)} (${st})`, build: () => ({ obj: vegObject(buildCropGeo(c, i)) }) }))),
+    { name: 'Watering can', build: () => { const g = new THREE.Group(); const c = buildWateringCan(); c.position.y = 0.4; g.add(c); return { obj: g }; } },
   ] },
   { name: 'Props', items: PROPS.map((k) => ({ name: k[0].toUpperCase() + k.slice(1), build: () => ({ obj: buildProp({ kind: k, x: 0, z: 0 }), footprint: k === 'tower' || k === 'windmill' ? 6 : k === 'statue' ? 3 : k === 'tent' || k === 'stall' ? 4 : k === 'deadtree' ? 2.5 : 2 }) })) },
   { name: 'Pickups & projectiles', items: [

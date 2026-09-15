@@ -36,6 +36,8 @@ export interface PostSpec {
 }
 export interface BridgeSpec { x0: number; z0: number; x1: number; z1: number; y: number; deadEnd?: boolean } // tile-inclusive rect + deck height; deadEnd = jetty (far end over water)
 export interface Vec2 { x: number; z: number }
+/** a rectangle of Bed tiles the village simulation farms (inclusive tile coords) */
+export interface FarmPlot { x0: number; z0: number; x1: number; z1: number }
 
 function distToSeg(px: number, pz: number, ax: number, az: number, bx: number, bz: number): number {
   const dx = bx - ax, dz = bz - az;
@@ -109,6 +111,8 @@ export class World {
   ];
   props: PropSpec[] = [];
   npcs: NpcSpec[] = [];
+  /** the fields the village farmer works (see VillageState); other beds are static flower beds */
+  farmPlots: FarmPlot[] = [];
   /** named road points on the map's edge (tile coords) that reinforcements march in from */
   edgeEntries: Record<string, [number, number]> = {};
   /** the world system's guard posts (see PostSpec) */
@@ -961,6 +965,12 @@ export class World {
     return this.heightAt(x, z);
   }
 
+  /** is this tile one of the farmer's plots? (its crop is a live mesh, not part of the ground texture) */
+  isFarmPlot(x: number, z: number): boolean {
+    for (const p of this.farmPlots) if (x >= p.x0 && x <= p.x1 && z >= p.z0 && z <= p.z1) return true;
+    return false;
+  }
+
   private beds(): [number, number][] {
     const out: [number, number][] = [];
     for (let z = 0; z < this.h; z++) for (let x = 0; x < this.w; x++) if (this.tile(x, z) === Tile.Bed) out.push([x, z]);
@@ -994,6 +1004,8 @@ export class World {
     for (let z = 19; z <= 27; z++) for (let x = 2; x <= 7; x++) if (z !== 23) set(x, z, Tile.Bed);   // fields with a path through
     for (let x = 2; x <= 7; x++) set(x, 23, Tile.Path);
     for (let z = 18; z <= 20; z++) for (let x = 12; x <= 19; x++) set(x, z, Tile.Bed);            // vegetable patch
+    // the working farm: Hollis's two fields either side of the path, and the vegetable patch by the cottage
+    this.farmPlots = [{ x0: 2, z0: 19, x1: 7, z1: 22 }, { x0: 2, z0: 24, x1: 7, z1: 27 }, { x0: 12, z0: 18, x1: 19, z1: 20 }];
     set(21, 19, Tile.Flowers); set(22, 20, Tile.Flowers); set(30, 20, Tile.Flowers); set(3, 17, Tile.Flowers); set(28, 26, Tile.Flowers);
     // flower beds / vegetable patches
     for (let z = 13; z <= 15; z++) for (let x = 3; x <= 6; x++) set(x, z, Tile.Bed);
@@ -1028,7 +1040,7 @@ export class World {
       { id: 'kid', x: 10.5, z: 10.5, facing: 1, wander: 2.5 },
       { id: 'granny', x: 5.5, z: 12.5, facing: 1, wander: 0 },
       { id: 'bard', x: 8.5, z: 11.0, facing: 1, wander: 0 },
-      { id: 'farmer', x: 11.5, z: 3.5, facing: 3, wander: 1.5 },
+      { id: 'farmer', x: 8.5, z: 22.5, facing: 3, wander: 0 }, // works the fields (see VillageState)
       { id: 'dog', x: 12.5, z: 9.5, facing: 3, wander: 3 },
       { id: 'innkeeper', x: 25.5, z: 6.6, facing: 0, wander: 0 },
       { id: 'smith', x: 27.5, z: 16.5, facing: 3, wander: 1 },
@@ -1467,6 +1479,12 @@ export class World {
           g.fillStyle = '#f2e8d4'; g.fillRect(ox + sx + 1, oz + sy + 1, sw - 2, 1);
         });
         if (hash2(tx, tz, 77) < 0.3) { g.fillStyle = C.grassD; g.fillRect(ox + Math.floor(hash2(tx, tz, 78) * (T - 2)), oz + Math.floor(hash2(tx, tz, 79) * (T - 2)), 1, 2); }
+      } else if (t === Tile.Bed && this.isFarmPlot(tx, tz)) {
+        // a working plot: bare tilled furrows and a few clods — what grows here is a live crop mesh
+        g.fillStyle = C.soil; g.fillRect(ox, oz, T, T);
+        for (let y = 2; y < T; y += 5) { g.fillStyle = C.soilL; g.fillRect(ox, oz + y, T, 1); g.fillStyle = '#5a3a1e'; g.fillRect(ox, oz + y + 3, T, 1); }
+        for (let i = 0; i < 5; i++) { g.fillStyle = i % 2 ? '#5a3a1e' : '#8a6040'; g.fillRect(ox + Math.floor(hash2(tx, tz, i + 30) * (T - 2)), oz + Math.floor(hash2(tx, tz, i + 40) * (T - 1)), 2, 1); }
+        g.fillStyle = '#5a3a1e'; g.fillRect(ox, oz, T, 1); g.fillRect(ox, oz, 1, T);
       } else if (t === Tile.Bed) {
         // tilled soil rows with little plants (Millbrook grows golden wheat)
         const wheat = bw.farm > 0.5;
