@@ -1201,7 +1201,7 @@ export class Enemy {
     if (m.petals) for (const hinge of m.petals) {
       const petal = hinge.children[0] as THREE.Mesh;
       petal.rotation.y = -0.5 + open * 0.95; // cupped forward at rest, flung back for the spit
-      petal.position.x = 0.34 + open * 0.12;
+      petal.position.x = 0.52 + open * 0.24; // the big petals ride further out as they open
     }
     if (m.mouthGlow) {
       const r = 0.1 + glow * 0.26;
