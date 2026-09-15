@@ -109,6 +109,26 @@ check('the ground tell is measured in tiles of world, not in beetle lengths',
   check('the hindwings fold away inside the shut shell', coverL.union(coverR).containsBox(hind));
 }
 
+// the translucent flight wings: pale membranes under the shell — hidden beneath it at rest (the
+// footprint check above), fanned up clear over the shell's line for the charge. Posed here exactly
+// the way the enemy animation poses them at full charge (open * 0.55 + beat).
+{
+  const bug = buildSoldier('ladybug');
+  bug.root.remove(bug.gustArc!);
+  const membrane = bug.hindwingL!.children[0] as THREE.Mesh;
+  const wmat = membrane.material as THREE.MeshToonMaterial;
+  check('the wing membranes are pale, see-through sheets',
+    wmat.transparent && wmat.opacity > 0.45 && wmat.opacity < 0.7 && wmat.depthWrite === false && wmat.side === THREE.DoubleSide,
+    `opacity=${wmat.opacity} depthWrite=${wmat.depthWrite} side=${wmat.side}`);
+  const shutTop = size(bug.elytronL!).max.y;
+  const lift = 1.25 * 0.55 + 0.25; // the full-charge lift from the enemy animation (open * 0.55 + beat)
+  bug.hindwingL!.rotation.z = lift;
+  bug.hindwingR!.rotation.z = -lift;
+  const spread = size(bug.hindwingL!, true);
+  check('the spread wings fan up clear over the closed shell', spread.max.y > shutTop + 0.12,
+    `wing top ${spread.max.y.toFixed(2)} vs shell top ${shutTop.toFixed(2)}`);
+}
+
 // The oversized one: the same beetle at the size it was first drawn, kept for the special encounter.
 {
   const queen = buildSoldier('ladybug_queen');

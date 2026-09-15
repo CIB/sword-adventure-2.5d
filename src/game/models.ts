@@ -510,7 +510,10 @@ export function buildLadybug(kind: LadybugKind = 'ladybug'): Humanoid {
   const spotMat = toon('#1a1418');
   const bodyMat = toon('#2b2329');
   const legMat = toon('#3a3036');
-  const wingMat = new THREE.MeshToonMaterial({ color: '#8e7f8c', transparent: true, opacity: 0.45, side: THREE.DoubleSide, depthWrite: false });
+  // the flight-wing membranes: pale and see-through, like the gust that comes out of them — hidden
+  // under the closed shell, and fanned up out of it and beating while the shell is open for the charge
+  const wingMat = new THREE.MeshToonMaterial({ color: '#dfe9f4', transparent: true, opacity: 0.55, side: THREE.DoubleSide, depthWrite: false });
+  const wingEdgeMat = new THREE.MeshToonMaterial({ color: '#f2ede0', transparent: true, opacity: 0.75, side: THREE.DoubleSide, depthWrite: false });
   const eyeMat = toon('#f8f4e8');
   const pupilMat = toon('#141018');
 
@@ -559,14 +562,20 @@ export function buildLadybug(kind: LadybugKind = 'ladybug'): Humanoid {
   const elytronL = shellHalf(1), elytronR = shellHalf(-1);
   body.add(elytronL, elytronR);
 
-  // hindwings: folded flat under the shell, beating hard for the wing-clap
+  // hindwings: folded flat under the shell — and inside the shut shell's footprint, so at rest they
+  // simply vanish beneath it (the test holds that line). When the covers crack open for the charge,
+  // the same wings fan up out of the shell and the membranes beat hard: that IS the wing-clap read.
+  // A paler leading edge so each membrane reads as a wing and not a sheet.
   const hindwing = (side: 1 | -1) => {
     const g = new THREE.Group();
     g.position.set(0.05 * side, HINGE_Y - 0.14, HINGE_Z - 0.05);
-    const wing = part(UNIT_BOX, wingMat, [0.22 * side, -0.02, -0.14], [0.36, 0.02, 0.62]);
+    const wing = part(UNIT_BOX, wingMat, [0.22 * side, -0.03, -0.22], [0.44, 0.02, 0.80]);
     wing.rotation.z = 0.1 * side;
-    wing.rotation.y = -0.22 * side;
-    g.add(wing);
+    wing.rotation.y = -0.08 * side;
+    const edge = part(UNIT_BOX, wingEdgeMat, [0.22 * side, -0.02, 0.16], [0.44, 0.02, 0.1]);
+    edge.rotation.z = 0.1 * side;
+    edge.rotation.y = -0.08 * side;
+    g.add(wing, edge);
     return g;
   };
   const hindwingL = hindwing(1), hindwingR = hindwing(-1);
