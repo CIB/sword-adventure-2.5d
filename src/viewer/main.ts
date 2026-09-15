@@ -205,7 +205,7 @@ function animate(dt: number) {
     for (const hinge of m.petals) {
       const petal = hinge.children[0] as THREE.Mesh;
       petal.rotation.y = -0.5 + open * 0.95;
-      petal.position.x = 0.52 + open * 0.24;
+      petal.position.x = 0.34 + open * 0.12;
     }
     if (m.mouthGlow) {
       const r = 0.12 + open * 0.2;

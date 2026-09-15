@@ -727,7 +727,7 @@ export function buildSpitflower(): Humanoid {
   head.rotation.order = 'YXZ';
   stalkTop.add(head);
   head.add(part(UNIT_CYL, stalkMat, [0, -0.1, 0], [0.18, 0.3, 0.18]));
-  head.add(part(UNIT_SPHERE, sepalMat, [0, 0, -0.06], [0.68, 0.6, 0.52]));
+  head.add(part(UNIT_SPHERE, sepalMat, [0, 0, -0.06], [0.54, 0.48, 0.44]));
   head.add(part(UNIT_SPHERE, faceMat, [0, 0, 0.2], [0.44, 0.4, 0.18]));
   const mouth = part(UNIT_CYL, mouthMat, [0, 0, 0.32], [0.26, 0.1, 0.26]);
   mouth.rotation.x = Math.PI / 2;
@@ -740,7 +740,7 @@ export function buildSpitflower(): Humanoid {
     const hinge = new THREE.Group();
     hinge.position.set(0, 0, 0.1);
     hinge.rotation.z = a; // local +x points radially outward from the mouth
-    const petal = part(UNIT_SPHERE, i % 2 ? petalLight : petalMat, [0.52, 0, 0], [0.72, 0.4, 0.18]);
+    const petal = part(UNIT_SPHERE, i % 2 ? petalLight : petalMat, [0.38, 0, 0], [0.36, 0.2, 0.1]);
     petal.rotation.y = -0.3; // cupped loosely forward at rest (the enemy animation works them)
     hinge.add(petal);
     head.add(hinge);
