@@ -1162,9 +1162,12 @@ export class Enemy {
     // the yaw pivot is the stalk's base: turn it and the whole stalk (and head) comes round
     m.body.rotation.y = this.headYaw;
     const c = this.chargeP;
-    // rear back through the charge, snap forward for the spit, settle over the recovery
-    let lean = -0.16 * c;
-    if (s === 'attack') lean = 0.28 * (1 - clamp(this.stateT / this.st.attackDur, 0, 1)) - 0.05;
+    // The stalk leans toward whatever it is looking at (seen from above, that lean is most of what
+    // says which way the flower faces), rears back a little through the charge, snaps well forward
+    // for the spit and settles over the recovery.
+    let lean = 0.55 - 0.15 * c;
+    if (s === 'attack') lean = 0.95 - 0.3 * clamp(this.stateT / this.st.attackDur, 0, 1);
+    else if (s === 'recover') lean = 0.55 + 0.1 * clamp(this.stateT / this.st.recover, 0, 1);
     const hurt = this.knockT > 0 ? Math.sin(this.knockT * 60) * 0.12 : 0;
     const segs = m.stalk ?? [];
     const n = segs.length || FLOWER_SEGMENTS;
@@ -1176,8 +1179,10 @@ export class Enemy {
       segs[i].rotation.x = lean * w * 0.9 + tremble + hurt * w;
       segs[i].rotation.z = sway * w + hurt * 0.4 * w;
     }
-    // the head nods down toward the target as it charges and bobs up after the spit
-    m.head.rotation.x = 0.45 + 0.35 * c - (s === 'attack' ? 0.25 : 0) - lean * 1.2;
+    // the head hangs forward off the tip so its face is seen from above, nodding further down as it
+    // charges and rearing up for the spit
+    // (seen from above in this game's view, a face tipped a little skyward is the one you can read)
+    m.head.rotation.x = -0.35 + 0.3 * c - (s === 'attack' ? 0.3 : 0);
     // petals flare back with the charge
     const flare = -0.15 - 0.6 * c + (s === 'attack' ? -0.2 : 0);
     const petals = m.petals ?? [];

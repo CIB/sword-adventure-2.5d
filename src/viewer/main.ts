@@ -200,8 +200,8 @@ function animate(dt: number) {
     m.body.rotation.y = Math.sin(animT * 0.08) * 1.2;
     const c = 0.5 + 0.5 * Math.sin(animT * 0.3);
     const n = m.stalk.length;
-    m.stalk.forEach((seg, i) => { const w = (i + 1) / n; seg.rotation.x = -0.16 * c * w; seg.rotation.z = Math.sin(animT * 0.15 + i * 0.6) * 0.05 * w; });
-    m.head.rotation.x = 0.45 + 0.35 * c;
+    m.stalk.forEach((seg, i) => { const w = (i + 1) / n; seg.rotation.x = (0.55 - 0.15 * c) * w; seg.rotation.z = Math.sin(animT * 0.15 + i * 0.6) * 0.05 * w; });
+    m.head.rotation.x = -0.35 + 0.3 * c;
     m.petals.forEach((pt, i) => { pt.rotation.x = -0.15 - 0.6 * c + Math.sin(animT * 0.2 + i) * 0.04; });
     if (m.mouth) (m.mouth.material as THREE.MeshToonMaterial).emissiveIntensity = c * 1.6;
     m.legL.rotation.x = m.legR.rotation.x = 0; m.body.position.y = 0;
