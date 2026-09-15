@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { getGradientMap as getGradientMapRef } from './models';
 import { MAP_W, MAP_H, TEX_PX, Tile, RNG, hash2, LEVEL_H, MAX_WALK_SLOPE, WATER_DEPTH, BRIDGE_H } from './constants';
 
-export type EnemyKind = 'sword' | 'spear' | 'javelin' | 'archer' | 'moblin' | 'moblin_spear' | 'ladybug';
+export type EnemyKind = 'sword' | 'spear' | 'javelin' | 'archer' | 'moblin' | 'moblin_spear' | 'ladybug' | 'ladybug_queen';
 export interface TreeSpec { x: number; z: number; scale: number; y?: number; kind?: 'oak' | 'pine' | 'autumn' | 'birch' | 'blossom' }
 export interface TileObj { tx: number; tz: number; v?: number }
 export interface HouseSpec { x: number; z: number; w: number; d: number; roof?: string; wall?: string; door?: 'S' | 'E' | 'W'; sign?: 'shop' | 'inn' | 'none' }
@@ -1139,7 +1139,7 @@ export class World {
    * green), gravel and dry ground almost none.
    *
    * This is the field wildlife reads to decide where it belongs — see wildlife.ts, which keeps the
-   * giant ladybugs in the green parts of the map and out of everywhere else.
+   * ladybugs in the green parts of the map and out of everywhere else.
    */
   lushness(x: number, z: number): number {
     const w = this.biomeWeights(x, z);

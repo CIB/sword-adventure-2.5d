@@ -1,15 +1,17 @@
-// Giant ladybugs: the lush-country spawner that keeps them common in the green parts of the world,
-// and the wing-clap — a charged-up gust of wind that shoves everything in front of the beetle and
-// hurts nobody. Driven here the way Game.update drives them (a live Enemy per bug, a real Player,
-// the same GameCtx the soldier tests use), with a tryHitPlayer that counts its calls so "no damage"
-// means the AI never even asked.
+// Ladybugs: the lush-country spawner that keeps them common in the green parts of the world, and the
+// wing-clap — a charged-up gust of wind that shoves everything in front of the beetle and hurts
+// nobody. The ordinary beetle is soldier-sized (the queen is the oversized one, and rare), so the
+// model checks below measure it against a soldier on screen, not against its own authoring numbers.
+// Driven here the way Game.update drives them (a live Enemy per bug, a real Player, the same GameCtx
+// the soldier tests use), with a tryHitPlayer that counts its calls so "no damage" means the AI never
+// even asked.
 // Run: npx esbuild test/ladybug.test.ts --bundle --platform=node --format=esm | node --input-type=module
 import * as THREE from 'three';
 import { World } from '../src/game/world';
 import { Enemy, Player, Projectile, fxGust, type GameCtx } from '../src/game/entities';
 import { Wildlife } from '../src/game/wildlife';
-import { buildSoldier, GUST_RANGE } from '../src/game/models';
-import { RNG, MAX_HP, FACING_VEC } from '../src/game/constants';
+import { buildSoldier, gustRange, isLadybug } from '../src/game/models';
+import { RNG, MAX_HP, FACING_VEC, SHEAR } from '../src/game/constants';
 
 let failures = 0;
 const check = (name: string, cond: boolean, extra = '') => {
@@ -56,31 +58,43 @@ check('a road through the meadow is not spawning ground', !!pathTile, pathTile ?
 
 // ============================================================ the model
 const size = (o: THREE.Object3D, precise = false) => new THREE.Box3().setFromObject(o, precise);
+/** how much of the screen a thing covers, in tiles: width × (height leaning back over its own depth) */
+const screenArea = (b: THREE.Box3) => (b.max.x - b.min.x) * ((b.max.y - b.min.y) * SHEAR + (b.max.z - b.min.z));
 const bugModel = buildSoldier('ladybug');
 check('the ladybug has two separately hinged wing covers', !!bugModel.elytronL && !!bugModel.elytronR && bugModel.elytronL !== bugModel.elytronR);
 check('...and hindwings to beat under them', !!bugModel.hindwingL && !!bugModel.hindwingR);
 check('...and a ground tell for the gust', !!bugModel.gustArc);
 check('the wing covers are shut at rest', Math.abs(bugModel.elytronL!.rotation.z) < 0.1);
+check('the ground tell is measured in tiles of world, not in beetle lengths',
+  Math.abs(bugModel.gustArcUnit! * bugModel.root.scale.x - gustRange('ladybug')) < 0.01,
+  `tell=${(bugModel.gustArcUnit! * bugModel.root.scale.x).toFixed(2)} gust=${gustRange('ladybug')}`);
 {
-  // "giant" means the size of a soldier — and a beetle that stands on its own six feet. The gust
-  // tell is a three-tile cone lying on the floor, so it comes off before anything is measured.
+  // The regular beetle is the size of a soldier — the complaint that started this, so it is checked
+  // the way it was complained about: as the patch of screen the thing takes up. The gust tell is a
+  // cone lying on the floor, so it comes off before anything is measured.
   bugModel.root.remove(bugModel.gustArc!);
   const bug = size(bugModel.root), soldier = size(buildSoldier('sword').root);
   const h = bug.max.y - bug.min.y, w = bug.max.x - bug.min.x, l = bug.max.z - bug.min.z;
+  const sh = soldier.max.y - soldier.min.y, sw = soldier.max.x - soldier.min.x;
   check('it stands on the ground', Math.abs(bug.min.y) < 0.06, `min.y=${bug.min.y.toFixed(3)}`);
-  check('it is a big bug, but no bigger than a soldier', h > 0.8 && h < soldier.max.y - soldier.min.y + 0.1, `bug=${h.toFixed(2)} soldier=${(soldier.max.y - soldier.min.y).toFixed(2)}`);
-  check('...and it is a broad, low thing rather than a tall one', w > 1 && l > 1.2 && l > h, `w=${w.toFixed(2)} l=${l.toFixed(2)} h=${h.toFixed(2)}`);
+  check('it is a beetle the size of a soldier, not a monster', h > 0.7 && h < sh + 0.05 && w > 0.8 && w < sw + 0.15,
+    `bug ${w.toFixed(2)}x${h.toFixed(2)} vs soldier ${sw.toFixed(2)}x${sh.toFixed(2)}`);
+  check('...and it fills about the same patch of screen as one', screenArea(bug) > screenArea(soldier) * 0.85 && screenArea(bug) < screenArea(soldier) * 1.3,
+    `bug=${screenArea(bug).toFixed(2)} soldier=${screenArea(soldier).toFixed(2)}`);
+  check('...and it is a broad, low thing rather than a tall one', w > 0.9 && l > 1.1 && l > h, `w=${w.toFixed(2)} l=${l.toFixed(2)} h=${h.toFixed(2)}`);
   // the clap: the covers hinge up off the body, so the beetle stands taller with them open
   const shutCover = size(bugModel.elytronL!);
   bugModel.elytronL!.rotation.z = 1.25;
   bugModel.elytronR!.rotation.z = -1.25;
   const open = size(bugModel.root), openCover = size(bugModel.elytronL!);
-  check('the beetle stands taller with its shell open', open.max.y > bug.max.y + 0.15,
+  check('the beetle stands taller with its shell open', open.max.y > bug.max.y + 0.12,
     `h=${(bug.max.y - bug.min.y).toFixed(2)}->${(open.max.y - open.min.y).toFixed(2)}`);
   check('...because the covers swing clear up off its back', openCover.max.y > shutCover.max.y + 0.2,
     `cover top ${shutCover.max.y.toFixed(2)} -> ${openCover.max.y.toFixed(2)}`);
-  // ...and the open shell is what the hindwings beat under
-  check('the hindwings sit under the shell and swing with it', bugModel.hindwingL!.position.y < shutCover.max.y);
+  // ...and the open shell is what the hindwings beat under: measured in world space, since the wings
+  // ride a group of their own inside the root and the root carries the beetle's size
+  check('the hindwings sit under the shell and swing with it', size(bugModel.hindwingL!).max.y < shutCover.max.y,
+    `wing top ${size(bugModel.hindwingL!).max.y.toFixed(2)} vs cover top ${shutCover.max.y.toFixed(2)}`);
   // with the shell shut again: the covers meet on the midline and nothing pokes out of them
   bugModel.elytronL!.rotation.z = 0;
   bugModel.elytronR!.rotation.z = 0;
@@ -89,6 +103,20 @@ check('the wing covers are shut at rest', Math.abs(bugModel.elytronL!.rotation.z
     `L.min.x=${coverL.min.x.toFixed(3)} R.max.x=${coverR.max.x.toFixed(3)}`);
   const hind = size(bugModel.hindwingL!, true).union(size(bugModel.hindwingR!, true));
   check('the hindwings fold away inside the shut shell', coverL.union(coverR).containsBox(hind));
+}
+
+// The oversized one: the same beetle at the size it was first drawn, kept for the special encounter.
+{
+  const queen = buildSoldier('ladybug_queen');
+  check('the queen is sized from the same model, only bigger', Math.abs(queen.root.scale.x / bugModel.root.scale.x - 1) > 0.3,
+    `plan scale ${queen.root.scale.x.toFixed(2)} vs ${bugModel.root.scale.x.toFixed(2)}`);
+  queen.root.remove(queen.gustArc!);
+  const q = size(queen.root), bug = size(bugModel.root);
+  check('...noticeably bigger than a common beetle in every direction',
+    (q.max.x - q.min.x) > (bug.max.x - bug.min.x) * 1.3 && (q.max.y - q.min.y) > (bug.max.y - bug.min.y) * 1.15,
+    `queen ${(q.max.x - q.min.x).toFixed(2)}x${(q.max.z - q.min.z).toFixed(2)}x${(q.max.y - q.min.y).toFixed(2)} vs bug ${(bug.max.x - bug.min.x).toFixed(2)}x${(bug.max.z - bug.min.z).toFixed(2)}x${(bug.max.y - bug.min.y).toFixed(2)}`);
+  check('...and her clap of wind carries a good deal further than a common beetle\'s',
+    gustRange('ladybug_queen') > gustRange('ladybug') * 1.4, `${gustRange('ladybug_queen')} vs ${gustRange('ladybug')} tiles`);
 }
 
 // ============================================================ the wing-clap
@@ -112,7 +140,7 @@ check('the wing covers are shut at rest', Math.abs(bugModel.elytronL!.rotation.z
   check('the gust shoves the heroine away from it', player.pos.z > pz0 + 0.5, `moved ${(player.pos.z - pz0).toFixed(2)} tiles`);
   check('...without hurting her', player.hp === MAX_HP, `hp=${player.hp}`);
   check('...and without ever asking to', hits.length === 0, `tryHitPlayer called ${hits.length}x`);
-  check('the gust reaches as far as its ground tell promises', Math.abs(player.pos.z - pz0) <= GUST_RANGE);
+  check('the gust reaches as far as its ground tell promises', Math.abs(player.pos.z - pz0) <= gustRange('ladybug'));
 }
 
 // Facing matters: a beetle charged up with the heroine at its back leaves her alone.
@@ -145,7 +173,7 @@ check('the wing covers are shut at rest', Math.abs(bugModel.elytronL!.rotation.z
   check('...pushing it away from the beetle', soldier.knock.z > 0 && Math.hypot(soldier.pos.x - sx0, soldier.pos.z - sz0) < 0.1);
   check('an arrow in flight is blown back the way it came', arrow.dir.z > 0 && arrow.alive, `dir.z=${arrow.dir.z.toFixed(2)}`);
   // the beetle gets its reach from the model, and the model from the AI: one number, two uses
-  const far = new Enemy(ctx, 'sword', 60.5, 38.6 + GUST_RANGE + 0.6);
+  const far = new Enemy(ctx, 'sword', 60.5, 38.6 + gustRange('ladybug') + 0.6);
   far.knockT = 0;
   ctx.enemies.push(far);
   bug.state = 'attack'; bug.stateT = 0.2; bug.fired = false;
@@ -153,11 +181,31 @@ check('the wing covers are shut at rest', Math.abs(bugModel.elytronL!.rotation.z
   check('...but not what is out of reach', far.knockT <= 0);
 }
 
+// The queen throws the same wind, but hers reaches past where a common beetle's stops.
+{
+  const { ctx } = makeCtx(44.5, 42.4);
+  const queen = new Enemy(ctx, 'ladybug_queen', 44.5, 37.8);
+  queen.facing = 0; // due south, up the meadow
+  ctx.enemies.push(queen);
+  const reaches = new Enemy(ctx, 'sword', 44.5, 37.8 + gustRange('ladybug_queen') - 0.3);
+  ctx.enemies.push(reaches);
+  queen.state = 'attack'; queen.stateT = 0.2; queen.fired = false;
+  queen.update(DT);
+  check('the queen\'s clap blows away soldiers a common beetle could not touch',
+    reaches.knockT > 0 && gustRange('ladybug_queen') - 0.3 > gustRange('ladybug'),
+    `${(gustRange('ladybug_queen') - 0.3).toFixed(1)} tiles out, common reach ${gustRange('ladybug')}`);
+  const beyond = new Enemy(ctx, 'sword', 44.5, 37.8 + gustRange('ladybug_queen') + 0.6);
+  ctx.enemies.push(beyond);
+  queen.state = 'attack'; queen.stateT = 0.2; queen.fired = false;
+  queen.update(DT);
+  check('...and still stops at the edge of her own cone', beyond.knockT <= 0);
+}
+
 // ============================================================ the wind itself
 // The effects are pure scene graph (no renderer needed): build one and play it out, checking that
 // the cone of wind really does reach as far as the AI's gust does.
 {
-  const fx = fxGust(44.5, 38.5, 0, GUST_RANGE);
+  const fx = fxGust(44.5, 38.5, 0, gustRange('ladybug'));
   let frames = 0, far = 0;
   while (fx.update(DT) && frames < 200) {
     frames++;
@@ -165,7 +213,7 @@ check('the wing covers are shut at rest', Math.abs(bugModel.elytronL!.rotation.z
     far = Math.max(far, Math.abs(b.min.x - 44.5), Math.abs(b.max.x - 44.5), Math.abs(b.min.z - 38.5), Math.abs(b.max.z - 38.5));
   }
   check('the blast effect plays out and cleans up', frames > 10 && frames < 200, `${frames} frames`);
-  check('the wind reaches exactly as far as the gust that hurts nobody', far >= GUST_RANGE * 0.9 && far <= GUST_RANGE * 1.35, `reach=${far.toFixed(2)} vs ${GUST_RANGE}`);
+  check('the wind reaches exactly as far as the gust that hurts nobody', far >= gustRange('ladybug') * 0.9 && far <= gustRange('ladybug') * 1.35, `reach=${far.toFixed(2)} vs ${gustRange('ladybug')}`);
 }
 
 // ============================================================ the population
@@ -176,16 +224,21 @@ function runWildlife(seconds: number, x: number, z: number, viewR = 26) {
   // where each new bug was put down, recorded the frame it appears (they wander off green ground
   // soon enough — the law is about where they are *seeded*, not where a beetle ends up strolling)
   const spawned: { x: number; z: number; dist: number }[] = [];
+  const queens: { x: number; z: number; dist: number }[] = [];
+  let queenMax = 0;
   for (let i = 0; i < Math.round(seconds / DT); i++) {
     const before = wildlife.bugs.length;
     wildlife.update(DT, viewR);
     for (const e of ctx.enemies) e.update(DT);
     if (wildlife.bugs.length > before) {
       const b = wildlife.bugs[wildlife.bugs.length - 1];
-      spawned.push({ x: b.pos.x, z: b.pos.z, dist: Math.hypot(b.pos.x - x, b.pos.z - z) });
+      const at = { x: b.pos.x, z: b.pos.z, dist: Math.hypot(b.pos.x - x, b.pos.z - z) };
+      spawned.push(at);
+      if (b.kind === 'ladybug_queen') queens.push(at);
     }
+    queenMax = Math.max(queenMax, wildlife.bugs.filter((b) => b.kind === 'ladybug_queen').length);
   }
-  return { ctx, player, wildlife, spawned };
+  return { ctx, player, wildlife, spawned, queens, queenMax };
 }
 {
   const { wildlife, spawned } = runWildlife(60, 44.5, 38.5);
@@ -214,7 +267,7 @@ function runWildlife(seconds: number, x: number, z: number, viewR = 26) {
   const before = wildlife.bugs.length;
   (ctx as { player: Player }).player.pos = { x: 178, z: 22 };
   for (let i = 0; i < Math.round(90 / DT); i++) wildlife.update(DT, 26);
-  check('bugs left behind in the old country are let go', before > 0 && wildlife.bugs.length === 0 && ctx.enemies.every((e) => !e.alive || e.kind !== 'ladybug'), `${before} -> ${wildlife.bugs.length}`);
+  check('bugs left behind in the old country are let go', before > 0 && wildlife.bugs.length === 0 && ctx.enemies.every((e) => !e.alive || !isLadybug(e.kind)), `${before} -> ${wildlife.bugs.length}`);
 }
 {
   const { ctx } = runWildlife(40, 44.5, 38.5);
@@ -227,6 +280,24 @@ function gapCheck(bug: Enemy) {
   let dead = false;
   for (let i = 0; i < 3 && !dead; i++) dead = bug.hurt(1, bug.pos.x, bug.pos.z - 1);
   return dead && bug.st.dmg === 0;
+}
+
+// The queen is the special encounter: one at a time, rare, and never part of the crowd. Given long
+// enough in green country she turns up (out of sight, on lush ground, like everything else here),
+// while the ordinary beetles keep coming the whole time — she is one beetle's worth of the six, not a
+// second species muscling the commons out of the meadow.
+{
+  const { ctx, wildlife, spawned, queens, queenMax } = runWildlife(180, 44.5, 38.5);
+  check('the oversized queen turns up in green country', queens.length >= 1 && queens.length <= 2, `${queens.length} queens, ${spawned.length} bugs seeded in 180s`);
+  check('...on lush ground and out of sight, like every other bug', queens.every((q) => world.lushness(q.x, q.z) >= 0.6 && q.dist > 24),
+    queens.map((q) => `${q.dist.toFixed(0)}t lush=${world.lushness(q.x, q.z).toFixed(2)}`).join(' '));
+  check('...but never two of her at once', queenMax <= 1, `${queenMax} at once`);
+  check('...and the ordinary beetles do not stop coming', spawned.filter((s) => !queens.includes(s)).length >= 3,
+    `${spawned.length - queens.length} commons`);
+  const queen = ctx.enemies.find((e) => e.kind === 'ladybug_queen');
+  check('the queen is the tough one of the family', !!queen && !gapCheck(queen) && queen.st.hp > 3, `${queen?.st.hp} hp, dmg ${queen?.st.dmg}`);
+  check('...and still harmless: she only ever blows people about', ctx.enemies.every((e) => e.st.dmg === 0 || !isLadybug(e.kind)));
+  check('...while the commons keep the population at its usual size', wildlife.bugs.length <= 6, `${wildlife.bugs.length} bugs`);
 }
 
 console.log(failures ? `\n${failures} FAILURE(S)` : '\nall good');

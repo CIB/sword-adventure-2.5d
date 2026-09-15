@@ -6,7 +6,7 @@ import type { Vec2 } from './world';
  * Wildlife: the creatures that live in the green parts of the world, as opposed to the soldiers who
  * hold it.
  *
- * A giant ladybug belongs to nobody. There is no guard post behind it, no patch it is tied to, and
+ * A ladybug belongs to nobody. There is no guard post behind it, no patch it is tied to, and
  * nobody marching in from the map's edge to take the place of one that dies — it is simply *common
  * in lush country* (see World.lushness). So the game keeps a population of them alive in the green
  * ground around the player instead: while the player is standing somewhere verdant it seeds a new
@@ -17,6 +17,10 @@ import type { Vec2 } from './world';
  *
  * Only the green places stock them. In the moor, the marsh, the mesa or the highland steppe the
  * spawner simply finds nowhere it is willing to put a ladybug, so you will not meet one there.
+ *
+ * The oversized queen is the exception to the crowd: the same beetle at the size the model was first
+ * drawn, one at a time, and only now and then after the player has been walking green country for a
+ * while. She is the special encounter; the six little ones scuttling around the meadow are the norm.
  */
 
 /** how many ladybugs the active region keeps busy while the ground is green */
@@ -31,11 +35,19 @@ const SPAWN_IN = 2, SPAWN_OUT = 12;
 const LEAVE = 10;
 /** the closest a new bug may be dropped to another one, in tiles */
 const SPACING = 5;
+/** the queen: a fresh world waits this long before the big one may settle in (seconds of play) */
+const QUEEN_FIRST = 55;
+/** ...then this long between queens, plus a random stretch of up to QUEEN_SPREAD, so it never feels scheduled */
+const QUEEN_GAP = 90, QUEEN_SPREAD = 90;
+/** somewhere green is not always available the moment her turn comes up: look again this much later */
+const QUEEN_RETRY = 8;
 
 export class Wildlife {
   /** the ladybugs this system keeps track of (they also live in game.enemies while they're alive) */
   bugs: Enemy[] = [];
   private retryT = RETRY;
+  /** seconds until the queen's next turn (queens are not part of the crowd, so they get their own clock) */
+  private queenT = QUEEN_FIRST;
 
   constructor(private game: GameCtx) {}
 
@@ -50,7 +62,9 @@ export class Wildlife {
     // 1. let the ones that have wandered off the active region go
     for (const b of this.bugs) if (Math.hypot(b.pos.x - p.x, b.pos.z - p.z) > viewR + LEAVE) b.dispose();
     this.bugs = this.bugs.filter((b) => b.alive);
-    // 2. seed another every few seconds, while the country around the player is green and there is room
+    // 2. the queen, if her turn has come up and the country is green enough to hold her
+    this.queenTick(dt, p.x, p.z, viewR);
+    // 3. seed another every few seconds, while the country around the player is green and there is room
     if (this.retryT > 0) { this.retryT -= dt; return; }
     this.retryT = RETRY;
     if (this.bugs.length >= TARGET) return;
@@ -65,6 +79,23 @@ export class Wildlife {
   reset() {
     this.bugs = [];
     this.retryT = RETRY;
+    this.queenT = QUEEN_FIRST;
+  }
+
+  /**
+   * The queen's own, much slower clock. Nothing here seeds a beetle while one of her is already out
+   * there — the commons are the population, she is an event — and if the countryside around the
+   * player is all road or moor this minute, the spawner simply takes her turn again shortly.
+   */
+  private queenTick(dt: number, px: number, pz: number, viewR: number) {
+    if (this.queenT > 0) { this.queenT -= dt; return; }
+    if (this.bugs.some((b) => b.kind === 'ladybug_queen')) { this.queenT = QUEEN_GAP; return; }
+    const spot = this.findSpot(px, pz, Math.max(14, viewR - SPAWN_IN), viewR + SPAWN_OUT);
+    if (!spot) { this.queenT = QUEEN_RETRY; return; }
+    const queen = new Enemy(this.game, 'ladybug_queen', spot.x, spot.z);
+    this.game.enemies.push(queen);
+    this.bugs.push(queen);
+    this.queenT = QUEEN_GAP + this.game.rand() * QUEEN_SPREAD;
   }
 
   /** the best of a handful of tries at a clear, lush, out-of-sight tile to put a bug on */

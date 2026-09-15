@@ -9,7 +9,7 @@ import { ACTIONS, type VillageState, type CropKind } from './village';
 import {
   buildArrow, buildHeart, buildHeroine, buildJavelinProjectile, buildMoblinSpearProjectile, buildRupee, buildSoldier, part, toon,
   UNIT_BOX, UNIT_OCTA, UNIT_SPHERE, type Humanoid, buildVillager, buildDog, buildWateringCan, VILLAGER_LOOKS,
-  GUST_RANGE, GUST_HALF_ARC,
+  GUST_HALF_ARC, gustRange, isLadybug,
 } from './models';
 
 export interface GameCtx {
@@ -359,13 +359,16 @@ const STATS: Record<EnemyKind, Stats> = {
   // Moblins — LA-inspired: sword+shield bruiser with a frontal block + charge, and a spear-thrower
   moblin: { hp: 4, speed: 1.7, chase: 2.7, dmg: 2, sight: 6.8, range: 1.15, attackDur: 0.24, recover: 0.5, cooldown: 1.2 },
   moblin_spear: { hp: 3, speed: 2.0, chase: 2.6, dmg: 1, sight: 8.5, range: 7.0, attackDur: 0.20, recover: 0.6, cooldown: 2.0 },
-  // The giant ladybug: a slow, lumbering beetle that never bites. Its whole attack is a gust of wind
-  // out of its open shell — no damage at all (dmg 0), but it blows the heroine off her feet, so the
-  // range it picks its fight at is the reach of that gust rather than the length of an arm.
-  ladybug: { hp: 3, speed: 1.3, chase: 2.5, dmg: 0, sight: 7, range: 3.0, attackDur: 0.42, recover: 0.95, cooldown: 3.4 },
+  // The ladybugs: slow, lumbering beetles that never bite. Their whole attack is a gust of wind out
+  // of the open shell — no damage at all (dmg 0), but it blows the heroine off her feet, so the range
+  // they pick their fight at is the reach of that gust rather than the length of an arm.
+  ladybug: { hp: 3, speed: 1.3, chase: 2.5, dmg: 0, sight: 7, range: 2.6, attackDur: 0.42, recover: 0.95, cooldown: 3.4 },
+  // the queen: the oversized beetle, and the only one of the two that fights like a small set-piece —
+  // more shell to crack, a longer wind-up and a much longer clap of wind
+  ladybug_queen: { hp: 6, speed: 1.15, chase: 2.2, dmg: 0, sight: 8, range: 3.9, attackDur: 0.5, recover: 1.15, cooldown: 3.8 },
 };
 
-// ---- giant ladybug tuning -------------------------------------------------
+// ---- ladybug tuning -------------------------------------------------------
 /** seconds the shell takes to creak open before the clap (the whole telegraph of the attack) */
 const LADYBUG_CHARGE = 1.1;
 /** how far the wing covers swing open, radians */
@@ -423,8 +426,9 @@ export class Enemy {
     this.st = STATS[kind];
     this.hp = this.st.hp;
     this.model = buildSoldier(kind);
-    // a beetle is mostly shell: it presents a wider target than a soldier
-    if (kind === 'ladybug') this.radius = 0.55;
+    // a beetle is mostly shell: even the soldier-sized one presents a rounder, broader target than a
+    // soldier, and the queen the broadest of all
+    if (isLadybug(kind)) this.radius = kind === 'ladybug_queen' ? 0.55 : 0.45;
     this.facing = randomFacing(game.rand());
     this.pickPatrolDir();
     game.scene.add(this.model.root);
@@ -436,7 +440,7 @@ export class Enemy {
   /** point to march to (set by the Game every frame while this soldier walks its route in) */
   follow: Vec2 | null = null;
 
-  get melee() { return this.kind === 'sword' || this.kind === 'spear' || this.kind === 'moblin' || this.kind === 'ladybug'; }
+  get melee() { return this.kind === 'sword' || this.kind === 'spear' || this.kind === 'moblin' || isLadybug(this.kind); }
   get isMoblin() { return this.kind === 'moblin' || this.kind === 'moblin_spear'; }
 
   /**
@@ -646,10 +650,10 @@ export class Enemy {
           this.state = 'windup';
           if (this.kind === 'sword') this.stateT = 0.22;
           else if (this.kind === 'moblin') this.stateT = 0.32; // pig lifts cleaver overhead like Switch remake wind-up
-          else if (this.kind === 'ladybug') this.stateT = LADYBUG_CHARGE; // the shell has to come all the way open first
+          else if (isLadybug(this.kind)) this.stateT = LADYBUG_CHARGE; // the shell has to come all the way open first
           else this.stateT = 0.3;
           // the beetle's wind-up is the loudest thing about it: the wing covers scrape open
-          if (this.kind === 'ladybug') g.audio.wingCharge(LADYBUG_CHARGE);
+          if (isLadybug(this.kind)) g.audio.wingCharge(LADYBUG_CHARGE);
           this.faceToward(dx, dz);
           break;
         }
@@ -690,7 +694,7 @@ export class Enemy {
         // Once a ladybug's shell is fully open the gust is going where it was pointed: the last
         // stretch of the charge stops tracking her, so the cone on the floor stops following her too
         // and stepping out of it is a real answer to the wind.
-        const committed = this.kind === 'ladybug' && this.stateT < LADYBUG_CHARGE * 0.45;
+        const committed = isLadybug(this.kind) && this.stateT < LADYBUG_CHARGE * 0.45;
         if (this.kind !== 'archer' && !committed) this.faceToward(dx, dz);
         if (this.stateT <= 0) {
           this.state = 'attack'; this.stateT = 0; this.attackHit = false; this.fired = false; this.yawPrev = this.yawCur = -1.7;
@@ -766,7 +770,7 @@ export class Enemy {
         g.audio.throwJav();
         if (this.model.weapon) this.model.weapon.visible = false;
       }
-    } else if (this.kind === 'ladybug') {
+    } else if (isLadybug(this.kind)) {
       // the wing-clap: one gust, thrown a moment into the flap
       if (!this.fired && this.stateT > 0.07) {
         this.fired = true;
@@ -782,16 +786,17 @@ export class Enemy {
   }
 
   /**
-   * The giant ladybug's whole attack: a clap of its hindwings throws a cone of wind out of its open
-   * shell. Nothing in here touches `tryHitPlayer` — the gust cannot hurt anyone. It empties the cone
-   * in front of it: the heroine is picked up and set back down, other soldiers are blown off their
-   * feet, and arrows in flight are turned around and sent home.
+   * The ladybug's whole attack: a clap of its hindwings throws a cone of wind out of its open shell.
+   * Nothing in here touches `tryHitPlayer` — the gust cannot hurt anyone. It empties the cone in
+   * front of it: the heroine is picked up and set back down, other soldiers are blown off their feet,
+   * and arrows in flight are turned around and sent home. Both beetles throw the same wind, as far
+   * as their own shell carries it (gustRange) — the queen's is the longer clap.
    */
   private gust() {
     const g = this.game;
     const a = FACING_ANGLE[this.facing];
     g.audio.gust();
-    g.spawnEffect(fxGust(this.pos.x, this.pos.z, a, GUST_RANGE).at(this.pos.x, this.pos.z));
+    g.spawnEffect(fxGust(this.pos.x, this.pos.z, a, gustRange(this.kind)).at(this.pos.x, this.pos.z));
     // the heroine — a step closer, a harder shove; a shield braced into the wind takes some of it
     const p = g.player;
     if (!p.dead && this.inGust(p.pos.x, p.pos.z, a)) {
@@ -823,7 +828,7 @@ export class Enemy {
    */
   private inGust(x: number, z: number, a = FACING_ANGLE[this.facing]): boolean {
     const dx = x - this.pos.x, dz = z - this.pos.z;
-    if (Math.hypot(dx, dz) > GUST_RANGE) return false;
+    if (Math.hypot(dx, dz) > gustRange(this.kind)) return false;
     return Math.abs(normAngle(Math.atan2(dx, dz) - a)) <= GUST_HALF_ARC + 0.25;
   }
 
@@ -891,7 +896,7 @@ export class Enemy {
     m.legR.rotation.x = -swing * 0.7;
     m.body.position.y = moving ? Math.abs(Math.sin(this.animT)) * 0.03 : 0;
     const k = this.kind, s = this.state;
-    if (k === 'ladybug') {
+    if (isLadybug(k)) {
       // The charge is the whole read on this enemy: the wing covers yawn open over a full second
       // while the hindwings shiver underneath, then clap hard for the gust, then fold shut again.
       let open = 0.05;              // at rest the shell sits just cracked apart
@@ -943,7 +948,8 @@ export class Enemy {
         if (charging) {
           const p = clamp(1 - this.stateT / LADYBUG_CHARGE, 0, 1);
           const r = 0.4 + 0.6 * easeOutCubic(p);
-          arc.scale.set(GUST_RANGE * r, 1, GUST_RANGE * r);
+          const u = this.model.gustArcUnit ?? gustRange(this.kind); // local scale of a full-reach cone
+          arc.scale.set(u * r, 1, u * r);
           (arc.material as THREE.MeshBasicMaterial).opacity = 0.28 * p;
         }
       }
@@ -1501,7 +1507,7 @@ const gustMat = new THREE.MeshBasicMaterial({ color: 0xeaf6ff, transparent: true
 const gustLeafMat = new THREE.MeshBasicMaterial({ color: 0x66c247, transparent: true, opacity: 0.95, depthWrite: false });
 
 /**
- * The giant ladybug's wing-clap: a cone of wind rolling out of its open shell — a wall of air that
+ * A ladybug's wing-clap: a cone of wind rolling out of its open shell — a wall of air that
  * races to the full reach of the gust and fades, streaks tearing along inside it, and torn-up
  * leaves tumbling low over the ground. `angle` is the direction the beetle faces; everything here
  * is authored in a "straight ahead = +z" frame and then turned to face that way.

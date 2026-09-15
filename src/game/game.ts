@@ -88,7 +88,7 @@ export class Game implements GameCtx {
   hud: Hud;
   player: Player;
   enemies: Enemy[] = [];
-  /** the world's wild creatures (giant ladybugs in the green country around the player) */
+  /** the world's wild creatures (ladybugs in the green country around the player) */
   wildlife!: Wildlife;
   projectiles: Projectile[] = [];
   pickups: Pickup[] = [];

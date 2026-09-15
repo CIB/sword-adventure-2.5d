@@ -89,7 +89,7 @@ export interface Humanoid {
   shield?: THREE.Group;
   ponytail?: THREE.Group;
   /**
-   * Giant ladybug only: the two halves of its wing covers, hinged on the dorsal midline, plus the
+   * Beetles only: the two halves of the wing covers, hinged on the dorsal midline, plus the
    * membranous hindwings that beat underneath them. The enemy animation cracks the shell open for
    * the charge and claps the hindwings for the gust.
    */
@@ -97,8 +97,14 @@ export interface Humanoid {
   elytronR?: THREE.Group;
   hindwingL?: THREE.Group;
   hindwingR?: THREE.Group;
-  /** giant ladybug only: the faint cone on the ground in front of it, shown while it charges the gust */
+  /** beetles only: the faint cone on the ground in front of it, shown while it charges the gust */
   gustArc?: THREE.Mesh;
+  /**
+   * Beetles only: the local scale `gustArc` carries at full reach. The beetle's root is scaled to
+   * size the body (see LADYBUG_SIZE), and the tell has to be divided by that again — the cone on the
+   * floor is a promise about tiles of *world*, so it must not shrink along with the beetle.
+   */
+  gustArcUnit?: number;
   materials: THREE.MeshToonMaterial[];
 }
 
@@ -203,14 +209,39 @@ export function buildHeroine(): Humanoid {
   return { root, body, head, armR, armL, handR, handL, legR, legL, weapon, shield, ponytail, materials };
 }
 
-export const SOLDIER_COLORS: Record<EnemyKind, string> = { sword: '#3c9c44', spear: '#3858c8', javelin: '#c83838', archer: '#7848b8', moblin: '#3a6fbf', moblin_spear: '#4a84d6', ladybug: '#d43a2a' };
+export const SOLDIER_COLORS: Record<EnemyKind, string> = { sword: '#3c9c44', spear: '#3858c8', javelin: '#c83838', archer: '#7848b8', moblin: '#3a6fbf', moblin_spear: '#4a84d6', ladybug: '#d43a2a', ladybug_queen: '#a8281c' };
+
+// ---------------------------------------------------------------- the beetles
+/**
+ * The two ladybugs. A ladybird is a ladybird: `ladybug` is the ordinary one you meet all over the
+ * green country, and it is built to stand next to a soldier without dwarfing him. `ladybug_queen` is
+ * the oversized one — the same beetle, kept at the size the model was first drawn at, for the
+ * special encounter rather than for the crowd.
+ */
+export const LADYBUG_KINDS = ['ladybug', 'ladybug_queen'] as const;
+export type LadybugKind = (typeof LADYBUG_KINDS)[number];
+export const isLadybug = (k: EnemyKind): k is LadybugKind => k === 'ladybug' || k === 'ladybug_queen';
 
 /**
- * How far the giant ladybug's wing-clap carries and how wide the cone of wind is, in tiles and
- * radians. The model draws its ground preview cone from these, and the enemy AI (entities.ts) uses
- * them for the blast itself, so the tell on the floor is always exactly the wind you get.
+ * How a beetle is sized: the authored model (see buildLadybug) is one scale, and each kind is that
+ * scale multiplied by `plan` on the ground and `y` in height. The common ladybug comes out of this
+ * the size of a soldier — as wide as one and a little flatter, because that is what a beetle is —
+ * while the queen keeps the whole 1:1 authoring size.
  */
-export const GUST_RANGE = 3.4;
+export const LADYBUG_SIZE: Record<LadybugKind, { plan: number; y: number }> = {
+  ladybug: { plan: 0.7, y: 0.76 },
+  ladybug_queen: { plan: 1.03, y: 0.94 },
+};
+
+/**
+ * How far a beetle's wing-clap carries, in tiles, and how wide the cone of wind is, in radians.
+ * The model draws its ground preview cone from these, and the enemy AI (entities.ts) uses them for
+ * the blast itself, so the tell on the floor is always exactly the wind you get. The queen's clap is
+ * a longer one — she is the big one and she hits everything in a bigger room.
+ */
+export const COMMON_GUST_RANGE = 2.8;
+export const QUEEN_GUST_RANGE = 4.4;
+export const gustRange = (kind: EnemyKind): number => (kind === 'ladybug_queen' ? QUEEN_GUST_RANGE : COMMON_GUST_RANGE);
 export const GUST_HALF_ARC = 1.1; // ~63° either side of straight ahead
 
 /**
@@ -356,7 +387,7 @@ function buildMoblin(kind: 'moblin' | 'moblin_spear'): Humanoid {
 }
 
 export function buildSoldier(kind: EnemyKind): Humanoid {
-  if (kind === 'ladybug') return buildLadybug();
+  if (isLadybug(kind)) return buildLadybug(kind);
   if (kind === 'moblin' || kind === 'moblin_spear') return buildMoblin(kind);
   const m = {
     steel: toon('#a3adc0'), steelD: toon('#6b7382'), tunic: toon(SOLDIER_COLORS[kind]), visor: toon('#15151c'),
@@ -455,19 +486,27 @@ const SHELL_DOME_L = new THREE.SphereGeometry(0.5, 12, 6, Math.PI / 2, Math.PI, 
 const SHELL_DOME_R = new THREE.SphereGeometry(0.5, 12, 6, -Math.PI / 2, Math.PI, 0, Math.PI / 2);
 
 /**
- * Giant ladybug — a ladybird the size of a soldier: knee-high legs, a round black underbody, and a
- * bright domed shell split down the middle. The two halves are real, separately hinged wing covers
- * (`elytronL`/`elytronR`), so the enemy can crack them open for the wing-clap charge and let the
- * membranous hindwings beat underneath (`hindwingL`/`hindwingR`).
+ * A ladybug — the giant one of the beetle world, which is to say a ladybird the size of a soldier:
+ * knee-high legs, a round black underbody, and a bright domed shell split down the middle. The two
+ * halves are real, separately hinged wing covers (`elytronL`/`elytronR`), so the enemy can crack them
+ * open for the wing-clap charge and let the membranous hindwings beat underneath
+ * (`hindwingL`/`hindwingR`).
+ *
+ * The beetle is authored once, at the size it was drawn. LADYBUG_SIZE then sizes the two kinds: the
+ * queen keeps practically all of it (a wide, low brute, taller than the heroine is a stride) and the
+ * ordinary `ladybug` is scaled down to a soldier's bulk, so the two read as one species grown to
+ * different ends. Everything that has to stay in *world* units — above all the gust tell lying on the
+ * floor — divides that scale back out.
  *
  * Two things here are unusual for a model in this game: the shell material is double-sided (each
  * half is a hollow quarter-dome, and once the wings are open you look straight into it), and the
  * beetle carries `gustArc` — the faint cone painted on the ground in front of it that tells the
  * player exactly where its gust of wind will land.
  */
-export function buildLadybug(): Humanoid {
-  const shellMat = toon('#d8382a'); shellMat.side = THREE.DoubleSide;
-  const shellDark = toon('#9c2418'); shellDark.side = THREE.DoubleSide;
+export function buildLadybug(kind: LadybugKind = 'ladybug'): Humanoid {
+  const queen = kind === 'ladybug_queen';
+  const shellMat = toon(queen ? '#b52a1a' : '#d8382a'); shellMat.side = THREE.DoubleSide;
+  const shellDark = toon(queen ? '#7c1a12' : '#9c2418'); shellDark.side = THREE.DoubleSide;
   const spotMat = toon('#1a1418');
   const bodyMat = toon('#2b2329');
   const legMat = toon('#3a3036');
@@ -511,7 +550,8 @@ export function buildLadybug(): Humanoid {
     dome.scale.set(SHELL_HW, SHELL_H, SHELL_LEN);
     dome.position.set(0, -SHELL_DROP, -0.16);
     g.add(dome);
-    for (const [sx, sy, sz] of SHELL_SPOTS) dome.add(part(UNIT_SPHERE, spotMat, [sx * side, sy, sz], [0.26, 0.26, 0.26]));
+    const spot = queen ? 0.3 : 0.26; // the big one carries the same four spots, a shade fatter
+    for (const [sx, sy, sz] of SHELL_SPOTS) dome.add(part(UNIT_SPHERE, spotMat, [sx * side, sy, sz], [spot, spot, spot]));
     // a low ridge along the dorsal midline, so the closed shell still reads as two wing covers
     g.add(part(UNIT_BOX, shellDark, [0.03 * side, 0, -0.16], [0.07, 0.06, SHELL_LEN * 0.9]));
     return g;
@@ -559,16 +599,21 @@ export function buildLadybug(): Humanoid {
   const { arm: armR, hand: handR } = antenna(-1);
   head.add(armL, armR);
 
-  // the tell: a faint cone on the ground ahead, sized from the real gust the AI throws
+  // the tell: a faint cone on the ground ahead, sized from the real gust the AI throws. The beetle's
+  // own scale is divided back out of it, so the cone the player sees is the cone the wind fills.
+  const range = gustRange(kind);
+  const size = LADYBUG_SIZE[kind];
   const arcGeo = new THREE.RingGeometry(0.18, 1, 26, 1, -GUST_HALF_ARC - Math.PI / 2, GUST_HALF_ARC * 2).rotateX(-Math.PI / 2);
   const gustArc = new THREE.Mesh(arcGeo, new THREE.MeshBasicMaterial({ color: '#e2f4ff', transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide }));
   gustArc.position.y = 0.06;
-  gustArc.scale.set(GUST_RANGE, 1, GUST_RANGE);
+  gustArc.scale.set(range / size.plan, 1, range / size.plan);
   gustArc.visible = false;
   root.add(gustArc);
 
-  root.scale.set(1.04, 0.94, 1.02); // a wide, low brute: a shade shorter than a soldier, far bulkier
-  return { root, body, head, armR, armL, handR, handL, legR, legL, elytronL, elytronR, hindwingL, hindwingR, gustArc, materials: collectMaterials(root) };
+  // the ordinary beetle stands about as tall as a soldier's chest and as wide as his shoulders; the
+  // queen is left at the size she was drawn, a stride longer than the heroine
+  root.scale.set(size.plan, size.y, size.plan);
+  return { root, body, head, armR, armL, handR, handL, legR, legL, elytronL, elytronR, hindwingL, hindwingR, gustArc, gustArcUnit: range / size.plan, materials: collectMaterials(root) };
 }
 
 // ---------------------------------------------------------------- props

@@ -7,7 +7,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import {
   buildHeroine, buildSoldier, buildVillager, buildDog, VILLAGER_LOOKS, buildTrees, buildBush, buildBerryBush, buildRock, buildStump,
   buildFence, buildHouse, buildProp, buildHeart, buildRupee, buildArrow, buildJavelinProjectile, buildMoblinSpearProjectile,
-  buildFernGeo, buildTallGrassGeo, buildBriarGeo, buildLilyGeo, buildBoulderGeo, buildCropGeo, buildWateringCan, vegObject, type Humanoid,
+  buildFernGeo, buildTallGrassGeo, buildBriarGeo, buildLilyGeo, buildBoulderGeo, buildCropGeo, buildWateringCan, vegObject, LADYBUG_KINDS, type Humanoid,
 } from '../game/models';
 import type { PropKind, HouseSpec, EnemyKind } from '../game/world';
 import { World } from '../game/world';
@@ -28,7 +28,16 @@ const catalog: Cat[] = [
   { name: 'Heroine', items: [{ name: 'Aria', build: () => hum(buildHeroine()) }] },
   { name: 'Fallen Knights', items: (['sword', 'spear', 'javelin', 'archer'] as EnemyKind[]).map((k) => ({ name: k[0].toUpperCase() + k.slice(1) + ' knight', build: () => hum(buildSoldier(k)) })) },
   { name: 'Moblins', items: (['moblin', 'moblin_spear'] as EnemyKind[]).map((k) => ({ name: k === 'moblin' ? 'Sword moblin (shield)' : 'Spear moblin (thrower)', build: () => hum(buildSoldier(k)) })) },
-  { name: 'Beasts', items: [{ name: 'Giant ladybug', build: () => hum(buildSoldier('ladybug')) }] },
+  { name: 'Beasts', items: LADYBUG_KINDS.map((k) => ({ name: k === 'ladybug' ? 'Ladybug (soldier-sized)' : 'Ladybug queen (oversized)', build: () => hum(buildSoldier(k)) })) },
+  // the size question in one picture: a soldier, the ordinary beetle, and the oversized queen
+  { name: 'Size check', items: [{ name: 'Knight · ladybug · queen', build: () => {
+    const line = new THREE.Group();
+    const stand = (h: Humanoid, x: number) => { h.root.position.x = x; line.add(h.root); };
+    stand(buildSoldier('sword'), -1.5);
+    stand(buildSoldier('ladybug'), 0.4);
+    stand(buildSoldier('ladybug_queen'), 2.3);
+    return { obj: line, footprint: 6 };
+  } }] },
   { name: 'Villagers', items: [...Object.keys(VILLAGER_LOOKS).map((id) => ({ name: id[0].toUpperCase() + id.slice(1), build: () => hum(buildVillager(VILLAGER_LOOKS[id])) })), { name: 'Dog', build: () => hum(buildDog()) }] },
   { name: 'Houses', items: world.houses.map((h, i) => ({ name: `House ${i + 1} (${h.w}×${h.d}${h.sign && h.sign !== 'none' ? ', ' + h.sign : ''})`, build: () => { const spec: HouseSpec = { ...h, x: -h.w / 2, z: -h.d / 2 }; return { obj: buildHouse(spec), footprint: Math.max(h.w, h.d) + 2 }; } })) },
   { name: 'Foliage', items: [
@@ -183,7 +192,7 @@ function animate(dt: number) {
   m.body.position.y = Math.abs(swing) * 0.04;
   if (m.ponytail) m.ponytail.rotation.x = swing * 0.2 + 0.15;
   m.armL.rotation.x = swing * 0.3;
-  // the giant ladybug: breathe its wing covers open and shut (with the hindwings beating under them)
+  // the ladybugs: breathe their wing covers open and shut (with the hindwings beating under them)
   // so the shell and the wings beneath it can actually be looked at here
   if (m.elytronL && m.elytronR) {
     const open = 0.05 + (0.5 + 0.5 * Math.sin(animT * 0.25)) * 1.2;
