@@ -7,12 +7,10 @@ import type { EnemyKind, Vec2, World, NpcSpec } from './world';
 import type { Post, WorldSoldier } from './worldstate';
 import { ACTIONS, type VillageState, type CropKind } from './village';
 import {
-  buildArrow, buildEnergyBall, buildHeart, buildHeroine, buildJavelinProjectile, buildMoblinSpearProjectile, buildRupee, buildSoldier, part, toon,
+  buildArrow, buildHeart, buildHeroine, buildJavelinProjectile, buildMoblinSpearProjectile, buildRupee, buildSoldier, part, toon,
   UNIT_BOX, UNIT_OCTA, UNIT_SPHERE, type Humanoid, buildVillager, buildDog, buildWateringCan, VILLAGER_LOOKS,
-  GUST_HALF_ARC, gustRange, isLadybug, isSpitflower,
+  GUST_HALF_ARC, gustRange, isLadybug,
 } from './models';
-
-export type ProjectileKind = 'arrow' | 'javelin' | 'moblin_spear' | 'energy';
 
 export interface GameCtx {
   world: World;
@@ -22,7 +20,7 @@ export interface GameCtx {
   enemies: Enemy[];
   projectiles: Projectile[];
   rand(): number;
-  spawnProjectile(kind: ProjectileKind, x: number, z: number, dx: number, dz: number, dmg: number): void;
+  spawnProjectile(kind: 'arrow' | 'javelin' | 'moblin_spear', x: number, z: number, dx: number, dz: number, dmg: number): void;
   spawnEffect(e: Effect): void;
   tryHitPlayer(dmg: number, sx: number, sz: number, opts?: { projectile?: boolean }): 'hit' | 'blocked' | 'immune';
   /** true while a dialogue box is open (player + NPCs freeze) */
@@ -369,9 +367,6 @@ const STATS: Record<EnemyKind, Stats> = {
   // the queen: the oversized beetle, and the only one of the two that fights like a small set-piece —
   // more shell to crack, a longer wind-up and a much longer, harder clap of wind
   ladybug_queen: { hp: 6, speed: 1.15, chase: 2.2, dmg: 2, sight: 8, range: 3.9, attackDur: 0.5, recover: 1.15, cooldown: 3.8 },
-  // The spitflower: a rooted turret-plant. It never moves (speed/chase are dead numbers), so it
-  // gets its fairness from range instead — it sees far, spits far, and one ball costs half a heart.
-  spitflower: { hp: 4, speed: 0, chase: 0, dmg: 1, sight: 9, range: 7.5, attackDur: 0.32, recover: 0.6, cooldown: 2.4 },
 };
 
 // ---- ladybug tuning -------------------------------------------------------
@@ -381,12 +376,6 @@ const LADYBUG_CHARGE = 1.1;
 const LADYBUG_OPEN = 1.25;
 /** the shove a point-blank gust puts on the heroine (falls off with distance), tiles/second */
 const GUST_PUSH = 13;
-
-// ---- spitflower tuning ------------------------------------------------------
-/** seconds the mouth glows and the petals open before a spit leaves it (the whole telegraph) */
-const SPIT_WINDUP = 0.7;
-/** how fast the flower's head turns to follow the heroine, radians/second */
-const SPIT_TURN = 4.0;
 
 /** how far a guard on a tight post (bridge, camp) may drift from its own spot, in tiles */
 const TIGHT_LEASH = 2.2;
@@ -422,12 +411,6 @@ export class Enemy {
   // Moblin shield guard (sword variant) — LA Switch remake: big shield blocks while raised, breaks after 3 hits
   moblinGuardHits = 0;
   moblinGuardBroken = 0;
-  /**
-   * Spitflower only: the fixed yaw the stalk sprouted at (the root never turns) and the head's own
-   * continuous angle, which swings around to follow the heroine independently of the 4-way facing.
-   */
-  plantedYaw = 0;
-  headYaw = 0;
   readonly st: Stats;
   readonly HW = 0.3;
   readonly HH = 0.25;
@@ -447,7 +430,6 @@ export class Enemy {
     // a beetle is mostly shell: even the soldier-sized one presents a rounder, broader target than a
     // soldier, and the queen the broadest of all
     if (isLadybug(kind)) this.radius = kind === 'ladybug_queen' ? 0.55 : 0.45;
-    if (isSpitflower(kind)) this.plantedYaw = this.headYaw = game.rand() * Math.PI * 2;
     this.facing = randomFacing(game.rand());
     this.pickPatrolDir();
     game.scene.add(this.model.root);
@@ -461,8 +443,6 @@ export class Enemy {
 
   get melee() { return this.kind === 'sword' || this.kind === 'spear' || this.kind === 'moblin' || isLadybug(this.kind); }
   get isMoblin() { return this.kind === 'moblin' || this.kind === 'moblin_spear'; }
-  /** rooted plants: never walk, never get knocked back, never get blown about — the head does all the moving */
-  get isRooted() { return isSpitflower(this.kind); }
 
   /**
    * The tile this guard stands watch on, taken from its own world record: a replacement inherits
@@ -529,18 +509,7 @@ export class Enemy {
     this.facing = facingFrom(dx, dz);
   }
 
-  /**
-   * Turn the flower's head toward the heroine, at most `rate` radians/second — the stalk stays put
-   * while the head swings around on its neck. Used everywhere a walking enemy would turn its body.
-   */
-  private headTrack(dt: number, dx: number, dz: number, rate = SPIT_TURN) {
-    const d = normAngle(Math.atan2(dx, dz) - this.headYaw);
-    const step = rate * dt;
-    this.headYaw = Math.abs(d) <= step ? Math.atan2(dx, dz) : this.headYaw + Math.sign(d) * step;
-  }
-
   private walk(dx: number, dz: number, speed: number, dt: number): boolean {
-    if (this.isRooted) return false; // planted: the head turns, the feet never move
     const len = Math.hypot(dx, dz);
     if (len < 1e-6) return false;
     dx /= len; dz /= len;
@@ -557,7 +526,6 @@ export class Enemy {
 
   private canSee(dist: number, dx: number, dz: number): boolean {
     if (dist > this.st.sight) return false;
-    if (this.isRooted) return true; // the head turns all the way around: nowhere to sneak up from
     if (dist < 2.5) return true;
     const f = FACING_VEC[this.facing];
     return (f[0] * dx + f[1] * dz) / dist > -0.15;
@@ -579,11 +547,9 @@ export class Enemy {
 
     if (this.knockT > 0) {
       this.knockT -= dt;
-      if (!this.isRooted) {
-        g.world.moveBox(this.pos, this.knock.x * dt, this.knock.z * dt, this.HW, this.HH);
-        const f = Math.max(0, 1 - dt * 6);
-        this.knock.x *= f; this.knock.z *= f;
-      }
+      g.world.moveBox(this.pos, this.knock.x * dt, this.knock.z * dt, this.HW, this.HH);
+      const f = Math.max(0, 1 - dt * 6);
+      this.knock.x *= f; this.knock.z *= f;
       this.animate(false);
       this.sync();
       return;
@@ -605,12 +571,6 @@ export class Enemy {
 
     switch (this.state) {
       case 'patrol': {
-        if (this.isRooted) {
-          // planted: sway on its stalk, idly watching her go by, until she is close enough to spit at
-          this.headTrack(dt, dx, dz, SPIT_TURN * 0.4);
-          if (!p.dead && this.canSee(dist, dx, dz)) this.becomeAlert();
-          break;
-        }
         const post = this.post;
         const tight = !!post?.tight;
         this.blockT = Math.max(0, this.blockT - dt);
@@ -674,19 +634,13 @@ export class Enemy {
         break;
       }
       case 'idle': {
-        if (this.isRooted) {
-          this.headTrack(dt, dx, dz, SPIT_TURN * 0.4);
-          if (!p.dead && this.canSee(dist, dx, dz)) this.becomeAlert();
-          break;
-        }
         this.stateT -= dt;
         if (this.stateT <= 0) { this.state = 'patrol'; this.pickPatrolDir(); this.stateT = 1 + g.rand() * 2; }
         if (!p.dead && this.canSee(dist, dx, dz)) this.becomeAlert();
         break;
       }
       case 'alert': {
-        if (this.isRooted) this.headTrack(dt, dx, dz);
-        else this.faceToward(dx, dz);
+        this.faceToward(dx, dz);
         this.stateT -= dt;
         if (this.stateT <= 0) this.state = this.melee ? 'chase' : 'ranged';
         break;
@@ -709,17 +663,6 @@ export class Enemy {
       }
       case 'ranged': {
         if (p.dead || dist > 13) { this.state = 'patrol'; this.stateT = 1; break; }
-        if (this.isRooted) {
-          // a turret: no footwork, just the head tracking her — and a spit brewing whenever she is
-          // in range and the mouth is off cooldown
-          this.headTrack(dt, dx, dz);
-          if (this.cooldown <= 0 && dist < st.range && dist > 1.2) {
-            this.state = 'windup';
-            this.stateT = SPIT_WINDUP;
-            g.audio.flowerCharge(SPIT_WINDUP);
-          }
-          break;
-        }
         if (this.kind === 'javelin' || this.kind === 'moblin_spear') {
           if (dist < 2.8) moving = this.walk(-dx, -dz, st.chase, dt);
           else if (dist > 5.5) moving = this.walk(dx, dz, st.chase, dt);
@@ -753,10 +696,7 @@ export class Enemy {
         // stretch of the charge stops tracking her, so the cone on the floor stops following her too
         // and stepping out of it is a real answer to the wind.
         const committed = isLadybug(this.kind) && this.stateT < LADYBUG_CHARGE * 0.45;
-        // the flower tracks her through most of the wind-up, then locks on: the last stretch is
-        // committed, so the head visibly stops following her and a sidestep dodges the spit
-        if (this.isRooted) { if (this.stateT > SPIT_WINDUP * 0.35) this.headTrack(dt, dx, dz); }
-        else if (this.kind !== 'archer' && !committed) this.faceToward(dx, dz);
+        if (this.kind !== 'archer' && !committed) this.faceToward(dx, dz);
         if (this.stateT <= 0) {
           this.state = 'attack'; this.stateT = 0; this.attackHit = false; this.fired = false; this.yawPrev = this.yawCur = -1.7;
           if (this.kind === 'sword' || this.kind === 'moblin') g.audio.swing();
@@ -837,19 +777,6 @@ export class Enemy {
         this.fired = true;
         this.gust();
       }
-    } else if (isSpitflower(this.kind)) {
-      // the spit: one energy ball out of the open mouth, going where the head points — which is
-      // where she was standing when it locked on, not where she is now
-      if (!this.fired && this.stateT > 0.1) {
-        this.fired = true;
-        const hx = Math.sin(this.headYaw), hz = Math.cos(this.headYaw);
-        const mx = this.pos.x + hx * 0.6, mz = this.pos.z + hz * 0.6;
-        g.spawnProjectile('energy', mx, mz, hx, hz, st.dmg);
-        g.audio.flowerSpit();
-        g.spawnEffect(fxSpit(mx, mz, this.headYaw).at(mx, mz));
-      } else if (this.fired) {
-        this.headTrack(dt, dx, dz); // the head swings back onto her once the spit has left
-      }
     } else {
       if (!this.fired) {
         this.fired = true;
@@ -882,10 +809,9 @@ export class Enemy {
       p.shove(this.pos.x, this.pos.z, (GUST_PUSH / (1 + d * 0.4)) * (p.blocking ? 0.6 : 1), 0.24);
     }
     // other soldiers (and the odd fellow beetle) are blown off their feet just the same, but the wind
-    // only hurts the heroine: a beetle that could kill a knight would rewrite the world's guard posts.
-    // Rooted flowers just shiver in it — you cannot blow a plant off its feet.
+    // only hurts the heroine: a beetle that could kill a knight would rewrite the world's guard posts
     for (const e of g.enemies) {
-      if (e === this || !e.alive || e.knockT > 0 || e.isRooted || !this.inGust(e.pos.x, e.pos.z, a)) continue;
+      if (e === this || !e.alive || e.knockT > 0 || !this.inGust(e.pos.x, e.pos.z, a)) continue;
       let ex = e.pos.x - this.pos.x, ez = e.pos.z - this.pos.z;
       const ed = Math.hypot(ex, ez) || 1;
       ex /= ed; ez /= ed;
@@ -954,14 +880,8 @@ export class Enemy {
     let dx = this.pos.x - sx, dz = this.pos.z - sz;
     const d = Math.hypot(dx, dz) || 1;
     dx /= d; dz /= d;
-    if (this.isRooted) {
-      // planted: a sword blow staggers it in place (the stalk whips) but never moves it
-      this.knock = { x: 0, z: 0 };
-      this.knockT = 0.15;
-    } else {
-      this.knock = { x: dx * 6.5, z: dz * 6.5 };
-      this.knockT = 0.22;
-    }
+    this.knock = { x: dx * 6.5, z: dz * 6.5 };
+    this.knockT = 0.22;
     this.flashT = 0.15;
     setEmissive(this.model.materials, true);
     if (this.model.weapon) this.model.weapon.visible = true;
@@ -982,9 +902,7 @@ export class Enemy {
     m.legR.rotation.x = -swing * 0.7;
     m.body.position.y = moving ? Math.abs(Math.sin(this.animT)) * 0.03 : 0;
     const k = this.kind, s = this.state;
-    if (isSpitflower(k)) {
-      this.animateFlower();
-    } else if (isLadybug(k)) {
+    if (isLadybug(k)) {
       // The charge is the whole read on this enemy: the wing covers yawn open over a full second
       // while the hindwings shiver underneath, then clap hard for the gust, then fold shut again.
       let open = 0.05;              // at rest the shell sits just cracked apart
@@ -1125,62 +1043,9 @@ export class Enemy {
     }
   }
 
-  /**
-   * The spitflower's whole performance: the stalk bends at the base toward whatever the head is
-   * watching (plus a breath of breeze so it never stands dead still), the head swings on its neck
-   * after the heroine, and the petals work with the mouth — cupped at rest, yawning open as the
-   * glow swells for a spit, flung wide as it leaves.
-   */
-  private animateFlower() {
-    const m = this.model, t = this.age, s = this.state;
-    // the stalk leans toward the head's gaze (local to the planted yaw), swaying in the breeze
-    const l = normAngle(this.headYaw - this.plantedYaw);
-    const lean = 0.1 + (s === 'windup' ? 0.07 : s === 'attack' ? 0.14 : 0);
-    m.body.rotation.set(
-      Math.cos(l) * lean + Math.sin(t * 1.7) * 0.028,
-      0,
-      -Math.sin(l) * lean + Math.cos(t * 1.3) * 0.028,
-    );
-    // the head rides the neck: yaw after her, tipping back to aim up and lunging into the spit
-    m.head.rotation.y = normAngle(this.headYaw - this.plantedYaw);
-    m.head.rotation.x = s === 'attack' ? 0.16 : s === 'windup' ? -0.1 : Math.sin(t * 1.1) * 0.03;
-    // petals + mouth glow, from the state of the spit
-    let open = 0.25 + Math.sin(t * 1.4) * 0.05;
-    let glow = 0.1;
-    if (s === 'windup') {
-      const p = easeOutCubic(clamp(1 - this.stateT / SPIT_WINDUP, 0, 1));
-      open = 0.25 + p * 0.75;
-      glow = 0.1 + p * 0.55;
-    } else if (s === 'attack') {
-      const p = clamp(this.stateT / this.st.attackDur, 0, 1);
-      open = 1 - p * 0.45;
-      glow = 0.65 * (1 - p) + 0.1;
-    } else if (s === 'recover') {
-      const p = clamp(this.stateT / this.st.recover, 0, 1);
-      open = 0.25 + p * 0.5;
-      glow = 0.1 + p * 0.2;
-    }
-    if (m.petals) for (const hinge of m.petals) {
-      const petal = hinge.children[0] as THREE.Mesh;
-      petal.rotation.y = -0.5 + open * 0.95; // cupped forward at rest, flung back for the spit
-      petal.position.x = 0.34 + open * 0.12;
-    }
-    if (m.mouthGlow) {
-      const r = 0.1 + glow * 0.26;
-      m.mouthGlow.scale.set(r, r, r);
-      (m.mouthGlow.material as THREE.MeshBasicMaterial).color.setHSL(0.24 - glow * 0.05, 1, 0.5 + glow * 0.28);
-    }
-    // ground leaves rustling, side buds bobbing
-    m.legL.rotation.z = 0.1 + Math.sin(t * 2.2) * 0.05;
-    m.legR.rotation.z = -0.1 - Math.cos(t * 1.9) * 0.05;
-    m.armL.rotation.x = Math.sin(t * 1.5) * 0.08;
-    m.armR.rotation.x = -Math.sin(t * 1.5 + 1) * 0.08;
-  }
-
   private sync() {
     this.model.root.position.set(this.pos.x, this.game.world.surfaceAt(this.pos.x, this.pos.z), this.pos.z);
-    // the flower's root never turns — it was planted this way around; only the head moves
-    this.model.root.rotation.y = this.isRooted ? this.plantedYaw : FACING_ANGLE[this.facing];
+    this.model.root.rotation.y = FACING_ANGLE[this.facing];
   }
 
   dispose() {
@@ -1473,13 +1338,12 @@ export class Projectile {
   alive = true;
   life = 0;
   speed: number;
-  constructor(private game: GameCtx, public kind: ProjectileKind, x: number, z: number, public dir: Vec2, public dmg: number) {
+  constructor(private game: GameCtx, public kind: 'arrow' | 'javelin' | 'moblin_spear', x: number, z: number, public dir: Vec2, public dmg: number) {
     this.pos = { x, z };
     if (kind === 'arrow') this.mesh = buildArrow();
     else if (kind === 'moblin_spear') this.mesh = buildMoblinSpearProjectile();
-    else if (kind === 'energy') this.mesh = buildEnergyBall();
     else this.mesh = buildJavelinProjectile();
-    this.speed = kind === 'arrow' ? 9.5 : kind === 'moblin_spear' ? 7.2 : kind === 'energy' ? 6.0 : 6.5;
+    this.speed = kind === 'arrow' ? 9.5 : kind === 'moblin_spear' ? 7.2 : 6.5;
     this.mesh.rotation.y = Math.atan2(dir.x, dir.z);
     if (kind === 'javelin' || kind === 'moblin_spear') this.mesh.rotation.x = -0.25;
     game.scene.add(this.mesh);
@@ -1489,12 +1353,7 @@ export class Projectile {
   private sync() { this.mesh.position.set(this.pos.x, this.y, this.pos.z); }
   update(dt: number) {
     if (!this.alive) return;
-    // energy balls leave the flower's mouth a head-height up, not from a hand at the hip
-    if (this.life === 0) this.y = this.game.world.surfaceAt(this.pos.x, this.pos.z) + (this.kind === 'energy' ? 1.0 : 0.6);
-    if (this.kind === 'energy') {
-      const s = 1 + Math.sin(this.life * 18) * 0.12; // crackling as it flies
-      this.mesh.scale.set(s, s, s);
-    }
+    if (this.life === 0) this.y = this.game.world.surfaceAt(this.pos.x, this.pos.z) + 0.6;
     this.life += dt;
     this.pos.x += this.dir.x * this.speed * dt;
     this.pos.z += this.dir.z * this.speed * dt;
@@ -1711,40 +1570,6 @@ export function fxGust(x: number, z: number, angle: number, range: number): Effe
       l.m.rotation.y += 0.02 * l.spin;
       const ls = (1 - p * 0.5);
       l.m.scale.set(0.13 * ls, 0.03, 0.1 * ls);
-    }
-  });
-  e.group.add(holder);
-  return e;
-}
-
-const spitMat = new THREE.MeshBasicMaterial({ color: 0xb8ff4a });
-const spitDark = new THREE.MeshBasicMaterial({ color: 0x5aa832 });
-
-/**
- * A spitflower's spit leaving the mouth: a green flash at mouth height and a spray of glowing
- * droplets spat forward after the ball. Authored facing +z, then turned to the spit direction.
- */
-export function fxSpit(x: number, z: number, angle: number): Effect {
-  const holder = new THREE.Group();
-  holder.position.set(x, 1.3, z);
-  holder.rotation.y = angle;
-  const core = part(UNIT_OCTA, spitMat, [0, 0, 0.3], [0.2, 0.2, 0.2]);
-  holder.add(core);
-  const drops: { m: THREE.Mesh; a: number; sp: number }[] = [];
-  for (let i = 0; i < 6; i++) {
-    const m = part(UNIT_SPHERE, i % 2 ? spitDark : spitMat, [0, 0, 0.3], [0.09, 0.09, 0.09]);
-    holder.add(m);
-    drops.push({ m, a: (i / 6 - 0.5) * 0.9, sp: 0.8 + (i % 3) * 0.25 });
-  }
-  const e = new Effect(0.32, (p) => {
-    const s = 0.12 + (1 - p) * 0.4;
-    core.scale.set(s, s * 1.25, s);
-    core.rotation.y = p * 4;
-    for (const d of drops) {
-      const r = 0.3 + easeOutCubic(p) * 1.3 * d.sp;
-      d.m.position.set(Math.sin(d.a) * r, Math.max(-1.2, 0.25 * p - 2.2 * p * p), Math.cos(d.a) * r);
-      const ds = (1 - p) * 0.09 + 0.01;
-      d.m.scale.set(ds, ds, ds);
     }
   });
   e.group.add(holder);

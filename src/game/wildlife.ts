@@ -21,18 +21,10 @@ import type { Vec2 } from './world';
  * The oversized queen is the exception to the crowd: the same beetle at the size the model was first
  * drawn, one at a time, and only now and then after the player has been walking green country for a
  * while. She is the special encounter; the six little ones scuttling around the meadow are the norm.
- *
- * The spitflower is the woods' answer to the ladybug: a big blossom on a long stalk, rooted where
- * it sprouts, turning its head to spit energy balls at passers-by. It keeps its own, smaller
- * population beside the beetles — same lush-country rule, but only under the trees (mossy forest
- * floor, or a clearing with trunks in sight), so the open meadow stays beetle country and the deep
- * green woods grow teeth.
  */
 
 /** how many ladybugs the active region keeps busy while the ground is green */
 const TARGET = 6;
-/** ...and how many spitflowers the green woods around it hold (a separate population) */
-const FLOWER_TARGET = 3;
 /** seconds between attempts to seed one more (only attempted while the population is short) */
 const RETRY = 2.2;
 /** how lush the ground has to be for a ladybug to want it: meadow, pond shore, woods, farmland */
@@ -43,8 +35,6 @@ const SPAWN_IN = 2, SPAWN_OUT = 12;
 const LEAVE = 10;
 /** the closest a new bug may be dropped to another one, in tiles */
 const SPACING = 5;
-/** how far a spitflower looks for trunks before it calls a spot "woods", in tiles */
-const WOODS_R = 4;
 /** the queen: a fresh world waits this long before the big one may settle in (seconds of play) */
 const QUEEN_FIRST = 55;
 /** ...then this long between queens, plus a random stretch of up to QUEEN_SPREAD, so it never feels scheduled */
@@ -55,10 +45,7 @@ const QUEEN_RETRY = 8;
 export class Wildlife {
   /** the ladybugs this system keeps track of (they also live in game.enemies while they're alive) */
   bugs: Enemy[] = [];
-  /** the spitflowers, likewise (rooted, so they never wander — they only ever get released) */
-  flowers: Enemy[] = [];
   private retryT = RETRY;
-  private flowerRetryT = RETRY * 1.5;
   /** seconds until the queen's next turn (queens are not part of the crowd, so they get their own clock) */
   private queenT = QUEEN_FIRST;
 
@@ -71,44 +58,27 @@ export class Wildlife {
    */
   update(dt: number, viewR: number) {
     this.bugs = this.bugs.filter((b) => b.alive); // sword blows are the game's business (onEnemyDied)
-    this.flowers = this.flowers.filter((f) => f.alive);
     const p = this.game.player.pos;
     // 1. let the ones that have wandered off the active region go
     for (const b of this.bugs) if (Math.hypot(b.pos.x - p.x, b.pos.z - p.z) > viewR + LEAVE) b.dispose();
-    for (const f of this.flowers) if (Math.hypot(f.pos.x - p.x, f.pos.z - p.z) > viewR + LEAVE) f.dispose();
     this.bugs = this.bugs.filter((b) => b.alive);
-    this.flowers = this.flowers.filter((f) => f.alive);
     // 2. the queen, if her turn has come up and the country is green enough to hold her
     this.queenTick(dt, p.x, p.z, viewR);
     // 3. seed another every few seconds, while the country around the player is green and there is room
-    if (this.retryT > 0) { this.retryT -= dt; } else {
-      this.retryT = RETRY;
-      if (this.bugs.length < TARGET) {
-        const spot = this.findSpot(p.x, p.z, Math.max(14, viewR - SPAWN_IN), viewR + SPAWN_OUT);
-        if (spot) {
-          const bug = new Enemy(this.game, 'ladybug', spot.x, spot.z);
-          this.game.enemies.push(bug);
-          this.bugs.push(bug);
-        }
-      }
-    }
-    // 4. ...and a flower now and then, where the green country runs to woods
-    if (this.flowerRetryT > 0) { this.flowerRetryT -= dt; return; }
-    this.flowerRetryT = RETRY * 1.5;
-    if (this.flowers.length >= FLOWER_TARGET) return;
-    const spot = this.findSpot(p.x, p.z, Math.max(14, viewR - SPAWN_IN), viewR + SPAWN_OUT, true);
+    if (this.retryT > 0) { this.retryT -= dt; return; }
+    this.retryT = RETRY;
+    if (this.bugs.length >= TARGET) return;
+    const spot = this.findSpot(p.x, p.z, Math.max(14, viewR - SPAWN_IN), viewR + SPAWN_OUT);
     if (!spot) return;
-    const flower = new Enemy(this.game, 'spitflower', spot.x, spot.z);
-    this.game.enemies.push(flower);
-    this.flowers.push(flower);
+    const bug = new Enemy(this.game, 'ladybug', spot.x, spot.z);
+    this.game.enemies.push(bug);
+    this.bugs.push(bug);
   }
 
   /** a fresh run is a fresh world: drop the population and let the country restock itself */
   reset() {
     this.bugs = [];
-    this.flowers = [];
     this.retryT = RETRY;
-    this.flowerRetryT = RETRY * 1.5;
     this.queenT = QUEEN_FIRST;
   }
 
@@ -122,18 +92,6 @@ export class Wildlife {
     if (this.bugs.some((b) => b.kind === 'ladybug_queen')) { this.queenT = QUEEN_GAP; return; }
     const spot = this.findSpot(px, pz, Math.max(14, viewR - SPAWN_IN), viewR + SPAWN_OUT);
     if (!spot) { this.queenT = QUEEN_RETRY; return; }
-    // she is one beetle's worth of the six: if the commons are at capacity, the farthest one
-    // quietly leaves as she settles in, so her arrival never grows the crowd past its usual size
-    if (this.bugs.length >= TARGET) {
-      let far: Enemy | null = null, farD = -1;
-      for (const b of this.bugs) {
-        if (b.kind === 'ladybug_queen') continue;
-        const d = Math.hypot(b.pos.x - px, b.pos.z - pz);
-        if (d > farD) { farD = d; far = b; }
-      }
-      far?.dispose();
-      this.bugs = this.bugs.filter((b) => b.alive);
-    }
     const queen = new Enemy(this.game, 'ladybug_queen', spot.x, spot.z);
     this.game.enemies.push(queen);
     this.bugs.push(queen);
@@ -141,7 +99,7 @@ export class Wildlife {
   }
 
   /** the best of a handful of tries at a clear, lush, out-of-sight tile to put a bug on */
-  private findSpot(px: number, pz: number, r0: number, r1: number, woods = false): Vec2 | null {
+  private findSpot(px: number, pz: number, r0: number, r1: number): Vec2 | null {
     const w = this.game.world;
     const v = w.village;
     let best: Vec2 | null = null, bestScore = -1;
@@ -156,8 +114,6 @@ export class Wildlife {
       if (tx > v.x0 - 3 && tx < v.x1 + 3 && tz > v.z0 - 3 && tz < v.z1 + 3) continue;
       const lush = w.lushness(x, z);
       if (lush < LUSH_MIN) continue;
-      // flowers only take root under the trees: mossy forest floor, or a clearing with trunks in sight
-      if (woods && w.tile(tx, tz) !== Tile.ForestFloor && !this.nearTrees(tx, tz)) continue;
       if (this.crowded(tx + 0.5, tz + 0.5)) continue;
       const score = lush + this.game.rand() * 0.15;
       if (score > bestScore) { bestScore = score; best = { x: tx + 0.5, z: tz + 0.5 }; }
@@ -165,23 +121,11 @@ export class Wildlife {
     return best;
   }
 
-  /** is there a trunk within WOODS_R tiles of this spot? */
-  private nearTrees(tx: number, tz: number): boolean {
-    const w = this.game.world;
-    for (let dz = -WOODS_R; dz <= WOODS_R; dz++) for (let dx = -WOODS_R; dx <= WOODS_R; dx++) {
-      const nx = tx + dx, nz = tz + dz;
-      if (nx < 0 || nz < 0 || nx >= w.w || nz >= w.h) continue;
-      if (w.treeCell[nz * w.w + nx]) return true;
-    }
-    return false;
-  }
-
   /** is there already a bug (or the player) closer than one beetle's patience? */
   private crowded(x: number, z: number): boolean {
     const p = this.game.player.pos;
     if (Math.hypot(p.x - x, p.z - z) < SPACING) return true;
     for (const b of this.bugs) if (Math.hypot(b.pos.x - x, b.pos.z - z) < SPACING) return true;
-    for (const f of this.flowers) if (Math.hypot(f.pos.x - x, f.pos.z - z) < SPACING) return true;
     return false;
   }
 }

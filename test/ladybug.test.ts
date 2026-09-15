@@ -253,13 +253,11 @@ function runWildlife(seconds: number, x: number, z: number, viewR = 26) {
   const queens: { x: number; z: number; dist: number }[] = [];
   let queenMax = 0;
   for (let i = 0; i < Math.round(seconds / DT); i++) {
-    // arrivals are read off the enemy list itself: the population count can stay level across a
-    // frame that both releases one and seeds another (or swaps a common out for the queen)
-    const n = ctx.enemies.length;
+    const before = wildlife.bugs.length;
     wildlife.update(DT, viewR);
     for (const e of ctx.enemies) e.update(DT);
-    for (let k = n; k < ctx.enemies.length; k++) {
-      const b = ctx.enemies[k];
+    if (wildlife.bugs.length > before) {
+      const b = wildlife.bugs[wildlife.bugs.length - 1];
       const at = { x: b.pos.x, z: b.pos.z, dist: Math.hypot(b.pos.x - x, b.pos.z - z) };
       spawned.push(at);
       if (b.kind === 'ladybug_queen') queens.push(at);

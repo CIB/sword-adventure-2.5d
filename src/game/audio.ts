@@ -174,17 +174,6 @@ export class AudioEngine {
     this.noise(0.32, 0.14, 'bandpass', 2600, { f1: 700, q: 0.7 });
     this.tone('sine', 95, 0.22, 0.28, { f1: 42 });
   }
-  // ---- the spitflower
-  /** a spit brewing: a rising vegetal gurgle that swells over the whole wind-up */
-  flowerCharge(dur: number) {
-    this.tone('sine', 170, dur, 0.1, { f1: 740, attack: dur * 0.3 });
-    this.noise(dur, 0.05, 'bandpass', 700, { f1: 2100, q: 2, attack: dur * 0.4 });
-  }
-  /** the spit itself: a wet pop with a zap behind it */
-  flowerSpit() {
-    this.tone('square', 720, 0.11, 0.13, { f1: 210 });
-    this.noise(0.09, 0.2, 'bandpass', 1400, { f1: 420, q: 1.4 });
-  }
   lowHp() { this.tone('square', 1046, 0.06, 0.07); }
   // ---- the farm
   /** the hoe biting into soil: a dull thud with a little grit */
