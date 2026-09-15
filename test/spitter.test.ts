@@ -195,6 +195,49 @@ const treesAround = (tx: number, tz: number, r = 4) => {
   check('...and with its fire held it has thrown nothing at all', shots.length === 0, `${shots.length} shot(s)`);
 }
 
+// A spitflower is a plant and not a turret. The turn it makes to keep her in front of it is spent
+// down the stem — a fifth of it at the foot, the rest bowed up the stalk joint by joint, most of it
+// just under the head — so it is always visibly *leaning* round after her, and it leans hardest while
+// the swing is still unfinished and comes upright again as it arrives on the line.
+{
+  const { ctx, player } = makeCtx(46.5, 24.5);
+  const flower = new Enemy(ctx, 'spitter', 44.5, 24.5); // due west of her, so the turn is a quarter
+  flower.cooldown = 999;
+  flower.yaw = Math.PI; // ...and it starts out looking due north, straight away from the line to her
+  ctx.enemies.push(flower);
+  const stalk = flower.model.stalk!;
+  const top = stalk[stalk.length - 1];
+  const headX = new THREE.Vector3();
+  flower.model.head.getWorldPosition(headX);
+  const upright = Math.hypot(headX.x - flower.pos.x, headX.z - flower.pos.z); // where the head sits when the stem is straight
+  let footShare = 0, bowPeak = 0, lean = 0, twistErr = 0, biggestYaw = 0;
+  for (let i = 0; i < Math.round(1.6 / DT); i++) {
+    // how far the swing still has to go, read before the frame is taken
+    const swing = Math.abs(normAngle(Math.atan2(player.pos.x - flower.pos.x, player.pos.z - flower.pos.z) - flower.yaw));
+    step([flower], ctx, player);
+    // however it is spent, the foot and the stalk together are the yaw the AI asked for: there is no
+    // neck joint left over to hold part of it, which would be the turret this is not
+    const sum = flower.model.body.rotation.y + stalk.reduce((a, j) => a + j.rotation.y, 0);
+    twistErr = Math.max(twistErr, Math.abs(normAngle(sum - flower.yaw)));
+    if (Math.abs(flower.yaw) > biggestYaw) { biggestYaw = Math.abs(flower.yaw); footShare = Math.abs(flower.model.body.rotation.y / flower.yaw); }
+    if (swing > 0.25) { // ...while the swing is still on (>0.25 rad to go) the plant is bowing after her
+      bowPeak = Math.max(bowPeak, Math.abs(top.rotation.z));
+      flower.model.head.getWorldPosition(headX);
+      lean = Math.max(lean, Math.hypot(headX.x - flower.pos.x, headX.z - flower.pos.z) - upright);
+    }
+    if (Math.abs(normAngle(flower.yaw)) < 0.05) break;
+  }
+  check('the stem is turned as one plant, from the foot on up to the head',
+    biggestYaw > 2 && twistErr < 0.02, `foot+stalk strays ${twistErr.toFixed(4)} rad from the yaw`);
+  check('...with the foot carrying only the first fifth of it, so nothing swivels on a post',
+    footShare > 0.05 && footShare < 0.35, `foot took ${(footShare * 100).toFixed(0)}%`);
+  check('...and the stalk bowed through the rest, leaning after her while the turn was on',
+    bowPeak > 0.06, `bow peaks at ${bowPeak.toFixed(3)} rad`);
+  check('...which carries the head off the stem it grew on', lean > 0.05, `head stands ${lean.toFixed(3)} off the pole`);
+  check('...and it straightens up again once it is on the line', Math.abs(top.rotation.z) < 0.05,
+    `top bend ${top.rotation.z.toFixed(3)} at rest`);
+}
+
 // The reach is the ball's, not an arm's: it has none. Out past the range it stops spitting, however
 // plainly it can see her — and that range is where the ball can still arrive, not a step further.
 {

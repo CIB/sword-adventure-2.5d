@@ -230,12 +230,19 @@ function animate(dt: number) {
     // one whole charge cycle of the enemy's (wind-up, spit, recover, cooldown ≈ 4.4s), so the tell
     // can be watched here as it is in the woods
     const charge = 0.5 + 0.5 * Math.sin(animT * 0.16);
-    m.body.rotation.y = Math.sin(animT * 0.09) * 0.5;
+    // ...and on the same slow loop, a turn it never quite finishes, so the way it leans round on the
+    // stalk instead of swivelling on its foot can be watched from the side (see the twist and bow in
+    // Enemy.animate: the foot takes a fifth of the yaw, the stem bends through the rest)
+    const turn = Math.sin(animT * 0.09) * 0.5;
+    m.body.rotation.y = turn * 0.2;
+    const bow = Math.sin(animT * 0.09 + Math.PI * 0.5) * 0.3;
     let wsum = 0;
     for (let i = 0; i < stalk.length; i++) wsum += (i + 1) * (i + 1);
     for (let i = 0; i < stalk.length; i++) {
-      stalk[i].rotation.x = (0.35 * ((i + 1) * (i + 1))) / (wsum || 1) + Math.sin(animT * 0.7 + i * 0.6) * 0.02;
-      stalk[i].rotation.z = Math.sin(animT * 0.55 + i * 0.5) * 0.03;
+      const w = ((i + 1) * (i + 1)) / (wsum || 1);
+      stalk[i].rotation.y = turn * 0.8 * w;
+      stalk[i].rotation.x = 0.35 * w + Math.sin(animT * 0.7 + i * 0.6) * 0.02;
+      stalk[i].rotation.z = -bow * w + Math.sin(animT * 0.55 + i * 0.5) * 0.03;
     }
     m.head.rotation.x = 0.12 - 0.1 * charge;
     if (m.armL) m.armL.rotation.x = -0.55 * charge;

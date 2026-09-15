@@ -404,6 +404,20 @@ const SPIT_CHARGE = 0.85;
 const SPIT_COMMIT = 0.4;
 /** how much of her run the flower throws ahead of her (as a fraction of the ball's flight time) */
 const SPIT_LEAD = 0.6;
+/**
+ * How the turn is spent down the stem. A flower does not swivel: the foot of the stem takes only this
+ * much of the swing and the rest is bowed up the stalk joint by joint — a little at the bottom, most
+ * of it just under the head — so the plant is always visibly *leaning* round after her rather than
+ * spinning on a post. The whole turn still adds up to the AI's yaw, so the mouth ends up on the line
+ * the ball goes down either way.
+ */
+const SPIT_TWIST_FOOT = 0.2;
+/** how far the stem leans into a turn it has not finished yet, radians at the top of the stalk */
+const SPIT_BOW = 0.5;
+/** ...towards a turn no further off than this (a wider error does not lean it any harder) */
+const SPIT_BOW_MAX = 1.1;
+/** how fast that lean is taken up and let go again, radians/second (the stem has a little spring in it) */
+const SPIT_BOW_RATE = 3.2;
 
 /** how far a guard on a tight post (bridge, camp) may drift from its own spot, in tiles */
 const TIGHT_LEASH = 2.2;
@@ -453,6 +467,8 @@ export class Enemy {
   private pvz = 0;
   /** ...and whether the charge has passed the point where the head stops tracking her */
   private lockAim = false;
+  /** ...and the lean into a turn it is still making, eased in and out so the stem has some spring */
+  private bow = 0;
   readonly st: Stats;
   readonly HW = 0.3;
   readonly HH = 0.25;
@@ -828,11 +844,17 @@ export class Enemy {
       // the stem swings round to the line (a plant turns at its own pace), and the head nods onto it
       const want = Math.atan2(this.aimX - this.pos.x, this.aimZ - this.pos.z);
       const step = SPIT_TURN * dt;
-      this.yaw = normAngle(this.yaw + clamp(normAngle(want - this.yaw), -step, step));
+      const turn = clamp(normAngle(want - this.yaw), -step, step);
+      this.yaw = normAngle(this.yaw + turn);
+      // what is left of the swing, and the lean that goes with turning: the stem bows into the
+      // direction it is taking her, and comes back upright as it arrives on the line
+      const wantBow = clamp(normAngle(want - this.yaw), -SPIT_BOW_MAX, SPIT_BOW_MAX) * (SPIT_BOW / SPIT_BOW_MAX);
+      this.bow += clamp(wantBow - this.bow, -SPIT_BOW_RATE * dt, SPIT_BOW_RATE * dt);
       const wantPitch = clamp(Math.atan2(SPITTER_MAW_H - 0.55, Math.max(0.8, dist)), -0.35, 1.15);
       this.aimPitch += clamp(wantPitch - this.aimPitch, -SPIT_NOD * dt, SPIT_NOD * dt);
     } else {
       this.aimPitch += clamp(SPIT_REST - this.aimPitch, -SPIT_NOD * dt, SPIT_NOD * dt);
+      this.bow += clamp(-this.bow, -SPIT_BOW_RATE * dt, SPIT_BOW_RATE * dt);
       return; // nothing else to do asleep: no states, no shot, just the head coming back up
     }
 
@@ -1159,9 +1181,9 @@ export class Enemy {
       const awake = s !== 'patrol';
       const charge = s === 'windup' ? clamp(1 - this.stateT / SPIT_CHARGE, 0, 1) : 0;
       const shot = s === 'attack' ? clamp(this.stateT / this.st.attackDur, 0, 1) : 0;
-      // the body is the foot of the stem: it carries the AI's turn, plus the slow nod of a plant
-      // standing in a breeze when there is nobody about to look at
-      m.body.rotation.y = this.yaw + (awake ? 0 : Math.sin(this.age * 0.31) * 0.22);
+      // the body is the foot of the stem: it takes only the first share of the turn, plus the slow
+      // nod of a plant standing in a breeze when there is nobody about to look at
+      m.body.rotation.y = this.yaw * SPIT_TWIST_FOOT + (awake ? 0 : Math.sin(this.age * 0.31) * 0.22);
       // the neck: the head leans over whatever it is looking at, rears back a hand's width over the
       // charge, and follows the ball forward as it goes — with a gust of wind still rocking it if the
       // last thing that happened to it was a beetle's clap
@@ -1172,11 +1194,20 @@ export class Enemy {
         lean += Math.cos(away) * 0.25 * k2;
         m.body.rotation.z = Math.sin(away) * 0.2 * k2;
       } else m.body.rotation.z = 0;
+      // The stem is one plant, so the turn runs up it the same way the nod does: weighed towards the
+      // top, where the head is, and hardly any of it at the root. There is no neck joint left to
+      // account for afterwards — the whole of the yaw is spent down here, foot and stalk together —
+      // so the twist and the bow below are the entire difference between this and a turret.
+      const twist = this.yaw * (1 - SPIT_TWIST_FOOT);
       let wsum = 0;
       for (let i = 0; i < stalk.length; i++) wsum += (i + 1) * (i + 1);
       for (let i = 0; i < stalk.length; i++) {
-        stalk[i].rotation.x = (lean * ((i + 1) * (i + 1))) / (wsum || 1) + Math.sin(this.age * 0.7 + i * 0.6) * 0.012;
-        stalk[i].rotation.z = Math.sin(this.age * 0.55 + i * 0.5) * 0.022;
+        const w = ((i + 1) * (i + 1)) / (wsum || 1);
+        stalk[i].rotation.y = twist * w;
+        stalk[i].rotation.x = lean * w + Math.sin(this.age * 0.7 + i * 0.6) * 0.012;
+        // the bow is to the left of the twist (negative z leans the joint's up towards +x), which is
+        // the way the head is already swinging while the turn is unfinished
+        stalk[i].rotation.z = -this.bow * w + Math.sin(this.age * 0.55 + i * 0.5) * 0.022;
       }
       // the head: the pitch the AI asked for, less the stem's own share of it (so the mouth ends up
       // pointing exactly where the flower decided), and a nod into the spit
