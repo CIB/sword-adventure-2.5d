@@ -97,6 +97,15 @@ export interface Humanoid {
   elytronR?: THREE.Group;
   hindwingL?: THREE.Group;
   hindwingR?: THREE.Group;
+  /**
+   * Beetles only: the six legs as individually swivel-able hip groups, closest to the head first —
+   * [front, middle, back] of the left side, then [front, middle, back] of the right. Each group
+   * pivots at the hip line, so `poseLadybug` can swing a given leg forward or back while the leg
+   * itself hangs out-and-down from the pivot. Sizes are grafted onto `legL`/`legR` (and routed
+   * through the left/right tripods from the root), so the single-segment signature everything else
+   * in Humanoid uses stays intact for both the walker and the camera.
+   */
+  legHips?: THREE.Group[];
   /** beetles only: the faint cone on the ground in front of it, shown while it charges the gust */
   gustArc?: THREE.Mesh;
   /**
@@ -492,10 +501,12 @@ export function buildSoldier(kind: EnemyKind): Humanoid {
 const SHELL_HW = 1.12, SHELL_H = 0.84, SHELL_LEN = 1.24;  // scale of a 0.5-radius quarter-dome
 const SHELL_DROP = 0.42;                                   // dome height: where the shell's rim sits
 const HINGE_Y = 1.02, HINGE_Z = -0.06;                     // the dorsal midline the wing covers hinge on
-// the flight wings hinge at the thorax under the pronotum, low and forward: folded, they lie flat
-// under the belly and the front of the cases (the fit test holds the line), and poseLadybug eases
-// out of these tucked angles for the gust
-const WING_Y = 0.46, WING_Z = 0.08;
+// the flight wings hinge at the thorax under the pronotum: folded, they lie flat under the belly
+// and the front of the cases (the fit test holds the line), and poseLadybug eases out of these
+// tucked angles for the gust. The hinge rides a shade above the leg row and a shade outward, so the
+// fanned membranes spread clear of the legs and read on top of them instead of tangling with the
+// scuttling feet at the same height.
+const WING_Y = 0.52, WING_Z = 0.08;
 const WING_FOLD_YAW = 0.42, WING_FOLD_TILT = 0.26;
 const HIP_Y = 0.46;                                        // leg pivot height
 /** four spots per wing cover, in the dome's own (unit-sphere) space — mirrored for the other half */
@@ -543,16 +554,31 @@ export function buildLadybug(kind: LadybugKind = 'ladybug'): Humanoid {
   const body = new THREE.Group();
   root.add(body);
 
-  // six legs, three a side, splayed out past the shell — the pivot sits on the hip line so a swing
-  // rocks the whole row forward and back the way a beetle scuttles
+  // six legs, three a side, splayed out past the shell. Each leg hangs from its own hip pivot
+  // (a group sitting on the hip line), so a swing rocks that one leg forward and back the way a
+  // beetle scuttles; the hip groups in turn ride `legL`/`legR`, the left and right tripods the
+  // rest of the Humanoid rig (and the model viewer's facing turn) are built around. `i` runs -1
+  // (front pair, reaching ahead) to +1 (back pair, trailing).
+  const legHips: THREE.Group[] = [];
+  const legPivot = (x: number, z: number, i: number) => {
+    const hip = new THREE.Group();
+    hip.position.set(x, HIP_Y, z);
+    const leg = part(UNIT_BOX, legMat, [0, -0.25, 0], [0.11, 0.5, 0.11]);
+    leg.rotation.z = Math.sign(x) * 0.6;   // out and down: the foot lands a little outside the shell
+    leg.rotation.x = -i * 0.22;            // front pair reaching ahead, back pair trailing
+    // the front pair sits a little inboard and back from the middle, so the feet do not poke out
+    // over the wing covers in front while the beetle walks
+    if (i === -1) { hip.position.x *= 0.88; hip.position.z *= 0.9; }
+    hip.add(leg);
+    legHips.push(hip);
+    return hip;
+  };
   const legs = (side: 1 | -1) => {
     const g = new THREE.Group();
     g.position.set(0, HIP_Y, 0);
+    // -1 is the front pair (they reach ahead), +1 the back (they trail): see the leg's own rotation.x
     for (let i = -1; i <= 1; i++) {
-      const leg = part(UNIT_BOX, legMat, [0.48 * side, -0.25, i * 0.44], [0.11, 0.5, 0.11]);
-      leg.rotation.z = 0.6 * side;   // out and down: the foot lands a little outside the shell
-      leg.rotation.x = -i * 0.22;    // front pair reaching ahead, back pair trailing
-      g.add(leg);
+      g.add(legPivot(0.48 * side, i * 0.44, i));
     }
     return g;
   };
@@ -590,7 +616,7 @@ export function buildLadybug(kind: LadybugKind = 'ladybug'): Humanoid {
   // membrane reads as a wing and not a sheet.
   const hindwing = (side: 1 | -1) => {
     const g = new THREE.Group();
-    g.position.set(0.07 * side, WING_Y, WING_Z);
+    g.position.set(0.13 * side, WING_Y, WING_Z);
     g.rotation.set(0, WING_FOLD_YAW * side, -WING_FOLD_TILT * side); // tucked down and in, under its case
     g.add(part(UNIT_SPHERE, wingMat, [0.16 * side, 0, -0.30], [0.40, 0.07, 1.00]));  // the membrane
     g.add(part(UNIT_BOX, wingEdgeMat, [0.0275 * side, 0, -0.17], [0.07, 0.06, 0.33])); // the leading edge
@@ -640,7 +666,7 @@ export function buildLadybug(kind: LadybugKind = 'ladybug'): Humanoid {
   // the ordinary beetle stands about as tall as a soldier's chest and as wide as his shoulders; the
   // queen is left at the size she was drawn, a stride longer than the heroine
   root.scale.set(size.plan, size.y, size.plan);
-  return { root, body, head, armR, armL, handR, handL, legR, legL, elytronL, elytronR, hindwingL, hindwingR, gustArc, gustArcUnit: range / size.plan, materials: collectMaterials(root) };
+  return { root, body, head, armR, armL, handR, handL, legR, legL, legHips, elytronL, elytronR, hindwingL, hindwingR, gustArc, gustArcUnit: range / size.plan, materials: collectMaterials(root) };
 }
 
 /**
@@ -656,9 +682,23 @@ export function poseLadybug(h: Humanoid, open: number, beat: number, step: numbe
   const o = Math.min(1, Math.max(0, open));
   // the shiver of the beat runs through the whole shell
   const b = Math.sin(beat) * o;
-  // six legs scuttling on their two tripod groups, a faint idle wiggle when it stands still
-  h.legL.rotation.x = step * 0.22;
-  h.legR.rotation.x = -step * 0.22;
+  // six legs in two alternating tripods — front and back on one side stride with the opposite side's
+  // middle leg, so the beetle always stands on three points and every leg visibly pulls its weight.
+  // Each hip swings the full stroke itself; the tripod groups only whisper along underneath, so the
+  // front/back legs don't hide inside the side's rock. A faint wiggle when it stands still.
+  const hips = h.legHips;
+  if (hips && hips.length === 6) {
+    const amp = 0.34;
+    for (let j = 0; j < 6; j++) {
+      const side = j < 3 ? 1 : -1;          // hips 0-2 ride legL (+x), 3-5 ride legR
+      const idx = j < 3 ? j : j - 3;        // 0 front, 1 middle, 2 back
+      // the middle leg of each side is the odd one out of its tripod:
+      const tripod = idx === 1 ? -1 : 1;    // +1 strides with +step, -1 against it
+      hips[j].rotation.x = side * tripod * amp * step;
+    }
+  }
+  h.legL.rotation.x = step * 0.05;
+  h.legR.rotation.x = -step * 0.05;
   h.body.position.y = Math.sin(t * 2.2) * 0.012 + Math.abs(step) * 0.035 + o * 0.05 + Math.abs(b) * 0.03;
   h.body.rotation.set(-o * 0.10 + b * 0.02, step * 0.06, step * 0.05);
   // the wing cases hinge up and part along the back, trembling through the last of the spread
