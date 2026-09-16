@@ -9,7 +9,7 @@ import { ACTIONS, type VillageState, type CropKind } from './village';
 import {
   buildArrow, buildEnergyBall, buildHeart, buildHeroine, buildJavelinProjectile, buildMoblinSpearProjectile, buildRupee, buildSoldier, part, toon,
   UNIT_BOX, UNIT_OCTA, UNIT_SPHERE, type Humanoid, buildVillager, buildDog, buildWateringCan, VILLAGER_LOOKS,
-  GUST_HALF_ARC, gustRange, isLadybug, isSpitter, poseLadybug, ENERGY_BALL_SPEED, SPITTER_MAW_H,
+  GUST_HALF_ARC, gustRange, isLadybug, isSpitter, poseLadybug, LADYBUG_GUST_TELL_HOVER, ENERGY_BALL_SPEED, SPITTER_MAW_H,
 } from './models';
 
 /**
@@ -1299,9 +1299,33 @@ export class Enemy {
         const r = 0.4 + 0.6 * easeOutCubic(p);
         const u = m.gustArcUnit ?? gustRange(this.kind); // local scale of a full-reach cone
         arc.scale.set(u * r, 1, u * r);
+        this.liftLadybugGustTell(arc);
         (arc.material as THREE.MeshBasicMaterial).opacity = 0.28 * p;
       }
     }
+  }
+
+  /**
+   * The warning cone used to be one flat mesh barely above the beetle's feet. On even a gentle uphill
+   * tile that meant the terrain triangles could poke through it and hide the tell. Bend the vertices
+   * to the rendered surface under them and keep the whole decal a small fixed hover above it.
+   */
+  private liftLadybugGustTell(arc: THREE.Mesh) {
+    const pos = arc.geometry.getAttribute('position') as THREE.BufferAttribute;
+    const rootS = this.model.root.scale;
+    const rootY = this.game.world.surfaceAt(this.pos.x, this.pos.z);
+    const yaw = FACING_ANGLE[this.facing];
+    const sin = Math.sin(yaw), cos = Math.cos(yaw);
+    const arcSX = arc.scale.x, arcSY = arc.scale.y || 1, arcSZ = arc.scale.z;
+    for (let i = 0; i < pos.count; i++) {
+      const lx = (arc.position.x + pos.getX(i) * arcSX) * rootS.x;
+      const lz = (arc.position.z + pos.getZ(i) * arcSZ) * rootS.z;
+      const wx = this.pos.x + lx * cos + lz * sin;
+      const wz = this.pos.z - lx * sin + lz * cos;
+      const y = this.game.world.renderedSurfaceAt(wx, wz) + LADYBUG_GUST_TELL_HOVER;
+      pos.setY(i, ((y - rootY) / (rootS.y || 1) - arc.position.y) / arcSY);
+    }
+    pos.needsUpdate = true;
   }
 
   private sync() {

@@ -158,6 +158,25 @@ export class World {
     const h00 = this.cornerH(tx, tz), h10 = this.cornerH(tx + 1, tz), h01 = this.cornerH(tx, tz + 1), h11 = this.cornerH(tx + 1, tz + 1);
     return (h00 * (1 - fx) + h10 * fx) * (1 - fz) + (h01 * (1 - fx) + h11 * fx) * fz;
   }
+  /**
+   * Terrain height exactly as the ground mesh draws it. The mesh splits every tile along the shorter
+   * diagonal, so decal-like meshes sample those two triangle planes instead of the bilinear field.
+   */
+  terrainMeshHeightAt(x: number, z: number): number {
+    const tx = Math.floor(x), tz = Math.floor(z);
+    const h00 = this.cornerH(tx, tz), h10 = this.cornerH(tx + 1, tz), h01 = this.cornerH(tx, tz + 1), h11 = this.cornerH(tx + 1, tz + 1);
+    const fx = Math.min(1, Math.max(0, x - tx)), fz = Math.min(1, Math.max(0, z - tz));
+    if (Math.abs(h00 - h11) <= Math.abs(h10 - h01)) {
+      // diagonal (0,0)-(1,1)
+      return fz >= fx
+        ? h00 + (h01 - h00) * fz + (h11 - h01) * fx
+        : h00 + (h10 - h00) * fx + (h11 - h10) * fz;
+    }
+    // diagonal (1,0)-(0,1)
+    return fx + fz <= 1
+      ? h00 + (h10 - h00) * fx + (h01 - h00) * fz
+      : h11 * (fx + fz - 1) + h10 * (1 - fz) + h01 * (1 - fx);
+  }
   /** Average height of a tile (used to place props/houses) */
   tileH(tx: number, tz: number): number {
     return (this.cornerH(tx, tz) + this.cornerH(tx + 1, tz) + this.cornerH(tx, tz + 1) + this.cornerH(tx + 1, tz + 1)) / 4;
@@ -963,6 +982,16 @@ export class World {
       }
     }
     return this.heightAt(x, z);
+  }
+
+  /**
+   * Height of the visible surface a decal should sit over: bridge decks when present, otherwise the
+   * exact triangulated terrain mesh. This is intentionally separate from `surfaceAt`, which keeps
+   * characters on the older bilinear field for movement stability.
+   */
+  renderedSurfaceAt(x: number, z: number): number {
+    const tx = Math.floor(x), tz = Math.floor(z);
+    return this.tile(tx, tz) === Tile.Bridge ? this.surfaceAt(x, z) : this.terrainMeshHeightAt(x, z);
   }
 
   /** is this tile one of the farmer's plots? (its crop is a live mesh, not part of the ground texture) */

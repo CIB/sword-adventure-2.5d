@@ -10,7 +10,7 @@ import * as THREE from 'three';
 import { World } from '../src/game/world';
 import { Enemy, Player, Projectile, fxGust, type GameCtx } from '../src/game/entities';
 import { Wildlife } from '../src/game/wildlife';
-import { buildSoldier, gustRange, isLadybug, poseLadybug } from '../src/game/models';
+import { buildSoldier, gustRange, isLadybug, poseLadybug, LADYBUG_GUST_TELL_HOVER } from '../src/game/models';
 import { RNG, MAX_HP, FACING_VEC, SHEAR, inArc } from '../src/game/constants';
 
 let failures = 0;
@@ -72,6 +72,9 @@ check('the wing covers are shut at rest', Math.abs(bugModel.elytronL!.rotation.z
 check('the ground tell is measured in tiles of world, not in beetle lengths',
   Math.abs(bugModel.gustArcUnit! * bugModel.root.scale.x - gustRange('ladybug')) < 0.01,
   `tell=${(bugModel.gustArcUnit! * bugModel.root.scale.x).toFixed(2)} gust=${gustRange('ladybug')}`);
+check('...and it starts high enough above the ground to avoid slope z-fighting',
+  Math.abs(bugModel.gustArc!.position.y * bugModel.root.scale.y - LADYBUG_GUST_TELL_HOVER) < 1e-6,
+  `hover=${(bugModel.gustArc!.position.y * bugModel.root.scale.y).toFixed(3)}`);
 {
   // The regular beetle is the size of a soldier — the complaint that started this, so it is checked
   // the way it was complained about: as the patch of screen the thing takes up. The gust tell is a
@@ -235,6 +238,45 @@ check('the ground tell is measured in tiles of world, not in beetle lengths',
   check('...once, for exactly the damage its stats say', hits.length === 1 && hits[0] === bug.st.dmg,
     `tryHitPlayer called ${hits.length}x with ${hits.join(',')} (dmg ${bug.st.dmg})`);
   check('the gust reaches as far as its ground tell promises', Math.abs(player.pos.z - pz0) <= gustRange('ladybug'));
+}
+
+// The charge tell is a decal over terrain, not a flat plate through it: on a gentle rise every
+// vertex should be lifted to the rendered ground under that part of the cone.
+{
+  const facings = [0, 2, 4, 6] as const;
+  let best = { x: 44.5, z: 39.1, facing: 0, spread: 0 };
+  for (let z = 2.5; z < world.h - 3; z += 0.5) for (let x = 2.5; x < world.w - 3; x += 0.5) {
+    if (world.lushness(x, z) < 0.8 || world.boxCollides(x, z, 0.3, 0.25)) continue;
+    for (const facing of facings) {
+      const v = FACING_VEC[facing], rootY = world.surfaceAt(x, z);
+      let hi = -Infinity, lo = Infinity;
+      for (let d = 0.3; d <= gustRange('ladybug') * 0.9; d += 0.35) {
+        const y = world.renderedSurfaceAt(x + v[0] * d, z + v[1] * d) - rootY;
+        hi = Math.max(hi, y); lo = Math.min(lo, y);
+      }
+      if (hi - lo > best.spread) best = { x, z, facing, spread: hi - lo };
+    }
+  }
+  const { ctx } = makeCtx(best.x + 8, best.z + 8);
+  const bug = new Enemy(ctx, 'ladybug', best.x, best.z);
+  bug.facing = best.facing as typeof bug.facing;
+  bug.state = 'windup';
+  bug.stateT = 0.2;
+  bug.update(DT);
+  const arc = bug.model.gustArc!;
+  bug.model.root.updateWorldMatrix(true, true);
+  const pos = arc.geometry.getAttribute('position');
+  const p = new THREE.Vector3();
+  let minClear = Infinity, maxErr = 0;
+  for (let i = 0; i < pos.count; i++) {
+    p.fromBufferAttribute(pos, i).applyMatrix4(arc.matrixWorld);
+    const clear = p.y - world.renderedSurfaceAt(p.x, p.z);
+    minClear = Math.min(minClear, clear);
+    maxErr = Math.max(maxErr, Math.abs(clear - LADYBUG_GUST_TELL_HOVER));
+  }
+  check('the gust warning follows sloped terrain instead of sinking through it',
+    best.spread > LADYBUG_GUST_TELL_HOVER && minClear > LADYBUG_GUST_TELL_HOVER - 0.01 && maxErr < 0.015,
+    `terrain spread=${best.spread.toFixed(3)} clear=${minClear.toFixed(3)} err=${maxErr.toFixed(3)}`);
 }
 
 // Two beetles clapping in the same breath: the wind hurts, but her i-frames are still hers, so a pair
