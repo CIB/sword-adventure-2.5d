@@ -156,18 +156,60 @@ check('the ground tell is measured in tiles of world, not in beetle lengths',
     `wing top ${wings.max.y.toFixed(2)} vs shell top ${shell.max.y.toFixed(2)}`);
 }
 
-// The oversized one: the same beetle at the size it was first drawn, kept for the special encounter.
+// The oversized one: for the special encounter she is her own model now, not the round little one
+// scaled up — the moving legs that read as cute waddle on the small beetle made the big one look
+// daft, so she is drawn longer and set steadier on her feet. Measured against the common beetle
+// the way she will be seen: standing next to one.
 {
   const queen = buildSoldier('ladybug_queen');
-  check('the queen is sized from the same model, only bigger', Math.abs(queen.root.scale.x / bugModel.root.scale.x - 1) > 0.3,
-    `plan scale ${queen.root.scale.x.toFixed(2)} vs ${bugModel.root.scale.x.toFixed(2)}`);
   queen.root.remove(queen.gustArc!);
   const q = size(queen.root), bug = size(bugModel.root);
-  check('...noticeably bigger than a common beetle in every direction',
-    (q.max.x - q.min.x) > (bug.max.x - bug.min.x) * 1.3 && (q.max.y - q.min.y) > (bug.max.y - bug.min.y) * 1.15,
-    `queen ${(q.max.x - q.min.x).toFixed(2)}x${(q.max.z - q.min.z).toFixed(2)}x${(q.max.y - q.min.y).toFixed(2)} vs bug ${(bug.max.x - bug.min.x).toFixed(2)}x${(bug.max.z - bug.min.z).toFixed(2)}x${(bug.max.y - bug.min.y).toFixed(2)}`);
+  const qw = q.max.x - q.min.x, ql = q.max.z - q.min.z, qh = q.max.y - q.min.y;
+  const bw = bug.max.x - bug.min.x, bl = bug.max.z - bug.min.z, bh = bug.max.y - bug.min.y;
+  check('the queen is her own, longer model, not the little one scaled up', ql / qw > (bl / bw) * 1.15,
+    `queen ${ql.toFixed(2)}x${qw.toFixed(2)} (l/w ${(ql / qw).toFixed(2)}) vs beetle ${bl.toFixed(2)}x${bw.toFixed(2)} (l/w ${(bl / bw).toFixed(2)})`);
+  check('...and still noticeably bigger in every direction', qw > bw * 1.3 && qh > bh * 1.15,
+    `queen ${qw.toFixed(2)}x${ql.toFixed(2)}x${qh.toFixed(2)} vs bug ${bw.toFixed(2)}x${bl.toFixed(2)}x${bh.toFixed(2)}`);
   check('...and her clap of wind carries a good deal further than a common beetle\'s',
     gustRange('ladybug_queen') > gustRange('ladybug') * 1.4, `${gustRange('ladybug_queen')} vs ${gustRange('ladybug')} tiles`);
+  // the steadier walk: pose both beetles at full stride and read how far the body rocks. The legs
+  // themselves stride exactly as far on both — it is the hull that stops rolling with the step
+  const qb = buildSoldier('ladybug_queen'), cb = buildSoldier('ladybug');
+  poseLadybug(qb, 0, 0, 1, 0.3);
+  poseLadybug(cb, 0, 0, 1, 0.3);
+  check('her six legs stride as far as the common beetle\'s',
+    qb.legHips!.every((hip, i) => Math.abs(hip.rotation.x - cb.legHips![i].rotation.x) < 1e-9),
+    `queen hip ${qb.legHips![0].rotation.x.toFixed(2)} vs beetle ${cb.legHips![0].rotation.x.toFixed(2)}`);
+  check('...but her body rolls and yaws well under the common beetle\'s waddle',
+    Math.abs(qb.body.rotation.z) < Math.abs(cb.body.rotation.z) * 0.6 && Math.abs(qb.body.rotation.y) < Math.abs(cb.body.rotation.y) * 0.6 && qb.body.position.y < cb.body.position.y,
+    `queen roll ${Math.abs(qb.body.rotation.z).toFixed(3)} yaw ${Math.abs(qb.body.rotation.y).toFixed(3)} vs beetle ${Math.abs(cb.body.rotation.z).toFixed(3)}/${Math.abs(cb.body.rotation.y).toFixed(3)}`);
+  // ...and her longer membranes still fold away under her longer shell, vertex by vertex against
+  // the curved covers, exactly the way the common beetle's are checked above
+  const qbug = buildSoldier('ladybug_queen');
+  qbug.root.remove(qbug.gustArc!);
+  qbug.root.scale.set(1, 1, 1); // author space
+  const long = 1.26, wide = 0.94, high = 0.92, nose = 0.62 * (1.26 - 1);
+  const qcover = (p: THREE.Vector3) => {
+    const f = (cx: number, cy: number, cz: number, hx: number, hy: number, hz: number) =>
+      ((p.x - cx) / hx) ** 2 + ((p.y - cy) / hy) ** 2 + ((p.z - cz) / hz) ** 2 - 1;
+    return Math.min(f(0, 0.6, -0.22, 0.56 * wide, 0.42 * high, 0.62 * long), f(0, 0.52, -0.02, 0.53 * wide, 0.26, 0.7 * long), f(0, 0.8, 0.44 + nose, 0.43 * wide, 0.22, 0.26));
+  };
+  let qn = 0, qout = 0, qworst = 0;
+  for (const side of [qbug.hindwingL!, qbug.hindwingR!]) {
+    side.updateWorldMatrix(true, true);
+    for (const child of side.children) {
+      const mesh = child as THREE.Mesh;
+      const pos = mesh.geometry.getAttribute('position');
+      const v = new THREE.Vector3();
+      for (let i = 0; i < pos.count; i++) {
+        const d = qcover(v.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld));
+        qn++;
+        if (d > 0) { qout++; qworst = Math.max(qworst, d); }
+      }
+    }
+  }
+  check('...and her folded wings vanish under that longer shell', qout / qn < 0.02 && qworst < 0.05,
+    `${qout}/${qn} vertices outside the cover, deepest ${qworst.toFixed(4)}`);
 }
 
 // ============================================================ the wing-clap
