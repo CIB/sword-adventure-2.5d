@@ -106,6 +106,13 @@ export interface Humanoid {
    * in Humanoid uses stays intact for both the walker and the camera.
    */
   legHips?: THREE.Group[];
+  /**
+   * Beetles only: how much of the stride `poseLadybug` lets through to the body as a waddle (the
+   * rolling, yawing and bobbing driven off `step`). 1 is the common beetle, which waddles as it
+   * scuttles; the queen carries her longer body a good deal steadier. The legs themselves stride
+   * the same on both.
+   */
+  wobble?: number;
   /** beetles only: the faint cone on the ground in front of it, shown while it charges the gust */
   gustArc?: THREE.Mesh;
   /**
@@ -236,18 +243,19 @@ export const SOLDIER_COLORS: Record<EnemyKind, string> = { sword: '#3c9c44', spe
 /**
  * The two ladybugs. A ladybird is a ladybird: `ladybug` is the ordinary one you meet all over the
  * green country, and it is built to stand next to a soldier without dwarfing him. `ladybug_queen` is
- * the oversized one — the same beetle, kept at the size the model was first drawn at, for the
- * special encounter rather than for the crowd.
+ * the oversized one — and she is her own drawing, not the little one scaled up: a longer, steadier
+ * beetle kept for the special encounter rather than for the crowd (see buildLadybug).
  */
 export const LADYBUG_KINDS = ['ladybug', 'ladybug_queen'] as const;
 export type LadybugKind = (typeof LADYBUG_KINDS)[number];
 export const isLadybug = (k: EnemyKind): k is LadybugKind => k === 'ladybug' || k === 'ladybug_queen';
 
 /**
- * How a beetle is sized: the authored model (see buildLadybug) is one scale, and each kind is that
- * scale multiplied by `plan` on the ground and `y` in height. The common ladybug comes out of this
- * the size of a soldier — as wide as one and a little flatter, because that is what a beetle is —
- * while the queen keeps the whole 1:1 authoring size.
+ * How a beetle is sized: each kind's model (see buildLadybug — one drawing each now, the queen's
+ * the longer one) is authored at its own scale, and that scale is then multiplied by `plan` on the
+ * ground and `y` in height. The common ladybug comes out of this the size of a soldier — as wide
+ * as one and a little flatter, because that is what a beetle is — while the queen keeps the whole
+ * 1:1 authoring size.
  */
 export const LADYBUG_SIZE: Record<LadybugKind, { plan: number; y: number }> = {
   ladybug: { plan: 0.7, y: 0.76 },
@@ -519,16 +527,19 @@ const SHELL_DOME_R = new THREE.SphereGeometry(0.5, 12, 6, -Math.PI / 2, Math.PI,
 
 /**
  * A ladybug — the giant one of the beetle world, which is to say a ladybird the size of a soldier:
- * knee-high legs, a round black underbody, and a bright domed shell split down the middle. The two
+ * knee-high legs, a black underbody, and a bright domed shell split down the middle. The two
  * halves are real, separately hinged wing covers (`elytronL`/`elytronR`), so the enemy can crack them
  * open for the wing-clap charge and let the membranous hindwings beat underneath
  * (`hindwingL`/`hindwingR`).
  *
- * The beetle is authored once, at the size it was drawn. LADYBUG_SIZE then sizes the two kinds: the
- * queen keeps practically all of it (a wide, low brute, taller than the heroine is a stride) and the
- * ordinary `ladybug` is scaled down to a soldier's bulk, so the two read as one species grown to
- * different ends. Everything that has to stay in *world* units — above all the gust tell lying on the
- * floor — divides that scale back out.
+ * The two kinds are NOT one drawing at two sizes. The common beetle is authored round — a cheerful
+ * little dome that waddles on its six legs — but what reads as cute on the small one reads as daft
+ * on the big one, so `ladybug_queen` gets her own model out of the same pieces: the beetle run
+ * long (`long`), taken in a touch across (`wide`) and lowered a shade off her dome (`high`), her
+ * legs set further along the body and her face a step further out. For the common beetle those
+ * numbers are all 1 and nothing below moves. LADYBUG_SIZE then sizes each kind's own drawing, and
+ * everything that has to stay in *world* units — above all the gust tell lying on the floor —
+ * divides that scale back out. The steadier walk is next to the model, in `poseLadybug` (`wobble`).
  *
  * Two things here are unusual for a model in this game: the shell material is double-sided (each
  * half is a hollow quarter-dome, and once the wings are open you look straight into it), and the
@@ -537,6 +548,12 @@ const SHELL_DOME_R = new THREE.SphereGeometry(0.5, 12, 6, -Math.PI / 2, Math.PI,
  */
 export function buildLadybug(kind: LadybugKind = 'ladybug'): Humanoid {
   const queen = kind === 'ladybug_queen';
+  // The queen is her own, longer model (see the note above): everything below hangs off these
+  // three numbers, and at 1, 1, 1 they are the round common beetle exactly.
+  const long = queen ? 1.26 : 1;   // how much further her body reaches, nose to tail
+  const wide = queen ? 0.94 : 1;   // ...and how far she is taken in across
+  const high = queen ? 0.92 : 1;   // her shell rides a shade lower — a grand carapace, not a dome
+  const nose = 0.62 * (long - 1);  // how far ahead of the common beetle's her face sits
   const shellMat = toon(queen ? '#b52a1a' : '#d8382a'); shellMat.side = THREE.DoubleSide;
   const shellDark = toon(queen ? '#7c1a12' : '#9c2418'); shellDark.side = THREE.DoubleSide;
   const spotMat = toon('#1a1418');
@@ -550,7 +567,11 @@ export function buildLadybug(kind: LadybugKind = 'ladybug'): Humanoid {
   const pupilMat = toon('#141018');
 
   const root = new THREE.Group();
-  root.add(blobShadow(0.72));
+  // her shadow runs the length of her, not the round patch of the common beetle
+  const shadow = blobShadow(0.72);
+  shadow.scale.x *= wide;
+  shadow.scale.z *= long;
+  root.add(shadow);
   const body = new THREE.Group();
   root.add(body);
 
@@ -577,33 +598,36 @@ export function buildLadybug(kind: LadybugKind = 'ladybug'): Humanoid {
     const g = new THREE.Group();
     g.position.set(0, HIP_Y, 0);
     // -1 is the front pair (they reach ahead), +1 the back (they trail): see the leg's own rotation.x
+    // (the queen's three pairs are strung out along her longer body, a touch closer inboard)
     for (let i = -1; i <= 1; i++) {
-      g.add(legPivot(0.48 * side, i * 0.44, i));
+      g.add(legPivot(0.48 * wide * side, i * 0.44 * long, i));
     }
     return g;
   };
   const legL = legs(1), legR = legs(-1);
   root.add(legL, legR);
 
-  // underbody: the dark abdomen you see once the shell is open, and the round belly from the side
-  body.add(part(UNIT_SPHERE, bodyMat, [0, 0.52, -0.02], [1.06, 0.52, 1.4]));
-  body.add(part(UNIT_BOX, bodyMat, [0, 0.44, 0.1], [0.5, 0.3, 0.9]));
+  // underbody: the dark abdomen you see once the shell is open, and the low belly from the side
+  body.add(part(UNIT_SPHERE, bodyMat, [0, 0.52, -0.02], [1.06 * wide, 0.52, 1.4 * long]));
+  body.add(part(UNIT_BOX, bodyMat, [0, 0.44, 0.1], [0.5 * wide, 0.3, 0.9 * long]));
   // pronotum: the black shield between head and shell, with its two little white cheek patches
-  body.add(part(UNIT_HEMI, spotMat, [0, 0.80, 0.44], [0.86, 0.44, 0.52]));
-  body.add(part(UNIT_BOX, eyeMat, [-0.27, 0.87, 0.62], [0.13, 0.11, 0.12]));
-  body.add(part(UNIT_BOX, eyeMat, [0.27, 0.87, 0.62], [0.13, 0.11, 0.12]));
+  body.add(part(UNIT_HEMI, spotMat, [0, 0.80, 0.44 + nose], [0.86 * wide, 0.44, 0.52]));
+  body.add(part(UNIT_BOX, eyeMat, [-0.27 * wide, 0.87, 0.62 + nose * 1.3], [0.13, 0.11, 0.12]));
+  body.add(part(UNIT_BOX, eyeMat, [0.27 * wide, 0.87, 0.62 + nose * 1.3], [0.13, 0.11, 0.12]));
 
   const shellHalf = (side: 1 | -1) => {
     const g = new THREE.Group();
     g.position.set(0, HINGE_Y, HINGE_Z);
     const dome = new THREE.Mesh(side > 0 ? SHELL_DOME_L : SHELL_DOME_R, shellMat);
-    dome.scale.set(SHELL_HW, SHELL_H, SHELL_LEN);
+    dome.scale.set(SHELL_HW * wide, SHELL_H * high, SHELL_LEN * long);
     dome.position.set(0, -SHELL_DROP, -0.16);
     g.add(dome);
+    // the spots ride the dome's own space, so they spread along her longer shell on their own; the
+    // length is divided back out of their size, though — a stretched spot would read as a stripe
     const spot = queen ? 0.3 : 0.26; // the big one carries the same four spots, a shade fatter
-    for (const [sx, sy, sz] of SHELL_SPOTS) dome.add(part(UNIT_SPHERE, spotMat, [sx * side, sy, sz], [spot, spot, spot]));
+    for (const [sx, sy, sz] of SHELL_SPOTS) dome.add(part(UNIT_SPHERE, spotMat, [sx * side, sy, sz], [spot, spot, spot / long]));
     // a low ridge along the dorsal midline, so the closed shell still reads as two wing covers
-    g.add(part(UNIT_BOX, shellDark, [0.03 * side, 0, -0.16], [0.07, 0.06, SHELL_LEN * 0.9]));
+    g.add(part(UNIT_BOX, shellDark, [0.03 * side, 0, -0.16], [0.07, 0.06, SHELL_LEN * 0.9 * long]));
     return g;
   };
   const elytronL = shellHalf(1), elytronR = shellHalf(-1);
@@ -611,22 +635,24 @@ export function buildLadybug(kind: LadybugKind = 'ladybug'): Humanoid {
 
   // hindwings: the flight wings, hinged at the thorax under the pronotum as a real beetle's are,
   // and lying folded back flat under the belly and the front of the cases at rest (the fit test
-  // holds the line). When the covers crack open for the charge, poseLadybug sweeps them wide out
-  // to the sides and the membranes beat: that IS the wing-clap read. A paler leading edge so each
-  // membrane reads as a wing and not a sheet.
+  // holds the line on both beetles). When the covers crack open for the charge, poseLadybug sweeps
+  // them wide out to the sides and the membranes beat: that IS the wing-clap read. A paler leading
+  // edge so each membrane reads as a wing and not a sheet.
   const hindwing = (side: 1 | -1) => {
     const g = new THREE.Group();
+    // hinged at the thorax under the pronotum: the same spot on both beetles — it is the membrane
+    // trailing back over the abdomen that runs longer on the queen
     g.position.set(0.13 * side, WING_Y, WING_Z);
     g.rotation.set(0, WING_FOLD_YAW * side, -WING_FOLD_TILT * side); // tucked down and in, under its case
-    g.add(part(UNIT_SPHERE, wingMat, [0.16 * side, 0, -0.30], [0.40, 0.07, 1.00]));  // the membrane
-    g.add(part(UNIT_BOX, wingEdgeMat, [0.0275 * side, 0, -0.17], [0.07, 0.06, 0.33])); // the leading edge
+    g.add(part(UNIT_SPHERE, wingMat, [0.16 * side, 0, -0.30 * long], [0.40, 0.07, 1.00 * long]));  // the membrane
+    g.add(part(UNIT_BOX, wingEdgeMat, [0.0275 * side, 0, -0.17 * long], [0.07, 0.06, 0.33 * long])); // the leading edge
     return g;
   };
   const hindwingL = hindwing(1), hindwingR = hindwing(-1);
   body.add(hindwingL, hindwingR);
 
   const head = new THREE.Group();
-  head.position.set(0, 0.7, 0.66);
+  head.position.set(0, 0.7, 0.66 + nose * 1.5);
   body.add(head);
   head.add(part(UNIT_SPHERE, bodyMat, [0, 0, 0], [0.46, 0.42, 0.44]));
   head.add(part(UNIT_SPHERE, eyeMat, [-0.16, 0.05, 0.14], [0.2, 0.2, 0.18]));
@@ -664,9 +690,11 @@ export function buildLadybug(kind: LadybugKind = 'ladybug'): Humanoid {
   root.add(gustArc);
 
   // the ordinary beetle stands about as tall as a soldier's chest and as wide as his shoulders; the
-  // queen is left at the size she was drawn, a stride longer than the heroine
+  // queen is left at the size she was drawn, and her drawing is the long one — well past a stride of
+  // the heroine. `wobble` is how much of the step poseLadybug lets through to her body: the little
+  // one waddles, the matriarch plants her feet and glides.
   root.scale.set(size.plan, size.y, size.plan);
-  return { root, body, head, armR, armL, handR, handL, legR, legL, legHips, elytronL, elytronR, hindwingL, hindwingR, gustArc, gustArcUnit: range / size.plan, materials: collectMaterials(root) };
+  return { root, body, head, armR, armL, handR, handL, legR, legL, legHips, wobble: queen ? 0.45 : 1, elytronL, elytronR, hindwingL, hindwingR, gustArc, gustArcUnit: range / size.plan, materials: collectMaterials(root) };
 }
 
 /**
@@ -680,6 +708,9 @@ export function poseLadybug(h: Humanoid, open: number, beat: number, step: numbe
   const el = h.elytronL, er = h.elytronR, wl = h.hindwingL, wr = h.hindwingR;
   if (!el || !er || !wl || !wr) return;
   const o = Math.min(1, Math.max(0, open));
+  // how much of the stride reaches the body as a waddle — the queen plants her longer body and
+  // glides over the step, where the round little one rolls with it. The legs stride the same on both.
+  const wob = h.wobble ?? 1;
   // the shiver of the beat runs through the whole shell
   const b = Math.sin(beat) * o;
   // six legs in two alternating tripods — front and back on one side stride with the opposite side's
@@ -697,10 +728,10 @@ export function poseLadybug(h: Humanoid, open: number, beat: number, step: numbe
       hips[j].rotation.x = side * tripod * amp * step;
     }
   }
-  h.legL.rotation.x = step * 0.05;
-  h.legR.rotation.x = -step * 0.05;
-  h.body.position.y = Math.sin(t * 2.2) * 0.012 + Math.abs(step) * 0.035 + o * 0.05 + Math.abs(b) * 0.03;
-  h.body.rotation.set(-o * 0.10 + b * 0.02, step * 0.06, step * 0.05);
+  h.legL.rotation.x = step * 0.05 * wob;
+  h.legR.rotation.x = -step * 0.05 * wob;
+  h.body.position.y = Math.sin(t * 2.2) * 0.012 + Math.abs(step) * 0.035 * wob + o * 0.05 + Math.abs(b) * 0.03;
+  h.body.rotation.set(-o * 0.10 + b * 0.02, step * 0.06 * wob, step * 0.05 * wob);
   // the wing cases hinge up and part along the back, trembling through the last of the spread
   const tremble = Math.sin(t * 44) * 0.035 * Math.max(0, (o - 0.7) / 0.3);
   el.rotation.set(-o * 0.16, -o * 0.14, 0.05 + o * (LADYBUG_OPEN - 0.05) + tremble);
@@ -717,7 +748,7 @@ export function poseLadybug(h: Humanoid, open: number, beat: number, step: numbe
   const twitch = 2.3 + o * 5.2;
   h.armL.rotation.x = -0.5 + Math.sin(t * twitch) * 0.14 * (1 + o);
   h.armR.rotation.x = -0.5 + Math.sin(t * twitch + 1.1) * 0.14 * (1 + o);
-  h.head.rotation.x = o * 0.14 + step * 0.03;
+  h.head.rotation.x = o * 0.14 + step * 0.03 * wob;
 }
 
 // ---------------------------------------------------------------- the spitflower
