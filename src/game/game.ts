@@ -414,8 +414,14 @@ export class Game implements GameCtx {
     dx /= d; dz /= d;
     const f = FACING_VEC[p.facing];
     const dot = f[0] * dx + f[1] * dz;
+    // Braced (shield button held): the shield is centred in front and covers the whole frontal arc.
     if (p.blocking && dot > 0.2) { this.audio.block(); p.pushBack(sx, sz, 2.5); return 'blocked'; }
-    if (opts?.projectile && !p.attacking && dot > 0.6) { this.audio.block(); return 'blocked'; }
+    // Unbraced: the shield hangs at her side and only covers the shield half. She is left-handed —
+    // the mirrored heroine model carries the shield on her anatomical right — so a frontal hit only
+    // lands on the shield when its source is on her right (lateral >= 0, dead-centre counts as the
+    // shield's edge). Any hit that lands on the shield knocks her back, braced or not.
+    const lateral = f[0] * dz - f[1] * dx;
+    if (opts?.projectile && !p.attacking && dot > 0.6 && lateral >= 0) { this.audio.block(); p.pushBack(sx, sz, 2.5); return 'blocked'; }
     p.hurt(dmg, sx, sz);
     return 'hit';
   }
