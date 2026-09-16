@@ -275,6 +275,11 @@ export const COMMON_GUST_RANGE = 2.8;
 export const QUEEN_GUST_RANGE = 4.4;
 export const gustRange = (kind: EnemyKind): number => (kind === 'ladybug_queen' ? QUEEN_GUST_RANGE : COMMON_GUST_RANGE);
 export const GUST_HALF_ARC = 1.1; // ~63° either side of straight ahead
+/**
+ * The beetle's ground tell is a decal-like mesh, not part of the terrain. Keep it a visible sliver
+ * above the rendered surface so gentle slopes cannot depth-occlude the warning before the clap.
+ */
+export const LADYBUG_GUST_TELL_HOVER = 0.12;
 
 /**
  * Moblin — Link's Awakening inspired pig-like raider (classic Koholint blue).
@@ -683,10 +688,17 @@ export function buildLadybug(kind: LadybugKind = 'ladybug'): Humanoid {
   const range = gustRange(kind);
   const size = LADYBUG_SIZE[kind];
   const arcGeo = new THREE.RingGeometry(0.18, 1, 26, 1, -GUST_HALF_ARC - Math.PI / 2, GUST_HALF_ARC * 2).rotateX(-Math.PI / 2);
-  const gustArc = new THREE.Mesh(arcGeo, new THREE.MeshBasicMaterial({ color: '#e2f4ff', transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide }));
-  gustArc.position.y = 0.06;
+  (arcGeo.getAttribute('position') as THREE.BufferAttribute).setUsage(THREE.DynamicDrawUsage);
+  const gustArc = new THREE.Mesh(arcGeo, new THREE.MeshBasicMaterial({
+    color: '#e2f4ff', transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide,
+    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+  }));
+  // Stored in local space because the beetle root is scaled per kind; the live enemy bends the
+  // vertices to the rendered terrain each frame, but this keeps the fallback/model-viewer tell clear.
+  gustArc.position.y = LADYBUG_GUST_TELL_HOVER / size.y;
   gustArc.scale.set(range / size.plan, 1, range / size.plan);
   gustArc.visible = false;
+  gustArc.frustumCulled = false;
   root.add(gustArc);
 
   // the ordinary beetle stands about as tall as a soldier's chest and as wide as his shoulders; the
